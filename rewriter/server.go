@@ -1,0 +1,97 @@
+package rewriter
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+
+	"llm-api-converter/convert"
+)
+
+// Options holds the configuration for the rewriter plugin server.
+type Options struct {
+	Model     string
+	MaxTokens int
+}
+
+type rewriteRequest struct {
+	Data     []byte `json:"data"`
+	Metadata []byte `json:"metadata"`
+}
+
+type rewriteResponse struct {
+	OK   bool   `json:"ok"`
+	Data []byte `json:"data,omitempty"`
+}
+
+// ListenAndServe starts the HTTP server on the given address.
+func ListenAndServe(addr string, opts *Options) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	slog.Info(fmt.Sprintf("server listening on %v", ln.Addr()))
+
+	return http.Serve(ln, newServer(opts))
+}
+
+func newServer(opts *Options) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/rewrite", &rewriteHandler{opts: opts})
+	return mux
+}
+
+type rewriteHandler struct {
+	opts *Options
+}
+
+func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		slog.Error("read body", "err", err)
+		writeJSON(w, rewriteResponse{OK: false})
+		return
+	}
+	defer r.Body.Close()
+
+	var req rewriteRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		slog.Warn("unmarshal request", "err", err)
+		writeJSON(w, rewriteResponse{OK: false})
+		return
+	}
+
+	if len(req.Data) == 0 {
+		slog.Warn("empty data in rewrite request")
+		writeJSON(w, rewriteResponse{OK: false})
+		return
+	}
+
+	// Convert.
+	opts := &convert.ConvertOptions{
+		Model:     h.opts.Model,
+		MaxTokens: h.opts.MaxTokens,
+	}
+	out, err := convert.Convert(req.Data, opts)
+	if err != nil {
+		slog.Error("convert", "err", err)
+		writeJSON(w, rewriteResponse{OK: false})
+		return
+	}
+
+	writeJSON(w, rewriteResponse{OK: true, Data: out})
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(v)
+}
