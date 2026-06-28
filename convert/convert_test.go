@@ -1672,6 +1672,150 @@ func TestConvertViaAutoDetection_OpenAIReqStillWorks(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ReasoningCache: store, inject, miss, eviction
+// ---------------------------------------------------------------------------
+
+func TestConvert_ReasoningCache_StoreInject(t *testing.T) {
+	rc := NewReasoningCache(100)
+
+	// Step 1: OpenAI Response (reasoning + tool_calls) → Anthropic Response (cache store).
+	opts1 := &ConvertOptions{
+		Model:          "claude-sonnet-4-20250514",
+		MaxTokens:      8192,
+		ReasoningCache: rc,
+	}
+	openAIResp := `{
+		"id":"chatcmpl-xyz","object":"chat.completion","choices":[
+			{"index":0,"message":{
+				"role":"assistant",
+				"reasoning_content":"thinking steps...",
+				"content":"answer",
+				"tool_calls":[
+					{"id":"call_abc","type":"function","function":{"name":"f","arguments":"{}"}}
+				]
+			},"finish_reason":"tool_calls"}
+		],
+		"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+	}`
+	b, err := Convert([]byte(openAIResp), opts1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var anthResp AnthropicResponse
+	if err := json.Unmarshal(b, &anthResp); err != nil {
+		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
+	}
+	if len(anthResp.Content) != 3 {
+		t.Fatalf("want 3 content blocks (thinking + text + tool_use), got %d", len(anthResp.Content))
+	}
+	if anthResp.Content[0].Type != "thinking" || anthResp.Content[0].Thinking != "thinking steps..." {
+		t.Fatalf("first block: want thinking/'thinking steps...', got type=%s thinking=%q",
+			anthResp.Content[0].Type, anthResp.Content[0].Thinking)
+	}
+	// Cache should have one entry.
+	if rc.Len() != 1 {
+		t.Fatalf("cache Len: want 1, got %d", rc.Len())
+	}
+	if v, ok := rc.Get([]string{"call_abc"}); !ok || v != "thinking steps..." {
+		t.Fatalf("cache Get: want 'thinking steps...', got %q, ok=%v", v, ok)
+	}
+
+	// Step 2: Anthropic Request (tool_use, no thinking) → OpenAI Request (cache inject).
+	opts2 := &ConvertOptions{
+		Downstream:     "deepseek-chat",
+		ReasoningCache: rc,
+	}
+	anthReq := `{
+		"model":"claude-sonnet-4-20250514","max_tokens":8192,"messages":[
+			{"role":"user","content":[{"type":"text","text":"hi"}]},
+			{"role":"assistant","content":[
+				{"type":"text","text":""},
+				{"type":"tool_use","id":"call_abc","name":"f","input":{}}
+			]}
+		]
+	}`
+	b2, err := Convert([]byte(anthReq), opts2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oaiReq OpenAIChatRequest
+	if err := json.Unmarshal(b2, &oaiReq); err != nil {
+		t.Fatalf("unmarshal error: %v\nbody: %s", err, b2)
+	}
+	if len(oaiReq.Messages) != 2 {
+		t.Fatalf("want 2 messages, got %d", len(oaiReq.Messages))
+	}
+	assistant := oaiReq.Messages[1]
+	if assistant.ReasoningContent != "thinking steps..." {
+		t.Fatalf("reasoning_content: want 'thinking steps...', got %q", assistant.ReasoningContent)
+	}
+	if len(assistant.ToolCalls) != 1 {
+		t.Fatalf("want 1 tool_call, got %d", len(assistant.ToolCalls))
+	}
+}
+
+func TestConvert_ReasoningCache_Miss(t *testing.T) {
+	rc := NewReasoningCache(100)
+
+	opts := &ConvertOptions{
+		Downstream:     "deepseek-chat",
+		ReasoningCache: rc, // empty cache → miss
+	}
+	anthReq := `{
+		"model":"claude-sonnet-4-20250514","max_tokens":8192,"messages":[
+			{"role":"user","content":[{"type":"text","text":"hi"}]},
+			{"role":"assistant","content":[
+				{"type":"text","text":""},
+				{"type":"tool_use","id":"call_xyz","name":"f","input":{}}
+			]}
+		]
+	}`
+	b, err := Convert([]byte(anthReq), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oaiReq OpenAIChatRequest
+	if err := json.Unmarshal(b, &oaiReq); err != nil {
+		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
+	}
+	assistant := oaiReq.Messages[1]
+	if assistant.ReasoningContent != "" {
+		t.Fatalf("reasoning_content on cache miss: want empty, got %q", assistant.ReasoningContent)
+	}
+	if len(assistant.ToolCalls) != 1 {
+		t.Fatalf("want 1 tool_call, got %d", len(assistant.ToolCalls))
+	}
+}
+
+func TestConvert_ReasoningCache_Eviction(t *testing.T) {
+	rc := NewReasoningCache(2) // max 2 entries
+
+	rc.Put([]string{"id1"}, "reasoning1")
+	rc.Put([]string{"id2"}, "reasoning2")
+
+	if rc.Len() != 2 {
+		t.Fatalf("Len: want 2, got %d", rc.Len())
+	}
+
+	// Third put should evict id1 (FIFO).
+	rc.Put([]string{"id3"}, "reasoning3")
+
+	if rc.Len() != 2 {
+		t.Fatalf("Len after eviction: want 2, got %d", rc.Len())
+	}
+
+	if _, ok := rc.Get([]string{"id1"}); ok {
+		t.Fatal("id1 should be evicted")
+	}
+	if v, ok := rc.Get([]string{"id2"}); !ok || v != "reasoning2" {
+		t.Fatal("id2 should still be present")
+	}
+	if v, ok := rc.Get([]string{"id3"}); !ok || v != "reasoning3" {
+		t.Fatal("id3 should still be present")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

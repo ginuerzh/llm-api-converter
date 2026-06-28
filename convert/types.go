@@ -208,6 +208,10 @@ type ConvertOptions struct {
 	SID string
 	// EventIndex is the 0-based event index within a stream (only set when SSEPhase is "event").
 	EventIndex int
+	// ReasoningCache is an optional cache for storing/replaying reasoning_content
+	// across requests. Used to handle DeepSeek V4's requirement that
+	// reasoning_content must be replayed when tool_calls are present.
+	ReasoningCache *ReasoningCache
 }
 
 // -------- OpenAI Streaming Types --------

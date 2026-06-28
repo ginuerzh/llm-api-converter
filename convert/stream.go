@@ -26,14 +26,21 @@ type StreamConverter struct {
 	// Finish reason seen from latest chunk.
 	finishReason string
 	finalized    bool
+
+	// Accumulated reasoning content across streaming deltas.
+	accumulatedReasoning string
+	// Optional cache for reasoning_content replay (DeepSeek V4).
+	reasoningCache *ReasoningCache
 }
 
-// NewStreamConverter creates a StreamConverter for the given Anthropic model name.
-func NewStreamConverter(model string) *StreamConverter {
+// NewStreamConverter creates a StreamConverter for the given Anthropic model name
+// and optional reasoning cache.
+func NewStreamConverter(model string, reasoningCache *ReasoningCache) *StreamConverter {
 	return &StreamConverter{
 		model:           model,
 		nextBlockIndex:  0,
 		toolCallByIndex: make(map[int]*streamToolState),
+		reasoningCache: reasoningCache,
 	}
 }
 
@@ -85,6 +92,7 @@ func (sc *StreamConverter) HandleChunk(data []byte) ([]byte, error) {
 
 	// Reasoning content → thinking delta.
 	if delta.ReasoningContent != "" {
+		sc.accumulatedReasoning += delta.ReasoningContent
 		events = append(events, sc.ensureBlock("thinking", "")...)
 		events = append(events, sc.thinkingDelta(delta.ReasoningContent)...)
 	}
@@ -124,6 +132,19 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 	if sc.curBlockType != "" {
 		events = append(events, sc.contentBlockStop())
 		sc.curBlockType = ""
+	}
+
+	// Cache accumulated reasoning_content for tool call replay (DeepSeek V4).
+	if sc.accumulatedReasoning != "" && len(sc.toolCallByIndex) > 0 && sc.reasoningCache != nil {
+		ids := make([]string, 0, len(sc.toolCallByIndex))
+		for _, state := range sc.toolCallByIndex {
+			if state.ID != "" {
+				ids = append(ids, state.ID)
+			}
+		}
+		if len(ids) > 0 {
+			sc.reasoningCache.Put(ids, sc.accumulatedReasoning)
+		}
 	}
 
 	// message_delta with stop_reason.

@@ -10,7 +10,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestStream_Start(t *testing.T) {
-	sc := NewStreamConverter("claude-sonnet-4-20250514")
+	sc := NewStreamConverter("claude-sonnet-4-20250514", nil)
 	out := sc.HandleStreamStart()
 
 	if !strings.Contains(string(out), "event: message_start") {
@@ -29,7 +29,7 @@ func TestStream_Start(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStream_TextDelta(t *testing.T) {
-	sc := NewStreamConverter("claude-sonnet-4-20250514")
+	sc := NewStreamConverter("claude-sonnet-4-20250514", nil)
 	sc.HandleStreamStart() // establish state
 
 	chunk := `{"choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}`
@@ -52,7 +52,7 @@ func TestStream_TextDelta(t *testing.T) {
 }
 
 func TestStream_TextMultipleChunks(t *testing.T) {
-	sc := NewStreamConverter("claude-sonnet-4-20250514")
+	sc := NewStreamConverter("claude-sonnet-4-20250514", nil)
 	sc.HandleStreamStart()
 
 	chunk1 := `{"choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}`
@@ -84,7 +84,7 @@ func TestStream_TextMultipleChunks(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStream_FinishReason(t *testing.T) {
-	sc := NewStreamConverter("claude-sonnet-4-20250514")
+	sc := NewStreamConverter("claude-sonnet-4-20250514", nil)
 	sc.HandleStreamStart()
 
 	// Text chunk.
@@ -114,7 +114,7 @@ func TestStream_FinishReason(t *testing.T) {
 }
 
 func TestStream_FinishReasonToolCalls(t *testing.T) {
-	sc := NewStreamConverter("claude-sonnet-4-20250514")
+	sc := NewStreamConverter("claude-sonnet-4-20250514", nil)
 	sc.HandleStreamStart()
 
 	// Text then tool_calls then finish.
@@ -134,7 +134,7 @@ func TestStream_FinishReasonToolCalls(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStream_ThinkingToText(t *testing.T) {
-	sc := NewStreamConverter("claude-sonnet-4-20250514")
+	sc := NewStreamConverter("claude-sonnet-4-20250514", nil)
 	sc.HandleStreamStart()
 
 	// Thinking delta.
@@ -164,7 +164,7 @@ func TestStream_ThinkingToText(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStream_ToolCallAccumulation(t *testing.T) {
-	sc := NewStreamConverter("claude-sonnet-4-20250514")
+	sc := NewStreamConverter("claude-sonnet-4-20250514", nil)
 	sc.HandleStreamStart()
 
 	// First delta: tool call start with ID, name, empty arguments.
@@ -208,7 +208,7 @@ func TestStream_ToolCallAccumulation(t *testing.T) {
 }
 
 func TestStream_MultipleToolCalls(t *testing.T) {
-	sc := NewStreamConverter("claude-sonnet-4-20250514")
+	sc := NewStreamConverter("claude-sonnet-4-20250514", nil)
 	sc.HandleStreamStart()
 
 	// Tool call 0 starts.
@@ -237,7 +237,7 @@ func TestStream_MultipleToolCalls(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStream_EmptyOrRoleDelta(t *testing.T) {
-	sc := NewStreamConverter("claude-sonnet-4-20250514")
+	sc := NewStreamConverter("claude-sonnet-4-20250514", nil)
 	sc.HandleStreamStart()
 
 	// Role-only delta (role announcement) — should return nil.
@@ -252,7 +252,7 @@ func TestStream_EmptyOrRoleDelta(t *testing.T) {
 }
 
 func TestStream_AfterFinalized(t *testing.T) {
-	sc := NewStreamConverter("claude-sonnet-4-20250514")
+	sc := NewStreamConverter("claude-sonnet-4-20250514", nil)
 	sc.HandleStreamStart()
 
 	// End the stream.
@@ -362,7 +362,7 @@ func TestHandleSSEEvent_InvalidPhase(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStream_BlockIndices(t *testing.T) {
-	sc := NewStreamConverter("claude-sonnet-4-20250514")
+	sc := NewStreamConverter("claude-sonnet-4-20250514", nil)
 	sc.HandleStreamStart()
 
 	// Thinking block should get index 0.
@@ -386,7 +386,7 @@ func TestStream_BlockIndices(t *testing.T) {
 
 func TestStream_ThinkingTextToolCallsEnd(t *testing.T) {
 	// Full sequence: thinking → text → tool_calls → finish
-	sc := NewStreamConverter("claude-sonnet-4-20250514")
+	sc := NewStreamConverter("claude-sonnet-4-20250514", nil)
 	sc.HandleStreamStart()
 
 	_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"reasoning_content":"reasoning..."},"finish_reason":null}]}`))
@@ -407,5 +407,36 @@ func TestStream_ThinkingTextToolCallsEnd(t *testing.T) {
 	}
 	if !strings.Contains(s, "message_stop") {
 		t.Fatalf("expected message_stop, got: %s", s)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ReasoningCache: stream accumulation
+// ---------------------------------------------------------------------------
+
+func TestStream_ReasoningCacheOnEnd(t *testing.T) {
+	rc := NewReasoningCache(100)
+	sc := NewStreamConverter("claude-sonnet-4-20250514", rc)
+	sc.HandleStreamStart()
+
+	// Reasoning deltas.
+	_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"reasoning_content":"thinking "},"finish_reason":null}]}`))
+	_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"reasoning_content":"steps..."},"finish_reason":null}]}`))
+
+	// Tool call deltas.
+	_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_xyz","type":"function","function":{"name":"f","arguments":""}}]},"finish_reason":null}]}`))
+	_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]},"finish_reason":null}]}`))
+
+	// Finish.
+	_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`))
+
+	// End stream → should trigger cache store.
+	sc.HandleStreamEnd()
+
+	// Verify cache has accumulated reasoning for the tool call ID.
+	if v, ok := rc.Get([]string{"call_xyz"}); !ok {
+		t.Fatal("expected reasoning in cache after stream end")
+	} else if v != "thinking steps..." {
+		t.Fatalf("want 'thinking steps...', got %q", v)
 	}
 }

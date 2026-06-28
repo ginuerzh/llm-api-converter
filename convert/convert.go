@@ -265,7 +265,7 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 	// Detect: OpenAI Chat Completions Response (choices array).
 	if isOpenAIResponse(raw) {
 		slog.Debug("detected OpenAI Response → converting to Anthropic")
-		return convertOpenAIResponseToAnthropic(body)
+		return convertOpenAIResponseToAnthropic(body, opts)
 	}
 
 	// Detect: Anthropic Messages Response (type "message" and stop_reason/usage).
@@ -832,7 +832,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 
 	// Messages.
 	for _, msg := range req.Messages {
-		oai.Messages = append(oai.Messages, convertAnthropicMessage(msg))
+		oai.Messages = append(oai.Messages, convertAnthropicMessage(msg, opts))
 	}
 
 	// Edge case: if no messages after conversion, inject minimal user message.
@@ -880,12 +880,12 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	return json.Marshal(oai)
 }
 
-func convertAnthropicMessage(msg AnthropicMessage) OpenAIMessage {
+func convertAnthropicMessage(msg AnthropicMessage, opts *ConvertOptions) OpenAIMessage {
 	switch msg.Role {
 	case "user":
 		return convertAnthropicUserMessage(msg)
 	case "assistant":
-		return convertAnthropicAssistantMessage(msg)
+		return convertAnthropicAssistantMessage(msg, opts)
 	default:
 		return OpenAIMessage{Role: "user", Content: extractTextContent(msg.Content)}
 	}
@@ -943,7 +943,7 @@ func convertAnthropicUserMessage(msg AnthropicMessage) OpenAIMessage {
 	return OpenAIMessage{Role: "user", Content: contentArr}
 }
 
-func convertAnthropicAssistantMessage(msg AnthropicMessage) OpenAIMessage {
+func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions) OpenAIMessage {
 	var textParts []string
 	var reasoning string
 	var toolCalls []OpenAIToolCall
@@ -995,6 +995,19 @@ func convertAnthropicAssistantMessage(msg AnthropicMessage) OpenAIMessage {
 		}
 	} else {
 		oaiMsg.Content = content
+	}
+
+
+	// If reasoning is empty but tool_calls exist (Claude Code compressed thinking),
+	// try to restore reasoning_content from cache.
+	if oaiMsg.ReasoningContent == "" && len(oaiMsg.ToolCalls) > 0 && opts != nil && opts.ReasoningCache != nil {
+		ids := make([]string, len(oaiMsg.ToolCalls))
+		for i, tc := range oaiMsg.ToolCalls {
+			ids[i] = tc.ID
+		}
+		if cached, ok := opts.ReasoningCache.Get(ids); ok {
+			oaiMsg.ReasoningContent = cached
+		}
 	}
 
 	return oaiMsg
@@ -1120,7 +1133,7 @@ var streamStates sync.Map // sid (string) -> *StreamConverter
 func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *ConvertOptions) ([]byte, error) {
 	switch StreamPhase(phase) {
 	case StreamPhaseStart:
-		sc := NewStreamConverter(opts.Model)
+		sc := NewStreamConverter(opts.Model, opts.ReasoningCache)
 		streamStates.Store(sid, sc)
 		startData := sc.HandleStreamStart()
 		// First event data is now attached to the start phase signal
@@ -1148,7 +1161,7 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 		v, ok := streamStates.Load(sid)
 		if !ok {
 			slog.Warn("HandleSSEEvent: unknown stream, starting new", "sid", sid)
-			sc := NewStreamConverter(opts.Model)
+			sc := NewStreamConverter(opts.Model, opts.ReasoningCache)
 			streamStates.Store(sid, sc)
 			startData := sc.HandleStreamStart()
 			chunkData, err := sc.HandleChunk(payload)
@@ -1196,7 +1209,7 @@ func extractSSEPayload(data []byte) []byte {
 // OpenAI Response → Anthropic Response
 // ---------------------------------------------------------------------------
 
-func convertOpenAIResponseToAnthropic(body []byte) ([]byte, error) {
+func convertOpenAIResponseToAnthropic(body []byte, opts *ConvertOptions) ([]byte, error) {
 	var resp OpenAIChatResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		slog.Warn("failed to unmarshal OpenAI response", "err", err)
@@ -1226,6 +1239,19 @@ func convertOpenAIResponseToAnthropic(body []byte) ([]byte, error) {
 		anth.StopReason = mapOpenAIFinishReason(resp.Choices[0].FinishReason)
 		anth.Content = convertOpenAIMessageToContent(msg)
 	}
+
+	// Cache reasoning_content for tool call replay (DeepSeek V4 requirement).
+	if opts != nil && opts.ReasoningCache != nil && len(resp.Choices) > 0 {
+		msg := resp.Choices[0].Message
+		if msg.ReasoningContent != "" && len(msg.ToolCalls) > 0 {
+			ids := make([]string, len(msg.ToolCalls))
+			for i, tc := range msg.ToolCalls {
+				ids[i] = tc.ID
+			}
+			opts.ReasoningCache.Put(ids, msg.ReasoningContent)
+		}
+	}
+
 
 	return json.Marshal(anth)
 }

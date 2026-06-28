@@ -41,12 +41,14 @@ func ListenAndServe(addr string, opts *Options) error {
 
 func newServer(opts *Options) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/rewrite", &rewriteHandler{opts: opts})
+	rc := convert.NewReasoningCache(1000)
+	mux.Handle("/rewrite", &rewriteHandler{opts: opts, reasoningCache: rc})
 	return mux
 }
 
 type rewriteHandler struct {
-	opts *Options
+	opts           *Options
+	reasoningCache *convert.ReasoningCache
 }
 
 func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -71,9 +73,10 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := &convert.ConvertOptions{
-		Model:      h.opts.Model,
-		MaxTokens:  h.opts.MaxTokens,
-		Downstream: h.opts.Downstream,
+		Model:          h.opts.Model,
+		MaxTokens:      h.opts.MaxTokens,
+		Downstream:     h.opts.Downstream,
+		ReasoningCache: h.reasoningCache,
 	}
 
 	// SSE lifecycle phases are metadata-only signals with nil body.
