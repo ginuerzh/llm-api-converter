@@ -1,9 +1,11 @@
 package convert
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 )
@@ -116,16 +118,44 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 		}
 	}
 
-	// Tools.
+	// Tools — sort for deterministic JSON, enforce schema type.
 	if len(req.Tools) > 0 {
+		sortOpenAITools(req.Tools)
 		anthropic.Tools = make([]AnthropicTool, 0, len(req.Tools))
 		for _, t := range req.Tools {
 			anthropic.Tools = append(anthropic.Tools, AnthropicTool{
 				Name:        t.Function.Name,
 				Description: t.Function.Description,
-				InputSchema: t.Function.Parameters,
+				InputSchema: ensureObjectSchema(t.Function.Parameters),
 			})
 		}
+
+		// Tool choice mapping.
+		switch v := req.ToolChoice.(type) {
+		case string:
+			switch v {
+			case "auto":
+				anthropic.ToolChoice = &AnthropicToolChoice{Type: "auto"}
+			case "none":
+				anthropic.ToolChoice = &AnthropicToolChoice{Type: "none"}
+			case "required":
+				anthropic.ToolChoice = &AnthropicToolChoice{Type: "any"}
+			default:
+				anthropic.ToolChoice = &AnthropicToolChoice{Type: "auto"}
+			}
+		case map[string]any:
+			if t, _ := v["type"].(string); t == "function" {
+				if fn, ok := v["function"].(map[string]any); ok {
+					if name, _ := fn["name"].(string); name != "" {
+						anthropic.ToolChoice = &AnthropicToolChoice{Type: "tool", Name: name}
+					}
+				}
+			}
+		}
+	} else {
+		// No tools declared — explicitly disable tool choice to prevent
+		// upstream models from hallucinating tool calls.
+		anthropic.ToolChoice = &AnthropicToolChoice{Type: "none"}
 	}
 
 	// Messages.
@@ -280,22 +310,46 @@ func convertImageURL(m map[string]any) *AnthropicContent {
 }
 
 func convertAssistantContent(msg OpenAIMessage) []AnthropicContent {
-	// If there are tool_calls, produce tool_use blocks.
-	if len(msg.ToolCalls) > 0 {
-		blocks := []AnthropicContent{
-			{Type: "text", Text: extractTextContent(msg.Content)},
+	// Collect all tool calls, including legacy function_call.
+	toolCalls := msg.ToolCalls
+	if msg.FunctionCall != nil {
+		toolCalls = append(toolCalls, OpenAIToolCall{
+			Type:     "function",
+			Function: *msg.FunctionCall,
+		})
+	}
+
+	if len(toolCalls) > 0 {
+		var blocks []AnthropicContent
+		// Reasoning content → thinking block (must come before text).
+		if msg.ReasoningContent != "" {
+			blocks = append(blocks, AnthropicContent{
+				Type:     "thinking",
+				Thinking: msg.ReasoningContent,
+			})
 		}
-		for _, tc := range msg.ToolCalls {
+		blocks = append(blocks, AnthropicContent{Type: "text", Text: extractTextContent(msg.Content)})
+		for _, tc := range toolCalls {
 			var input any
-			_ = json.Unmarshal([]byte(tc.Function.Arguments), &input)
+			if tc.Function.Arguments != "" {
+				_ = json.Unmarshal([]byte(tc.Function.Arguments), &input)
+			}
 			blocks = append(blocks, AnthropicContent{
 				Type:  "tool_use",
-				ID:    tc.ID,
+				ID:    tc.ID, // preserve original ID — client uses it for tool_result matching
 				Name:  tc.Function.Name,
 				Input: input,
 			})
 		}
 		return blocks
+	}
+
+	// Reasoning content without tools — single thinking + text.
+	if msg.ReasoningContent != "" {
+		return []AnthropicContent{
+			{Type: "thinking", Thinking: msg.ReasoningContent},
+			{Type: "text", Text: extractTextContent(msg.Content)},
+		}
 	}
 
 	// Plain text.
@@ -342,6 +396,11 @@ func convertAnthropicResponseToOpenAI(body []byte) ([]byte, error) {
 		switch block.Type {
 		case "text":
 			textParts = append(textParts, block.Text)
+		case "thinking":
+			msg.ReasoningContent += block.Thinking
+			if msg.ReasoningContent == "" {
+				msg.ReasoningContent = block.Text
+			}
 		case "tool_use":
 			if msg.ToolCalls == nil {
 				msg.ToolCalls = []OpenAIToolCall{}
@@ -355,7 +414,7 @@ func convertAnthropicResponseToOpenAI(body []byte) ([]byte, error) {
 					Arguments: string(argsBytes),
 				},
 			})
-		// thinking and signature blocks are ignored.
+		// signature and other blocks are ignored.
 		}
 	}
 
@@ -390,7 +449,7 @@ func convertAnthropicResponseToOpenAI(body []byte) ([]byte, error) {
 
 func mapFinishReason(reason *string) *string {
 	if reason == nil {
-		return nil
+		return &strStop // default to "stop" instead of nil to avoid NPE
 	}
 	switch *reason {
 	case "end_turn":
@@ -400,6 +459,8 @@ func mapFinishReason(reason *string) *string {
 	case "tool_use":
 		return &strToolCalls
 	case "stop_sequence":
+		return &strStop
+	case "content_filter":
 		return &strStop
 	default:
 		return reason
@@ -411,3 +472,57 @@ var (
 	strLength    = "length"
 	strToolCalls = "tool_calls"
 )
+
+// ---------------------------------------------------------------------------
+// Utility helpers (canonical JSON, tool sorting, ID normalization)
+// ---------------------------------------------------------------------------
+
+// ensureObjectSchema guarantees the schema is a JSON object with "type":"object".
+// OpenAI spec requires {"type":"object", ...} but some schemas omit it.
+func ensureObjectSchema(raw any) any {
+	m, ok := raw.(map[string]any)
+	if !ok || m == nil {
+		return map[string]any{"type": "object"}
+	}
+	if _, exists := m["type"]; !exists {
+		m["type"] = "object"
+	}
+	return m
+}
+
+func sortOpenAITools(tools []OpenAITool) {
+	sort.SliceStable(tools, func(i, j int) bool {
+		return tools[i].Function.Name < tools[j].Function.Name
+	})
+}
+
+func sortAnthropicTools(tools []AnthropicTool) {
+	sort.SliceStable(tools, func(i, j int) bool {
+		return tools[i].Name < tools[j].Name
+	})
+}
+
+// ensureToolID normalises a tool call ID to Anthropic's "toolu_" prefix.
+// OpenAI IDs like "call_xxx" are not recognised by the Anthropic SDK.
+func ensureToolID(id string) string {
+	if strings.HasPrefix(id, "toolu_") {
+		return id
+	}
+	return "toolu_" + randHex(24)
+}
+
+// randHex returns n crypto-random hex characters.
+func randHex(n int) string {
+	b := make([]byte, (n+1)/2)
+	if _, err := rand.Read(b); err != nil {
+		for i := range b {
+			b[i] = byte(i * 7)
+		}
+	}
+	const hexd = "0123456789abcdef"
+	out := make([]byte, n)
+	for i := 0; i < n; i++ {
+		out[i] = hexd[b[i/2]>>uint((i%2)*4)&0xf]
+	}
+	return string(out)
+}

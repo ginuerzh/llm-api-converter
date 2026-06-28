@@ -434,3 +434,313 @@ func TestConvert_AnthropicToOpenAI_MaxTokensFinish(t *testing.T) {
 		t.Fatalf("finish_reason: want length, got %v", o.Choices[0].FinishReason)
 	}
 }
+
+func TestConvert_FinishReasonNilReturnsDefault(t *testing.T) {
+	body := `{
+		"id":"msg_01",
+		"type":"message",
+		"role":"assistant",
+		"content":[{"type":"text","text":"hello"}],
+		"model":"claude-sonnet-4-20250514",
+		"usage":{"input_tokens":10,"output_tokens":5}
+	}`
+	b, err := Convert([]byte(body), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o OpenAIChatResponse
+	if err := json.Unmarshal(b, &o); err != nil {
+		t.Fatal(err)
+	}
+	if o.Choices[0].FinishReason == nil || *o.Choices[0].FinishReason != "stop" {
+		t.Fatalf("finish_reason: want 'stop' got %v", o.Choices[0].FinishReason)
+	}
+}
+
+func TestConvert_ContentFilterFinishReason(t *testing.T) {
+	body := `{
+		"id":"msg_01",
+		"type":"message",
+		"role":"assistant",
+		"content":[{"type":"text","text":"hello"}],
+		"model":"claude-sonnet-4-20250514",
+		"stop_reason":"content_filter",
+		"usage":{"input_tokens":10,"output_tokens":5}
+	}`
+	b, err := Convert([]byte(body), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o OpenAIChatResponse
+	if err := json.Unmarshal(b, &o); err != nil {
+		t.Fatal(err)
+	}
+	if o.Choices[0].FinishReason == nil || *o.Choices[0].FinishReason != "stop" {
+		t.Fatalf("finish_reason: want 'stop' got %v", o.Choices[0].FinishReason)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Thinking / Reasoning Content Round-Trip
+// ---------------------------------------------------------------------------
+
+func TestConvert_ThinkingRoundTrip(t *testing.T) {
+	// Step 1: Anthropic Response with thinking → OpenAI Response with reasoning_content.
+	anthBody := `{
+		"id":"msg_01",
+		"type":"message",
+		"role":"assistant",
+		"content":[
+			{"type":"thinking","thinking":"hidden reasoning..."},
+			{"type":"text","text":"visible answer"}
+		],
+		"model":"claude-sonnet-4-20250514",
+		"stop_reason":"end_turn",
+		"usage":{"input_tokens":10,"output_tokens":5}
+	}`
+	b, err := Convert([]byte(anthBody), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var openAIResp OpenAIChatResponse
+	if err := json.Unmarshal(b, &openAIResp); err != nil {
+		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
+	}
+	msg := openAIResp.Choices[0].Message
+	if msg.ReasoningContent != "hidden reasoning..." {
+		t.Fatalf("reasoning_content: want 'hidden reasoning...', got %q", msg.ReasoningContent)
+	}
+	content, _ := msg.Content.(string)
+	if content != "visible answer" {
+		t.Fatalf("content: want 'visible answer', got %v", content)
+	}
+
+	// Step 2: OpenAI Request with reasoning_content → Anthropic Request with thinking.
+	openAIReq := `{
+		"model":"deepseek-v4",
+		"messages":[
+			{"role":"user","content":"hello"},
+			{"role":"assistant","reasoning_content":"hidden reasoning...","content":"visible answer"}
+		]
+	}`
+	b2, err := Convert([]byte(openAIReq), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var anthReq AnthropicRequest
+	if err := json.Unmarshal(b2, &anthReq); err != nil {
+		t.Fatalf("unmarshal error: %v\nbody: %s", err, b2)
+	}
+	if len(anthReq.Messages) != 2 {
+		t.Fatalf("want 2 messages, got %d", len(anthReq.Messages))
+	}
+	assistantMsg := anthReq.Messages[1]
+	if assistantMsg.Role != "assistant" {
+		t.Fatalf("messages[1] role: want assistant, got %q", assistantMsg.Role)
+	}
+	if len(assistantMsg.Content) != 2 {
+		t.Fatalf("assistant content: want 2 blocks (thinking + text), got %d", len(assistantMsg.Content))
+	}
+	if assistantMsg.Content[0].Type != "thinking" || assistantMsg.Content[0].Thinking != "hidden reasoning..." {
+		t.Fatalf("expect thinking block with thinking='hidden reasoning...', got type=%s thinking=%q",
+			assistantMsg.Content[0].Type, assistantMsg.Content[0].Thinking)
+	}
+	if assistantMsg.Content[1].Type != "text" || assistantMsg.Content[1].Text != "visible answer" {
+		t.Fatalf("expect text block with 'visible answer', got type=%s text=%q",
+			assistantMsg.Content[1].Type, assistantMsg.Content[1].Text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tool Choice Mapping
+// ---------------------------------------------------------------------------
+
+func TestConvert_ToolChoiceAuto(t *testing.T) {
+	body := `{
+		"model":"gpt-4",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}],
+		"tool_choice":"auto"
+	}`
+	b, err := Convert([]byte(body), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a AnthropicRequest
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.ToolChoice == nil || a.ToolChoice.Type != "auto" {
+		t.Fatalf("tool_choice: want auto, got %+v", a.ToolChoice)
+	}
+}
+
+func TestConvert_ToolChoiceNone(t *testing.T) {
+	body := `{
+		"model":"gpt-4",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}],
+		"tool_choice":"none"
+	}`
+	b, err := Convert([]byte(body), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a AnthropicRequest
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.ToolChoice == nil || a.ToolChoice.Type != "none" {
+		t.Fatalf("tool_choice: want none, got %+v", a.ToolChoice)
+	}
+}
+
+func TestConvert_ToolChoiceRequired(t *testing.T) {
+	body := `{
+		"model":"gpt-4",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}],
+		"tool_choice":"required"
+	}`
+	b, err := Convert([]byte(body), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a AnthropicRequest
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.ToolChoice == nil || a.ToolChoice.Type != "any" {
+		t.Fatalf("tool_choice: want any, got %+v", a.ToolChoice)
+	}
+}
+
+func TestConvert_ToolChoiceSpecificFunction(t *testing.T) {
+	body := `{
+		"model":"gpt-4",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}],
+		"tool_choice":{"type":"function","function":{"name":"f"}}
+	}`
+	b, err := Convert([]byte(body), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a AnthropicRequest
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.ToolChoice == nil || a.ToolChoice.Type != "tool" || a.ToolChoice.Name != "f" {
+		t.Fatalf("tool_choice: want type=tool name=f, got %+v", a.ToolChoice)
+	}
+}
+
+func TestConvert_NoToolsSetsToolChoiceNone(t *testing.T) {
+	body := `{
+		"model":"gpt-4",
+		"messages":[{"role":"user","content":"hi"}]
+	}`
+	b, err := Convert([]byte(body), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a AnthropicRequest
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.ToolChoice == nil || a.ToolChoice.Type != "none" {
+		t.Fatalf("tool_choice: want none (no tools), got %+v", a.ToolChoice)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tool Sorting and Schema Enforcement
+// ---------------------------------------------------------------------------
+
+func TestConvert_ToolsSortedByName(t *testing.T) {
+	body := `{
+		"model":"gpt-4",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[
+			{"type":"function","function":{"name":"z_tool","parameters":{}}},
+			{"type":"function","function":{"name":"a_tool","parameters":{}}}
+		]
+	}`
+	b, err := Convert([]byte(body), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a AnthropicRequest
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Tools) != 2 {
+		t.Fatalf("want 2 tools, got %d", len(a.Tools))
+	}
+	if a.Tools[0].Name != "a_tool" || a.Tools[1].Name != "z_tool" {
+		t.Fatalf("tools not sorted by name: got %q, %q", a.Tools[0].Name, a.Tools[1].Name)
+	}
+}
+
+func TestConvert_InputSchemaEnforcesObjectType(t *testing.T) {
+	body := `{
+		"model":"gpt-4",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"function","function":{"name":"f","parameters":{"properties":{"x":{"type":"string"}}}}}]
+	}`
+	b, err := Convert([]byte(body), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a AnthropicRequest
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Tools) != 1 {
+		t.Fatalf("want 1 tool, got %d", len(a.Tools))
+	}
+	schema, ok := a.Tools[0].InputSchema.(map[string]any)
+	if !ok {
+		t.Fatalf("input_schema is not a map: %T", a.Tools[0].InputSchema)
+	}
+	if schema["type"] != "object" {
+		t.Fatalf("input_schema type: want 'object', got %q", schema["type"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Legacy function_call
+// ---------------------------------------------------------------------------
+
+func TestConvert_FunctionCallToToolUse(t *testing.T) {
+	body := `{
+		"model":"gpt-4",
+		"messages":[
+			{"role":"user","content":"weather?"},
+			{"role":"assistant","content":null,"function_call":{"name":"get_weather","arguments":"{\"loc\":\"NYC\"}"}}
+		]
+	}`
+	b, err := Convert([]byte(body), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a AnthropicRequest
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
+	}
+	if len(a.Messages) != 2 {
+		t.Fatalf("want 2 messages, got %d", len(a.Messages))
+	}
+	if a.Messages[1].Role != "assistant" {
+		t.Fatalf("messages[1] role: want assistant, got %q", a.Messages[1].Role)
+	}
+	toolUseFound := false
+	for _, c := range a.Messages[1].Content {
+		if c.Type == "tool_use" && c.Name == "get_weather" {
+			toolUseFound = true
+		}
+	}
+	if !toolUseFound {
+		t.Fatal("expected tool_use block for function_call")
+	}
+}

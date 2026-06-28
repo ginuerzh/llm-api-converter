@@ -25,11 +25,13 @@ type OpenAIChatRequest struct {
 }
 
 type OpenAIMessage struct {
-	Role      string           `json:"role"`
-	Content   any              `json:"content"`    // string or []ContentPart or null
-	ToolCalls []OpenAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"` // tool role
-	Name      string           `json:"name,omitempty"`          // function role
+	Role             string              `json:"role"`
+	Content          any                 `json:"content"`                       // string or []ContentPart or null
+	ToolCalls        []OpenAIToolCall    `json:"tool_calls,omitempty"`
+	FunctionCall     *OpenAIFunctionCall `json:"function_call,omitempty"`        // legacy (name+arguments at top level)
+	ToolCallID       string              `json:"tool_call_id,omitempty"`         // tool role
+	Name             string              `json:"name,omitempty"`                  // function role
+	ReasoningContent string              `json:"reasoning_content,omitempty"`   // DeepSeek/GLM thinking
 }
 
 // OpenAIContentPart is an element in a multi-part user message.
@@ -103,6 +105,7 @@ type AnthropicRequest struct {
 	StopSequences []string             `json:"stop_sequences,omitempty"`
 	Stream        *bool                `json:"stream,omitempty"`
 	Tools         []AnthropicTool      `json:"tools,omitempty"`
+	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
 	Metadata      any                  `json:"metadata,omitempty"`
 }
 
@@ -112,20 +115,22 @@ type AnthropicMessage struct {
 }
 
 type AnthropicContent struct {
-	Type      string                `json:"type"`
-	Text      string                `json:"text,omitempty"`
+	Type    string `json:"type"`
+	Text    string `json:"text,omitempty"`
+	Thinking string `json:"thinking,omitempty"` // extended thinking
 
 	// image
 	Source    *AnthropicImageSource `json:"source,omitempty"`
 
 	// tool_use
-	ID        string                `json:"id,omitempty"`
-	Name      string                `json:"name,omitempty"`
-	Input     any                   `json:"input,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Input     any    `json:"input,omitempty"`
 
 	// tool_result
-	ToolUseID string                `json:"tool_use_id,omitempty"`
-	Content   any                   `json:"content,omitempty"` // string or []AnthropicContent
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	Content   any    `json:"content,omitempty"` // string or []AnthropicContent
+	IsError   bool   `json:"is_error,omitempty"`
 }
 
 type AnthropicTextBlock struct {
@@ -137,6 +142,11 @@ type AnthropicImageSource struct {
 	Type      string `json:"type"`       // "base64"
 	MediaType string `json:"media_type"` // e.g. "image/jpeg"
 	Data      string `json:"data"`
+}
+
+type AnthropicToolChoice struct {
+	Type string `json:"type"`
+	Name string `json:"name,omitempty"`
 }
 
 type AnthropicTool struct {
