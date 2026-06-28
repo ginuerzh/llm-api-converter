@@ -70,19 +70,14 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.Data) == 0 {
-		slog.Warn("empty data in rewrite request")
-		writeJSON(w, rewriteResponse{OK: false})
-		return
-	}
-
 	opts := &convert.ConvertOptions{
 		Model:      h.opts.Model,
 		MaxTokens:  h.opts.MaxTokens,
 		Downstream: h.opts.Downstream,
 	}
 
-	// Parse metadata for SSE stream lifecycle phases.
+	// SSE lifecycle phases are metadata-only signals with nil body.
+	// Check BEFORE the empty-data guard so start/end phases reach HandleSSEEvent.
 	if len(req.Metadata) > 0 {
 		var meta struct {
 			Sid        string `json:"sid,omitempty"`
@@ -99,6 +94,12 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, rewriteResponse{OK: true, Data: out})
 			return
 		}
+	}
+
+	if len(req.Data) == 0 {
+		slog.Warn("empty data in rewrite request (non-SSE)")
+		writeJSON(w, rewriteResponse{OK: false})
+		return
 	}
 
 	// Non-streaming conversion.

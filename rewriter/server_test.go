@@ -232,3 +232,77 @@ func TestRewriteEndpoint_SSEData(t *testing.T) {
 		}
 	})
 }
+
+// TestSSELifecyclePhases verifies that SSE stream lifecycle phase signals
+// with nil data correctly flow through the rewriter plugin server.
+func TestSSELifecyclePhases(t *testing.T) {
+	opts := &Options{Model: "claude-sonnet-4-20250514", MaxTokens: 8192}
+	srv := newServer(opts)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	t.Run("start phase with SSE event data", func(t *testing.T) {
+		meta := []byte(`{"sid":"test-session","sse_phase":"start","event_index":0}`)
+		reqBody := rewriteRequest{
+			Data:     []byte(`data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`),
+			Metadata: meta,
+		}
+		resp := doPost(t, ts.URL, reqBody)
+		if !resp.OK {
+			t.Fatal("expected ok=true for start phase")
+		}
+		out := string(resp.Data)
+		if !strings.Contains(out, "message_start") {
+			t.Errorf("expected message_start in output, got: %s", out)
+		}
+		if !strings.Contains(out, "ping") {
+			t.Errorf("expected ping in output, got: %s", out)
+		}
+		if !strings.Contains(out, "content_block_delta") {
+			t.Errorf("expected content_block_delta from first event processing, got: %s", out)
+		}
+	})
+
+	t.Run("event phase with SSE data", func(t *testing.T) {
+		meta := []byte(`{"sid":"test-session","sse_phase":"event","event_index":0}`)
+		reqBody := rewriteRequest{
+			Data:     []byte(`data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`),
+			Metadata: meta,
+		}
+		resp := doPost(t, ts.URL, reqBody)
+		if !resp.OK {
+			t.Fatal("expected ok=true for event phase")
+		}
+		out := string(resp.Data)
+		if !strings.Contains(out, "content_block_delta") {
+			t.Errorf("expected content_block_delta in output, got: %s", out)
+		}
+	})
+
+	t.Run("end phase with nil data", func(t *testing.T) {
+		meta := []byte(`{"sid":"test-session","sse_phase":"end"}`)
+		reqBody := rewriteRequest{Metadata: meta}
+		resp := doPost(t, ts.URL, reqBody)
+		if !resp.OK {
+			t.Fatal("expected ok=true for end phase")
+		}
+		out := string(resp.Data)
+		if !strings.Contains(out, "content_block_stop") {
+			t.Errorf("expected content_block_stop in output, got: %s", out)
+		}
+		if !strings.Contains(out, "message_delta") {
+			t.Errorf("expected message_delta in output, got: %s", out)
+		}
+		if !strings.Contains(out, "message_stop") {
+			t.Errorf("expected message_stop in output, got: %s", out)
+		}
+	})
+
+	t.Run("nil data without SSE phase returns ok=false", func(t *testing.T) {
+		reqBody := rewriteRequest{}
+		resp := doPost(t, ts.URL, reqBody)
+		if resp.OK {
+			t.Fatal("expected ok=false for nil data without SSE phase")
+		}
+	})
+}

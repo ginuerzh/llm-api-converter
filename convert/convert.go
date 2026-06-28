@@ -1122,7 +1122,22 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 	case StreamPhaseStart:
 		sc := NewStreamConverter(opts.Model)
 		streamStates.Store(sid, sc)
-		return sc.HandleStreamStart(), nil
+		startData := sc.HandleStreamStart()
+		// First event data is now attached to the start phase signal
+		// (sniffer sends the first real SSE event with sse_phase:"start").
+		if len(data) > 0 {
+			payload := extractSSEPayload(data)
+			if payload != nil {
+				chunkData, err := sc.HandleChunk(payload)
+				if err != nil {
+					return startData, err
+				}
+				if len(chunkData) > 0 {
+					return append(startData, append([]byte("\n\n"), chunkData...)...), nil
+				}
+			}
+		}
+		return startData, nil
 
 	case StreamPhaseEvent:
 		payload := extractSSEPayload(data)
