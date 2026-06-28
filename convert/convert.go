@@ -145,7 +145,7 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 	// This must be detected before the generic Convert() path since OpenAI
 	// streaming chunks have a different structure from non-streaming responses.
 	if evt.Data != "" && isOpenAIStreamChunk([]byte(evt.Data)) {
-		return convertOpenAIStreamChunkToAnthropic(evt, opts)
+		return convertOpenAIStreamChunkToAnthropic(evt)
 	}
 
 	// Default: convert data payload with Convert() (handles Anthropic SSE → OpenAI data).
@@ -155,7 +155,7 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 
 // convertOpenAIStreamChunkToAnthropic converts an OpenAI SSE streaming delta
 // to an Anthropic SSE content_block_delta / message_delta / message_stop event.
-func convertOpenAIStreamChunkToAnthropic(evt *SSEEvent, opts *ConvertOptions) ([]byte, error) {
+func convertOpenAIStreamChunkToAnthropic(evt *SSEEvent) ([]byte, error) {
 	var chunk struct {
 		Choices []struct {
 			Index        int              `json:"index"`
@@ -484,6 +484,300 @@ func isOpenAIStreamChunk(data []byte) bool {
 }
 
 // ---------------------------------------------------------------------------
+// Message sequence sanitization
+// ---------------------------------------------------------------------------
+
+const placeholderReasoning = "Compatibility bridge placeholder reasoning for prior assistant history."
+
+// toolUseSignature returns a canonical string for a tool_use block.
+func toolUseSignature(id, name string, input any) string {
+	inp, _ := json.Marshal(input)
+	return fmt.Sprintf("tool_use:%s:%s:%s", id, name, string(inp))
+}
+
+// toolResultSignature returns a canonical string for a tool_result block.
+func toolResultSignature(toolUseID string, content any) string {
+	return fmt.Sprintf("tool_result:%s:%s", toolUseID, stringifyContent(content))
+}
+
+func stringifyContent(content any) string {
+	if content == nil {
+		return ""
+	}
+	if s, ok := content.(string); ok {
+		return s
+	}
+	b, _ := json.Marshal(content)
+	return string(b)
+}
+
+// currentToolContextParts extracts the tool call/result context from the most
+// recent tool-calling turn in the message list. Returns the signature parts
+// for the latest turn (empty if no tool call turn found).
+func currentToolContextParts(messages []AnthropicMessage) []string {
+	var hadToolCall bool
+	var parts []string
+
+	for _, msg := range messages {
+		var text string
+		var toolResults []AnthropicContent
+		var toolUses []AnthropicContent
+
+		for _, block := range msg.Content {
+			switch block.Type {
+			case "text":
+				text += block.Text
+			case "tool_result":
+				toolResults = append(toolResults, block)
+			case "tool_use":
+				toolUses = append(toolUses, block)
+			}
+		}
+
+		if msg.Role == "user" {
+			if len(toolResults) > 0 {
+				for _, tr := range toolResults {
+					if hadToolCall {
+						parts = append(parts, toolResultSignature(tr.ToolUseID, tr.Content))
+					}
+				}
+			} else if text != "" {
+				hadToolCall = false
+				parts = nil
+			}
+			if len(toolResults) == 0 && text != "" {
+				hadToolCall = false
+				parts = nil
+			}
+			continue
+		}
+
+		if msg.Role == "assistant" && len(toolUses) > 0 {
+			hadToolCall = true
+			parts = nil
+			for _, tu := range toolUses {
+				parts = append(parts, toolUseSignature(tu.ID, tu.Name, tu.Input))
+			}
+		}
+	}
+
+	if hadToolCall {
+		return parts
+	}
+	return nil
+}
+
+// coalesceAdjacentAssistantToolCalls merges consecutive assistant messages
+// that both have tool_calls into a single message. This handles Claude Code's
+// split tool call emission when conversation compression leaves adjacent
+// assistant blocks.
+func coalesceAdjacentAssistantToolCalls(messages []OpenAIMessage) []OpenAIMessage {
+	var out []OpenAIMessage
+
+	for _, msg := range messages {
+		prev := len(out) - 1
+		if prev >= 0 &&
+			out[prev].Role == "assistant" &&
+			msg.Role == "assistant" &&
+			len(out[prev].ToolCalls) > 0 &&
+			len(msg.ToolCalls) > 0 {
+
+			// Merge content.
+			prevContent := extractTextContent(out[prev].Content)
+			curContent := extractTextContent(msg.Content)
+			if prevContent != "" && curContent != "" {
+				out[prev].Content = prevContent + "\n" + curContent
+			} else if curContent != "" {
+				out[prev].Content = curContent
+			}
+
+			// Merge reasoning_content.
+			if msg.ReasoningContent != "" {
+				if out[prev].ReasoningContent != "" {
+					out[prev].ReasoningContent += "\n" + msg.ReasoningContent
+				} else {
+					out[prev].ReasoningContent = msg.ReasoningContent
+				}
+			}
+
+			out[prev].ToolCalls = append(out[prev].ToolCalls, msg.ToolCalls...)
+			continue
+		}
+
+		out = append(out, msg)
+	}
+
+	return out
+}
+
+// sanitizeOpenAiToolMessageSequence ensures each assistant tool_calls message
+// is properly paired with its tool results, dropping unfulfilled calls and
+// converting orphan results to user text.
+func sanitizeOpenAiToolMessageSequence(messages []OpenAIMessage) []OpenAIMessage {
+	var out []OpenAIMessage
+
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		toolCalls := msg.ToolCalls
+
+		if msg.Role == "assistant" && len(toolCalls) > 0 {
+			// Collect trailing tool messages.
+			var toolMessages []OpenAIMessage
+			j := i + 1
+			for j < len(messages) && messages[j].Role == "tool" {
+				toolMessages = append(toolMessages, messages[j])
+				j++
+			}
+
+			if len(toolMessages) == 0 && j == len(messages) {
+				// End of history — emit as-is (in-progress message).
+				out = append(out, msg)
+				i = j - 1
+				continue
+			}
+
+			// Build expected IDs and available results.
+			expectedIDs := make(map[string]bool)
+			for _, tc := range toolCalls {
+				if tc.ID != "" {
+					expectedIDs[tc.ID] = true
+				}
+			}
+			toolByID := make(map[string]OpenAIMessage)
+			var orphanTools []OpenAIMessage
+			for _, tm := range toolMessages {
+				id := tm.ToolCallID
+				if expectedIDs[id] {
+					if _, seen := toolByID[id]; !seen {
+						toolByID[id] = tm
+					} else {
+						orphanTools = append(orphanTools, tm)
+					}
+				} else {
+					orphanTools = append(orphanTools, tm)
+				}
+			}
+
+			// Keep only tool calls that have results.
+			var fulfilledCalls []OpenAIToolCall
+			for _, tc := range toolCalls {
+				if _, ok := toolByID[tc.ID]; ok {
+					fulfilledCalls = append(fulfilledCalls, tc)
+				}
+			}
+
+			if len(fulfilledCalls) > 0 {
+				outMsg := msg
+				outMsg.ToolCalls = fulfilledCalls
+				out = append(out, outMsg)
+				for _, tc := range fulfilledCalls {
+					out = append(out, toolByID[tc.ID])
+				}
+			} else {
+				// All tool calls unfulfilled — drop tool_calls, keep text.
+				if extractTextContent(msg.Content) != "" {
+					outMsg := msg
+					outMsg.ToolCalls = nil
+					out = append(out, outMsg)
+				}
+			}
+
+			for _, orphan := range orphanTools {
+				out = append(out, OpenAIMessage{
+					Role:    "user",
+					Content: fmt.Sprintf("Tool result without a matching tool call (%s):\n%s", orphan.ToolCallID, extractTextContent(orphan.Content)),
+				})
+			}
+
+			i = j - 1
+			continue
+		}
+
+		if msg.Role == "tool" {
+			out = append(out, OpenAIMessage{
+				Role:    "user",
+				Content: fmt.Sprintf("Tool result without a matching tool call (%s):\n%s", msg.ToolCallID, extractTextContent(msg.Content)),
+			})
+			continue
+		}
+
+		out = append(out, msg)
+	}
+
+	return out
+}
+
+// anthropicToolChoiceToOpenAi maps Anthropic tool_choice to OpenAI tool_choice.
+// For DeepSeek models, forced tool_choice (any/tool) is stripped and handled
+// via a system instruction instead.
+func anthropicToolChoiceToOpenAi(choice *AnthropicToolChoice, model string) any {
+	if choice == nil {
+		return nil
+	}
+	switch choice.Type {
+	case "auto":
+		return "auto"
+	case "none":
+		return "none"
+	case "any":
+		if isDeepSeekModel(model) {
+			return nil // softened to system instruction
+		}
+		return "required"
+	case "tool":
+		if isDeepSeekModel(model) {
+			return nil // softened to system instruction
+		}
+		return map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": choice.Name,
+			},
+		}
+	}
+	return nil
+}
+
+// toolChoiceInstruction returns a system instruction for forced tool_choice
+// on DeepSeek models (which reject forced function tool_choice).
+func toolChoiceInstruction(choice *AnthropicToolChoice, model string) string {
+	if choice == nil || !isDeepSeekModel(model) {
+		return ""
+	}
+	switch choice.Type {
+	case "any":
+		return "The caller requires a tool call for this turn. Call one of the available tools instead of answering directly."
+	case "tool":
+		if choice.Name != "" {
+			return fmt.Sprintf("The caller requires a tool call for this turn. Call the available tool named %s instead of answering directly.", choice.Name)
+		}
+	}
+	return ""
+}
+
+// thinkingToOpenAi converts Anthropic thinking config to OpenAI format.
+func thinkingToOpenAi(t *AnthropicThinking) any {
+	if t == nil {
+		return nil
+	}
+	return map[string]any{"type": t.Type}
+}
+
+// reasoningEffortToOpenAi maps Anthropic output_config.effort to OpenAI reasoning_effort.
+func reasoningEffortToOpenAi(cfg *AnthropicOutputConfig) any {
+	if cfg == nil || cfg.Effort == "" {
+		return nil
+	}
+	switch strings.ToLower(cfg.Effort) {
+	case "max", "xhigh":
+		return "max"
+	case "high", "medium", "low":
+		return "high"
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // OpenAI Request → Anthropic Request
 // ---------------------------------------------------------------------------
 
@@ -787,6 +1081,8 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 		return body, nil
 	}
 
+	profile := classifyModel(opts.Downstream)
+
 	oai := OpenAIChatRequest{
 		Model:  opts.Downstream,
 		Stream: req.Stream,
@@ -818,22 +1114,46 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 		}
 	}
 
+	// Thinking config → OpenAI thinking (DeepSeek-compatible models only).
+	if profile.isDeepSeek {
+		oai.Thinking = thinkingToOpenAi(req.Thinking)
+		oai.ReasoningEffort = reasoningEffortToOpenAi(req.OutputConfig)
+	}
+
+	// Tool choice instruction for DeepSeek (softened to system instruction).
+	extraInstruction := toolChoiceInstruction(req.ToolChoice, opts.Downstream)
+
 	// Top-level system → prepend as system message.
 	if len(req.System) > 0 {
 		var sysText string
 		for _, block := range req.System {
 			sysText += block.Text
 		}
+		if extraInstruction != "" {
+			sysText = sysText + "\n\n" + extraInstruction
+		}
 		oai.Messages = append(oai.Messages, OpenAIMessage{
 			Role:    "system",
 			Content: sysText,
 		})
+	} else if extraInstruction != "" {
+		oai.Messages = append(oai.Messages, OpenAIMessage{
+			Role:    "system",
+			Content: extraInstruction,
+		})
 	}
+
+	// Derive tool context parts for reasoning cache lookups.
+	ctxParts := currentToolContextParts(req.Messages)
 
 	// Messages.
 	for _, msg := range req.Messages {
-		oai.Messages = append(oai.Messages, convertAnthropicMessage(msg, opts))
+		oai.Messages = append(oai.Messages, convertAnthropicMessage(msg, opts, ctxParts)...)
 	}
+
+	// Message sequence sanitization: coalesce adjacent tool calls, pair
+	// tool_calls with tool_results, handle orphans.
+	oai.Messages = sanitizeOpenAiToolMessageSequence(coalesceAdjacentAssistantToolCalls(oai.Messages))
 
 	// Edge case: if no messages after conversion, inject minimal user message.
 	if len(oai.Messages) == 0 {
@@ -857,54 +1177,54 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 			})
 		}
 
-		// Tool choice mapping.
-		if req.ToolChoice != nil {
-			switch req.ToolChoice.Type {
-			case "auto":
-				oai.ToolChoice = "auto"
-			case "any":
-				oai.ToolChoice = "required"
-			case "none":
-				oai.ToolChoice = "none"
-			case "tool":
-				oai.ToolChoice = map[string]any{
-					"type": "function",
-					"function": map[string]any{
-						"name": req.ToolChoice.Name,
-					},
-				}
-			}
-		}
+		// Model-aware tool choice mapping.
+		oai.ToolChoice = anthropicToolChoiceToOpenAi(req.ToolChoice, opts.Downstream)
+	}
+
+	// stream_options for streaming requests (enables usage in final chunk).
+	if req.Stream != nil && *req.Stream {
+		oai.StreamOptions = map[string]any{"include_usage": true}
 	}
 
 	return json.Marshal(oai)
 }
 
-func convertAnthropicMessage(msg AnthropicMessage, opts *ConvertOptions) OpenAIMessage {
+func convertAnthropicMessage(msg AnthropicMessage, opts *ConvertOptions, ctxParts []string) []OpenAIMessage {
 	switch msg.Role {
 	case "user":
 		return convertAnthropicUserMessage(msg)
 	case "assistant":
-		return convertAnthropicAssistantMessage(msg, opts)
+		return []OpenAIMessage{convertAnthropicAssistantMessage(msg, opts, ctxParts)}
 	default:
-		return OpenAIMessage{Role: "user", Content: extractTextContent(msg.Content)}
+		return []OpenAIMessage{{Role: "user", Content: extractTextContent(msg.Content)}}
 	}
 }
 
-func convertAnthropicUserMessage(msg AnthropicMessage) OpenAIMessage {
+func convertAnthropicUserMessage(msg AnthropicMessage) []OpenAIMessage {
 	// Check for tool_result blocks (wrapped in "user" role in Anthropic).
+	var toolMsgs []OpenAIMessage
+	var textParts []string
 	for _, block := range msg.Content {
 		if block.Type == "tool_result" {
 			content := block.Content
 			if content == nil {
 				content = ""
 			}
-			return OpenAIMessage{
+			toolMsgs = append(toolMsgs, OpenAIMessage{
 				Role:       "tool",
 				ToolCallID: block.ToolUseID,
 				Content:    content,
-			}
+			})
+		} else if block.Type == "text" && block.Text != "" {
+			textParts = append(textParts, block.Text)
 		}
+	}
+	if len(toolMsgs) > 0 {
+		if len(textParts) > 0 {
+			text := strings.Join(textParts, "\n")
+			toolMsgs = append(toolMsgs, OpenAIMessage{Role: "user", Content: text})
+		}
+		return toolMsgs
 	}
 
 	// Normal user content — build multi-part content if needed.
@@ -931,19 +1251,19 @@ func convertAnthropicUserMessage(msg AnthropicMessage) OpenAIMessage {
 	}
 
 	if len(parts) == 1 && parts[0]["type"] == "text" {
-		return OpenAIMessage{Role: "user", Content: parts[0]["text"].(string)}
+		return []OpenAIMessage{{Role: "user", Content: parts[0]["text"].(string)}}
 	}
 	if len(parts) == 0 {
-		return OpenAIMessage{Role: "user", Content: ""}
+		return []OpenAIMessage{{Role: "user", Content: ""}}
 	}
 	contentArr := make([]any, len(parts))
 	for i, p := range parts {
 		contentArr[i] = p
 	}
-	return OpenAIMessage{Role: "user", Content: contentArr}
+	return []OpenAIMessage{{Role: "user", Content: contentArr}}
 }
 
-func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions) OpenAIMessage {
+func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions, ctxParts []string) OpenAIMessage {
 	var textParts []string
 	var reasoning string
 	var toolCalls []OpenAIToolCall
@@ -997,16 +1317,20 @@ func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions
 		oaiMsg.Content = content
 	}
 
-
 	// If reasoning is empty but tool_calls exist (Claude Code compressed thinking),
-	// try to restore reasoning_content from cache.
+	// try to restore reasoning_content from cache (multi-tier).
 	if oaiMsg.ReasoningContent == "" && len(oaiMsg.ToolCalls) > 0 && opts != nil && opts.ReasoningCache != nil {
 		ids := make([]string, len(oaiMsg.ToolCalls))
 		for i, tc := range oaiMsg.ToolCalls {
 			ids[i] = tc.ID
 		}
-		if cached, ok := opts.ReasoningCache.Get(ids); ok {
+		content := extractTextContent(oaiMsg.Content)
+		if cached := opts.ReasoningCache.GetBest(ids, ctxParts, content); cached != "" {
 			oaiMsg.ReasoningContent = cached
+		} else {
+			// Placeholder fallback — DeepSeek requires reasoning_content
+			// when tool_calls are present, even if cache is empty.
+			oaiMsg.ReasoningContent = placeholderReasoning
 		}
 	}
 
@@ -1241,17 +1565,23 @@ func convertOpenAIResponseToAnthropic(body []byte, opts *ConvertOptions) ([]byte
 	}
 
 	// Cache reasoning_content for tool call replay (DeepSeek V4 requirement).
+	// Store in all three tiers: tool call ID, assistant text, and tool context.
 	if opts != nil && opts.ReasoningCache != nil && len(resp.Choices) > 0 {
 		msg := resp.Choices[0].Message
-		if msg.ReasoningContent != "" && len(msg.ToolCalls) > 0 {
-			ids := make([]string, len(msg.ToolCalls))
-			for i, tc := range msg.ToolCalls {
-				ids[i] = tc.ID
+		if msg.ReasoningContent != "" {
+			if len(msg.ToolCalls) > 0 {
+				ids := make([]string, len(msg.ToolCalls))
+				for i, tc := range msg.ToolCalls {
+					ids[i] = tc.ID
+				}
+				opts.ReasoningCache.Put(ids, msg.ReasoningContent)
 			}
-			opts.ReasoningCache.Put(ids, msg.ReasoningContent)
+			content := extractTextContent(msg.Content)
+			if content != "" {
+				opts.ReasoningCache.PutText(content, msg.ReasoningContent)
+			}
 		}
 	}
-
 
 	return json.Marshal(anth)
 }

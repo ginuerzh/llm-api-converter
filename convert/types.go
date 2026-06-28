@@ -1,5 +1,7 @@
 package convert
 
+import "strings"
+
 // -------- OpenAI Chat Completions (Request) --------
 
 // OpenAIChatRequest is an OpenAI /v1/chat/completions request body.
@@ -13,9 +15,11 @@ type OpenAIChatRequest struct {
 	TopK           *int       `json:"top_k,omitempty"` // x Groq
 	Stop           any        `json:"stop,omitempty"`  // string or []string
 	Stream         *bool      `json:"stream,omitempty"`
-	StreamOptions  any        `json:"stream_options,omitempty"` // ignored
+	StreamOptions  any        `json:"stream_options,omitempty"`
 	Tools          []OpenAITool `json:"tools,omitempty"`
-	ToolChoice     any        `json:"tool_choice,omitempty"`     // ignored
+	ToolChoice     any        `json:"tool_choice,omitempty"`
+	Thinking       any        `json:"thinking,omitempty"`        // DeepSeek extended thinking
+	ReasoningEffort any       `json:"reasoning_effort,omitempty"` // DeepSeek reasoning effort
 	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"` // ignored
 	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`  // ignored
 	N              *int       `json:"n,omitempty"`               // ignored
@@ -94,19 +98,64 @@ type OpenAIUsage struct {
 
 // -------- Anthropic Messages (Request) --------
 
+// AnthropicThinking is the extended thinking configuration.
+type AnthropicThinking struct {
+	Type         string `json:"type"`                    // "enabled" or "disabled"
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
+}
+
+// AnthropicOutputConfig is the output configuration block (e.g. effort).
+type AnthropicOutputConfig struct {
+	Effort string `json:"effort,omitempty"` // "low"|"medium"|"high"|"max"
+}
+
 type AnthropicRequest struct {
-	Model         string               `json:"model"`
-	Messages      []AnthropicMessage   `json:"messages"`
-	System        []AnthropicTextBlock `json:"system,omitempty"`
-	MaxTokens     int                  `json:"max_tokens"`
-	Temperature   *float64             `json:"temperature,omitempty"`
-	TopP          *float64             `json:"top_p,omitempty"`
-	TopK          *int                 `json:"top_k,omitempty"`
-	StopSequences []string             `json:"stop_sequences,omitempty"`
-	Stream        *bool                `json:"stream,omitempty"`
-	Tools         []AnthropicTool      `json:"tools,omitempty"`
-	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
-	Metadata      any                  `json:"metadata,omitempty"`
+	Model         string                 `json:"model"`
+	Messages      []AnthropicMessage     `json:"messages"`
+	System        []AnthropicTextBlock   `json:"system,omitempty"`
+	MaxTokens     int                    `json:"max_tokens"`
+	Temperature   *float64               `json:"temperature,omitempty"`
+	TopP          *float64               `json:"top_p,omitempty"`
+	TopK          *int                   `json:"top_k,omitempty"`
+	StopSequences []string               `json:"stop_sequences,omitempty"`
+	Stream        *bool                  `json:"stream,omitempty"`
+	Thinking      *AnthropicThinking     `json:"thinking,omitempty"`
+	OutputConfig  *AnthropicOutputConfig `json:"output_config,omitempty"`
+	Tools         []AnthropicTool        `json:"tools,omitempty"`
+	ToolChoice    *AnthropicToolChoice   `json:"tool_choice,omitempty"`
+	Metadata      any                    `json:"metadata,omitempty"`
+}
+
+// modelProfile caches the detection result for a single request so that
+// repeated isDeepSeekModel/isOpenAIStyleModel calls don't re-parse the string.
+type modelProfile struct {
+	model    string
+	isDeepSeek bool
+	isOpenAI   bool
+}
+
+func classifyModel(model string) modelProfile {
+	return modelProfile{
+		model:      model,
+		isDeepSeek: isDeepSeekModel(model),
+		isOpenAI:   isOpenAIStyleModel(model),
+	}
+}
+
+func isDeepSeekModel(model string) bool {
+	ml := strings.ToLower(model)
+	return strings.HasPrefix(ml, "deepseek")
+}
+
+func isOpenAIStyleModel(model string) bool {
+	ml := strings.ToLower(model)
+	prefixes := []string{"gpt-", "o1", "o3", "deepseek", "gemini-"}
+	for _, p := range prefixes {
+		if strings.HasPrefix(ml, p) {
+			return true
+		}
+	}
+	return false
 }
 
 type AnthropicMessage struct {

@@ -63,7 +63,7 @@ func Execute() {
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&logLevel, "log.level", "info", "log level: debug, info, warn or error")
-	rootCmd.PersistentFlags().StringVar(&logFormat, "log.format", "text", "log format: text or json")
+	rootCmd.PersistentFlags().StringVar(&logFormat, "log.format", "json", "log format: text or json")
 	rootCmd.PersistentFlags().StringVar(&addr, "addr", ":8000", "listening address")
 	rootCmd.PersistentFlags().StringVar(&model, "model", "claude-sonnet-4-20250514", "default Anthropic model ID")
 	rootCmd.PersistentFlags().IntVar(&maxTokens, "max-tokens", 8192, "default max_tokens")

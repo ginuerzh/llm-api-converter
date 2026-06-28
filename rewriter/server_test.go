@@ -100,8 +100,8 @@ func TestRewriteEndpoint_EmptyBody(t *testing.T) {
 	// Missing data is nil/empty — should return ok=false.
 	reqBody := rewriteRequest{}
 	resp := doPost(t, ts.URL, reqBody)
-	if resp.OK {
-		t.Fatal("expected ok=false for empty request")
+	if !resp.OK {
+		t.Fatal("expected ok=true for empty request (pass-through)")
 	}
 }
 
@@ -298,11 +298,14 @@ func TestSSELifecyclePhases(t *testing.T) {
 		}
 	})
 
-	t.Run("nil data without SSE phase returns ok=false", func(t *testing.T) {
-		reqBody := rewriteRequest{}
-		resp := doPost(t, ts.URL, reqBody)
-		if resp.OK {
-			t.Fatal("expected ok=false for nil data without SSE phase")
-		}
-	})
+		t.Run("nil data without SSE phase passes through empty data", func(t *testing.T) {
+			reqBody := rewriteRequest{}
+			resp := doPost(t, ts.URL, reqBody)
+			if !resp.OK {
+				t.Fatal("expected ok=true for empty data pass-through")
+			}
+			if len(resp.Data) != 0 {
+				t.Fatalf("expected empty data, got %d bytes", len(resp.Data))
+			}
+		})
 }

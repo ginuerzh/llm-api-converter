@@ -72,6 +72,8 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	slog.Debug("received request", "data", string(req.Data), "metadata", string(req.Metadata))
+
 	opts := &convert.ConvertOptions{
 		Model:          h.opts.Model,
 		MaxTokens:      h.opts.MaxTokens,
@@ -94,14 +96,15 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, rewriteResponse{OK: false})
 				return
 			}
+			slog.Debug("stream response", "phase", meta.SSEPhase, "data", string(out))
 			writeJSON(w, rewriteResponse{OK: true, Data: out})
 			return
 		}
 	}
 
 	if len(req.Data) == 0 {
-		slog.Warn("empty data in rewrite request (non-SSE)")
-		writeJSON(w, rewriteResponse{OK: false})
+		slog.Debug("empty data in rewrite request (non-SSE) — pass through")
+		writeJSON(w, rewriteResponse{OK: true})
 		return
 	}
 
@@ -113,6 +116,7 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	slog.Debug("conversion response", "data", string(out))
 	writeJSON(w, rewriteResponse{OK: true, Data: out})
 }
 

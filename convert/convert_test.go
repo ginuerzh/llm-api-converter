@@ -1313,18 +1313,65 @@ func TestConvert_AnthropicReqToOpenAIReq_ToolResult(t *testing.T) {
 	if err := json.Unmarshal(b, &o); err != nil {
 		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
 	}
+	// Orphan tool result (no preceding assistant tool_use) is sanitized to user text.
 	if len(o.Messages) != 1 {
 		t.Fatalf("want 1 message, got %d", len(o.Messages))
 	}
-	if o.Messages[0].Role != "tool" {
-		t.Fatalf("role: want tool, got %q", o.Messages[0].Role)
-	}
-	if o.Messages[0].ToolCallID != "tu01" {
-		t.Fatalf("tool_call_id: want tu01, got %q", o.Messages[0].ToolCallID)
+	if o.Messages[0].Role != "user" {
+		t.Fatalf("role: want user (orphan tool converted), got %q", o.Messages[0].Role)
 	}
 	content, ok := o.Messages[0].Content.(string)
-	if !ok || content != "sunny" {
-		t.Fatalf("content: want 'sunny', got %v", o.Messages[0].Content)
+	if !ok || content != "Tool result without a matching tool call (tu01):\nsunny" {
+		t.Fatalf("content: want descriptive user text, got %v", o.Messages[0].Content)
+	}
+}
+
+func TestConvert_AnthropicReqToOpenAIReq_MultiToolResult(t *testing.T) {
+	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"assistant","content":[{"type":"text","text":"Let me check"},{"type":"tool_use","id":"tu01","name":"get_weather","input":{"loc":"NYC"}},{"type":"tool_use","id":"tu02","name":"get_temp","input":{"loc":"NYC"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu01","content":"sunny"},{"type":"tool_result","tool_use_id":"tu02","content":"72°F"},{"type":"text","text":"Based on that, what should I wear?"}]}]}`
+	b, err := Convert([]byte(body), anthropicOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o OpenAIChatRequest
+	if err := json.Unmarshal(b, &o); err != nil {
+		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
+	}
+	// Expected messages: assistant (tool_calls) → tool (tu01) → tool (tu02) → user (text)
+	if len(o.Messages) != 4 {
+		t.Fatalf("want 4 messages, got %d", len(o.Messages))
+	}
+	// Message 0: assistant with 2 tool_calls
+	if o.Messages[0].Role != "assistant" {
+		t.Fatalf("msg[0] role: want assistant, got %q", o.Messages[0].Role)
+	}
+	if len(o.Messages[0].ToolCalls) != 2 {
+		t.Fatalf("msg[0] tool_calls: want 2, got %d", len(o.Messages[0].ToolCalls))
+	}
+	if o.Messages[0].ToolCalls[0].ID != "tu01" || o.Messages[0].ToolCalls[1].ID != "tu02" {
+		t.Fatalf("msg[0] tool_call IDs: want tu01,tu02 got %q,%q",
+			o.Messages[0].ToolCalls[0].ID, o.Messages[0].ToolCalls[1].ID)
+	}
+	// Message 1: tool response for tu01
+	if o.Messages[1].Role != "tool" {
+		t.Fatalf("msg[1] role: want tool, got %q", o.Messages[1].Role)
+	}
+	if o.Messages[1].ToolCallID != "tu01" {
+		t.Fatalf("msg[1] tool_call_id: want tu01, got %q", o.Messages[1].ToolCallID)
+	}
+	// Message 2: tool response for tu02
+	if o.Messages[2].Role != "tool" {
+		t.Fatalf("msg[2] role: want tool, got %q", o.Messages[2].Role)
+	}
+	if o.Messages[2].ToolCallID != "tu02" {
+		t.Fatalf("msg[2] tool_call_id: want tu02, got %q", o.Messages[2].ToolCallID)
+	}
+	// Message 3: user text after tool results
+	if o.Messages[3].Role != "user" {
+		t.Fatalf("msg[3] role: want user, got %q", o.Messages[3].Role)
+	}
+	content, ok := o.Messages[3].Content.(string)
+	if !ok || content != "Based on that, what should I wear?" {
+		t.Fatalf("msg[3] content: want 'Based on that...', got %v", o.Messages[3].Content)
 	}
 }
 
@@ -1354,7 +1401,8 @@ func TestConvert_AnthropicReqToOpenAIReq_Tools(t *testing.T) {
 
 func TestConvert_AnthropicReqToOpenAIReq_ToolChoiceAny(t *testing.T) {
 	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"name":"f","input_schema":{"type":"object"}}],"tool_choice":{"type":"any"}}`
-	b, err := Convert([]byte(body), anthropicOpts())
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "gpt-4"}
+	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1363,13 +1411,14 @@ func TestConvert_AnthropicReqToOpenAIReq_ToolChoiceAny(t *testing.T) {
 		t.Fatal(err)
 	}
 	if o.ToolChoice != "required" {
-		t.Fatalf("tool_choice: want required, got %v", o.ToolChoice)
+		t.Fatalf("tool_choice: want required (non-DeepSeek), got %v", o.ToolChoice)
 	}
 }
 
 func TestConvert_AnthropicReqToOpenAIReq_ToolChoiceTool(t *testing.T) {
 	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"name":"f","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"f"}}`
-	b, err := Convert([]byte(body), anthropicOpts())
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "gpt-4"}
+	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1379,7 +1428,7 @@ func TestConvert_AnthropicReqToOpenAIReq_ToolChoiceTool(t *testing.T) {
 	}
 	tc, ok := o.ToolChoice.(map[string]any)
 	if !ok {
-		t.Fatalf("tool_choice: expected object, got %T", o.ToolChoice)
+		t.Fatalf("tool_choice: expected object (non-DeepSeek), got %T", o.ToolChoice)
 	}
 	if tc["type"] != "function" {
 		t.Fatalf("tool_choice.type: want function, got %q", tc["type"])
@@ -1712,12 +1761,16 @@ func TestConvert_ReasoningCache_StoreInject(t *testing.T) {
 		t.Fatalf("first block: want thinking/'thinking steps...', got type=%s thinking=%q",
 			anthResp.Content[0].Type, anthResp.Content[0].Thinking)
 	}
-	// Cache should have one entry.
-	if rc.Len() != 1 {
-		t.Fatalf("cache Len: want 1, got %d", rc.Len())
+	// Cache should have two entries: one by tool call ID, one by assistant text.
+	if rc.Len() != 2 {
+		t.Fatalf("cache Len: want 2 (tool ID + text), got %d", rc.Len())
 	}
 	if v, ok := rc.Get([]string{"call_abc"}); !ok || v != "thinking steps..." {
 		t.Fatalf("cache Get: want 'thinking steps...', got %q, ok=%v", v, ok)
+	}
+	// Text-based cache should also have the entry.
+	if textV, ok := rc.GetText("answer"); !ok || textV != "thinking steps..." {
+		t.Fatalf("cache GetText: want 'thinking steps...', got %q, ok=%v", textV, ok)
 	}
 
 	// Step 2: Anthropic Request (tool_use, no thinking) → OpenAI Request (cache inject).
@@ -1779,8 +1832,10 @@ func TestConvert_ReasoningCache_Miss(t *testing.T) {
 		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
 	}
 	assistant := oaiReq.Messages[1]
-	if assistant.ReasoningContent != "" {
-		t.Fatalf("reasoning_content on cache miss: want empty, got %q", assistant.ReasoningContent)
+	// DeepSeek V4 requires reasoning_content when tool_calls are present;
+	// placeholder is injected on cache miss.
+	if assistant.ReasoningContent != placeholderReasoning {
+		t.Fatalf("reasoning_content on cache miss: want placeholder, got %q", assistant.ReasoningContent)
 	}
 	if len(assistant.ToolCalls) != 1 {
 		t.Fatalf("want 1 tool_call, got %d", len(assistant.ToolCalls))
@@ -1825,5 +1880,161 @@ func anthropicOpts() *ConvertOptions {
 		Model:      "claude-sonnet-4-20250514",
 		MaxTokens:  8192,
 		Downstream: "deepseek-chat",
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeepSeek model-specific tests
+// ---------------------------------------------------------------------------
+
+func TestConvert_DeepSeekToolChoice_AnyStripped(t *testing.T) {
+	// DeepSeek models strip forced tool_choice and inject a system instruction.
+	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"use a tool"}]}],"tools":[{"name":"f","input_schema":{"type":"object"}}],"tool_choice":{"type":"any"}}`
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "deepseek-chat"}
+	b, err := Convert([]byte(body), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o OpenAIChatRequest
+	if err := json.Unmarshal(b, &o); err != nil {
+		t.Fatal(err)
+	}
+	if o.ToolChoice != nil {
+		t.Fatalf("DeepSeek tool_choice 'any': want nil (stripped), got %v", o.ToolChoice)
+	}
+	// System instruction should contain the tool call requirement.
+	if len(o.Messages) == 0 || !strings.Contains(extractTextContent(o.Messages[0].Content), "Call one of the available tools") {
+		t.Fatalf("DeepSeek tool_choice: system instruction missing, got first message: %+v", o.Messages[0])
+	}
+}
+
+func TestConvert_DeepSeekToolChoice_ToolStripped(t *testing.T) {
+	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"use a tool"}]}],"tools":[{"name":"f","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"f"}}`
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "deepseek-chat"}
+	b, err := Convert([]byte(body), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o OpenAIChatRequest
+	if err := json.Unmarshal(b, &o); err != nil {
+		t.Fatal(err)
+	}
+	if o.ToolChoice != nil {
+		t.Fatalf("DeepSeek tool_choice 'tool': want nil (stripped), got %v", o.ToolChoice)
+	}
+	if len(o.Messages) == 0 || !strings.Contains(extractTextContent(o.Messages[0].Content), "tool named f") {
+		t.Fatalf("DeepSeek tool_choice 'tool': system instruction missing tool name, got: %v", o.Messages[0])
+	}
+}
+
+func TestConvert_DeepSeekThinkingAndEffort(t *testing.T) {
+	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"think"}]}],"thinking":{"type":"enabled","budget_tokens":4096},"output_config":{"effort":"max"}}`
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "deepseek-chat"}
+	b, err := Convert([]byte(body), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o OpenAIChatRequest
+	if err := json.Unmarshal(b, &o); err != nil {
+		t.Fatal(err)
+	}
+	if o.Thinking == nil {
+		t.Fatal("DeepSeek: thinking field should be set")
+	}
+	if o.ReasoningEffort == nil {
+		t.Fatal("DeepSeek: reasoning_effort should be set")
+	}
+}
+
+func TestConvert_NonDeepSeekNoThinkingEffort(t *testing.T) {
+	// Non-DeepSeek models should NOT get thinking/reasoning_effort.
+	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"think"}]}],"thinking":{"type":"enabled"},"output_config":{"effort":"max"}}`
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "gpt-4"}
+	b, err := Convert([]byte(body), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o OpenAIChatRequest
+	if err := json.Unmarshal(b, &o); err != nil {
+		t.Fatal(err)
+	}
+	if o.Thinking != nil {
+		t.Fatal("Non-DeepSeek: thinking field should not be set")
+	}
+	if o.ReasoningEffort != nil {
+		t.Fatal("Non-DeepSeek: reasoning_effort should not be set")
+	}
+}
+
+func TestConvert_StreamOptionsIncluded(t *testing.T) {
+	body := `{"model":"claude","max_tokens":8192,"stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "deepseek-chat"}
+	b, err := Convert([]byte(body), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o OpenAIChatRequest
+	if err := json.Unmarshal(b, &o); err != nil {
+		t.Fatal(err)
+	}
+	if o.StreamOptions == nil {
+		t.Fatal("expected stream_options for streaming request")
+	}
+}
+
+func TestConvert_CoalesceAdjacentAssistantToolCalls(t *testing.T) {
+	messages := []OpenAIMessage{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: nil, ToolCalls: []OpenAIToolCall{
+			{ID: "call_1", Type: "function", Function: OpenAIFunctionCall{Name: "f1", Arguments: "{}"}},
+		}},
+		{Role: "assistant", Content: nil, ToolCalls: []OpenAIToolCall{
+			{ID: "call_2", Type: "function", Function: OpenAIFunctionCall{Name: "f2", Arguments: "{}"}},
+		}},
+	}
+	result := coalesceAdjacentAssistantToolCalls(messages)
+	if len(result) != 2 {
+		t.Fatalf("want 2 messages after coalescing, got %d", len(result))
+	}
+	if len(result[1].ToolCalls) != 2 {
+		t.Fatalf("want 2 tool_calls after coalescing, got %d", len(result[1].ToolCalls))
+	}
+}
+
+func TestConvert_TextBasedReasoningCache(t *testing.T) {
+	rc := NewReasoningCache(100)
+
+	// Store by text.
+	rc.PutText("hello world", "deep thoughts")
+	v, ok := rc.GetText("hello world")
+	if !ok || v != "deep thoughts" {
+		t.Fatalf("GetText: want 'deep thoughts', got %q, ok=%v", v, ok)
+	}
+
+	// Store by context.
+	rc.PutContext([]string{"tool_use:1:read:{}"}, "result", "context reasoning")
+	cv, cok := rc.GetContext([]string{"tool_use:1:read:{}"}, "result")
+	if !cok || cv != "context reasoning" {
+		t.Fatalf("GetContext: want 'context reasoning', got %q, ok=%v", cv, cok)
+	}
+}
+
+func TestConvert_GetBestMultiTier(t *testing.T) {
+	rc := NewReasoningCache(100)
+
+	// Store in text tier only.
+	rc.PutText("hello", "text tier reasoning")
+
+	// GetBest should find it via text (tool IDs empty, context empty).
+	result := rc.GetBest(nil, nil, "hello")
+	if result != "text tier reasoning" {
+		t.Fatalf("GetBest: want 'text tier reasoning', got %q", result)
+	}
+
+	// Tool call ID tier takes priority.
+	rc.Put([]string{"tool_1"}, "tool tier reasoning")
+	result = rc.GetBest([]string{"tool_1"}, nil, "hello")
+	if result != "tool tier reasoning" {
+		t.Fatalf("GetBest: tool tier should take priority, got %q", result)
 	}
 }

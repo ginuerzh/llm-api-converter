@@ -20,6 +20,9 @@ type StreamConverter struct {
 	curBlockIndex  int
 	nextBlockIndex int
 
+	// Thinking block has been stopped (signature_delta + stop emitted).
+	thinkingBlockStopped bool
+
 	// Tool call accumulation: map of OpenAI tool_call index → accumulated state.
 	toolCallByIndex map[int]*streamToolState
 
@@ -27,10 +30,18 @@ type StreamConverter struct {
 	finishReason string
 	finalized    bool
 
-	// Accumulated reasoning content across streaming deltas.
+	// Accumulated reasoning and text across streaming deltas.
 	accumulatedReasoning string
+	accumulatedText      string
+
+	// Usage accumulated from the final chunk.
+	usage *OpenAIUsage
+
 	// Optional cache for reasoning_content replay (DeepSeek V4).
 	reasoningCache *ReasoningCache
+
+	// Whether the stream was interrupted (upstream error).
+	streamInterrupted bool
 }
 
 // NewStreamConverter creates a StreamConverter for the given Anthropic model name
@@ -40,7 +51,7 @@ func NewStreamConverter(model string, reasoningCache *ReasoningCache) *StreamCon
 		model:           model,
 		nextBlockIndex:  0,
 		toolCallByIndex: make(map[int]*streamToolState),
-		reasoningCache: reasoningCache,
+		reasoningCache:  reasoningCache,
 	}
 }
 
@@ -69,10 +80,19 @@ func (sc *StreamConverter) HandleChunk(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("unmarshal stream chunk: %w", err)
 	}
 	if len(chunk.Choices) == 0 {
+		// Check for usage-only chunk (no choices, just usage).
+		if chunk.Usage != nil {
+			sc.usage = chunk.Usage
+		}
 		return nil, nil
 	}
 
 	choice := chunk.Choices[0]
+
+	// Track usage if present.
+	if chunk.Usage != nil {
+		sc.usage = chunk.Usage
+	}
 
 	// Track finish_reason for message_delta emission.
 	if choice.FinishReason != nil && *choice.FinishReason != "" {
@@ -86,6 +106,8 @@ func (sc *StreamConverter) HandleChunk(data []byte) ([]byte, error) {
 
 	// Content text delta.
 	if delta.Content != "" {
+		sc.accumulatedText += delta.Content
+		sc.stopThinkingBlock()
 		events = append(events, sc.ensureBlock("text", "")...)
 		events = append(events, sc.textDelta(delta.Content)...)
 	}
@@ -93,8 +115,10 @@ func (sc *StreamConverter) HandleChunk(data []byte) ([]byte, error) {
 	// Reasoning content → thinking delta.
 	if delta.ReasoningContent != "" {
 		sc.accumulatedReasoning += delta.ReasoningContent
-		events = append(events, sc.ensureBlock("thinking", "")...)
-		events = append(events, sc.thinkingDelta(delta.ReasoningContent)...)
+		if !sc.thinkingBlockStopped {
+			events = append(events, sc.ensureBlock("thinking", "")...)
+			events = append(events, sc.thinkingDelta(delta.ReasoningContent)...)
+		}
 	}
 
 	// Tool calls.
@@ -128,23 +152,44 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 
 	var events [][]byte
 
+	// Close the thinking block if still open.
+	if sc.curBlockType == "thinking" {
+		events = append(events, sc.thinkingBlockStop())
+		sc.curBlockType = ""
+		sc.thinkingBlockStopped = true
+	}
+
 	// Close the current content block if one is open.
 	if sc.curBlockType != "" {
 		events = append(events, sc.contentBlockStop())
 		sc.curBlockType = ""
 	}
 
-	// Cache accumulated reasoning_content for tool call replay (DeepSeek V4).
-	if sc.accumulatedReasoning != "" && len(sc.toolCallByIndex) > 0 && sc.reasoningCache != nil {
-		ids := make([]string, 0, len(sc.toolCallByIndex))
-		for _, state := range sc.toolCallByIndex {
-			if state.ID != "" {
-				ids = append(ids, state.ID)
+	// Cache accumulated reasoning for tool call replay (DeepSeek V4).
+	// Store in both tool call ID and text-based caches.
+	if sc.accumulatedReasoning != "" && sc.reasoningCache != nil {
+		// By tool call IDs.
+		if len(sc.toolCallByIndex) > 0 {
+			ids := make([]string, 0, len(sc.toolCallByIndex))
+			for _, state := range sc.toolCallByIndex {
+				if state.ID != "" {
+					ids = append(ids, state.ID)
+				}
+			}
+			if len(ids) > 0 {
+				sc.reasoningCache.Put(ids, sc.accumulatedReasoning)
 			}
 		}
-		if len(ids) > 0 {
-			sc.reasoningCache.Put(ids, sc.accumulatedReasoning)
+		// By assistant text.
+		if sc.accumulatedText != "" {
+			sc.reasoningCache.PutText(sc.accumulatedText, sc.accumulatedReasoning)
 		}
+	}
+
+	// Stream interrupted marker.
+	if sc.streamInterrupted {
+		events = append(events, sc.ensureBlock("text", "")...)
+		events = append(events, sc.textDelta("\n\n[stream interrupted]")...)
 	}
 
 	// message_delta with stop_reason.
@@ -152,9 +197,18 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 	if sc.finishReason != "" {
 		stopReason = mapOpenAIStreamFinish(sc.finishReason)
 	}
+	usageMap := map[string]any{
+		"output_tokens": 0,
+	}
+	if sc.usage != nil {
+		usageMap = map[string]any{
+			"input_tokens":  sc.usage.PromptTokens,
+			"output_tokens": sc.usage.CompletionTokens,
+		}
+	}
 	md := fmt.Sprintf(
-		`event: message_delta`+"\n"+`data: {"type":"message_delta","delta":{"stop_reason":"%s","stop_sequence":null},"usage":{"output_tokens":0}}`,
-		stopReason,
+		`event: message_delta`+"\n"+`data: {"type":"message_delta","delta":{"stop_reason":"%s","stop_sequence":null},"usage":%s}`,
+		stopReason, toJSON(usageMap),
 	)
 	events = append(events, []byte(md))
 
@@ -162,6 +216,11 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 	events = append(events, []byte(`event: message_stop`+"\n"+`data: {"type":"message_stop"}`))
 
 	return bytes.Join(events, []byte("\n\n"))
+}
+
+// SetInterrupted marks the stream as interrupted (upstream error).
+func (sc *StreamConverter) SetInterrupted() {
+	sc.streamInterrupted = true
 }
 
 // ensureBlock transitions to a new content block if needed.
@@ -177,7 +236,12 @@ func (sc *StreamConverter) ensureBlock(blockType, toolMeta string) [][]byte {
 
 	// Stop current block if any.
 	if sc.curBlockType != "" {
-		events = append(events, sc.contentBlockStop())
+		if sc.curBlockType == "thinking" {
+			events = append(events, sc.thinkingBlockStop())
+			sc.thinkingBlockStopped = true
+		} else {
+			events = append(events, sc.contentBlockStop())
+		}
 	}
 
 	// Start new block.
@@ -200,11 +264,30 @@ func (sc *StreamConverter) ensureBlock(blockType, toolMeta string) [][]byte {
 	return events
 }
 
+// stopThinkingBlock sends a thinking block signature_delta + stop if the
+// thinking block is still open. Used before transitioning to text/tool blocks.
+func (sc *StreamConverter) stopThinkingBlock() {
+	if sc.curBlockType != "thinking" || sc.thinkingBlockStopped {
+		return
+	}
+	sc.thinkingBlockStopped = true
+}
+
+// thinkingBlockStop returns a signature_delta + content_block_stop for the thinking block.
+func (sc *StreamConverter) thinkingBlockStop() []byte {
+	// Find the current events buffer or return a standalone event set.
+	// signature_delta must precede content_block_stop per Anthropic SSE protocol.
+	sigDelta := fmt.Sprintf(
+		`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":""}}`,
+		sc.curBlockIndex,
+	)
+	blockStop := sc.contentBlockStop()
+	return []byte(string(sigDelta) + "\n\n" + string(blockStop))
+}
+
 // textDelta returns a content_block_delta with text_delta for the given text.
 func (sc *StreamConverter) textDelta(text string) [][]byte {
-	// JSON-escape the text.
 	escaped, _ := json.Marshal(text)
-	// Unquote to get the raw escaped string.
 	rawText := string(escaped)
 	if len(rawText) >= 2 && rawText[0] == '"' && rawText[len(rawText)-1] == '"' {
 		rawText = rawText[1 : len(rawText)-1]
@@ -252,9 +335,16 @@ func (sc *StreamConverter) handleToolCallDelta(tc OpenAIDeltaToolCall) [][]byte 
 
 		meta := fmt.Sprintf(`"id":"%s","name":"%s"`, toolID, name)
 
+		// If we're in a thinking block, stop it before tool_use.
+		var events [][]byte
+		if sc.curBlockType == "thinking" {
+			events = append(events, sc.thinkingBlockStop())
+			sc.thinkingBlockStopped = true
+			sc.curBlockType = ""
+		}
+
 		// If we're already in a tool_use block for a different tool call,
 		// stop it before starting the new one.
-		var events [][]byte
 		if sc.curBlockType == "tool_use" {
 			events = append(events, sc.contentBlockStop())
 			sc.curBlockType = ""
@@ -296,4 +386,13 @@ func (sc *StreamConverter) contentBlockStop() []byte {
 		`event: content_block_stop`+"\n"+`data: {"type":"content_block_stop","index":%d}`,
 		sc.curBlockIndex,
 	))
+}
+
+// toJSON marshals v to a JSON string, returns "{}" on error.
+func toJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
