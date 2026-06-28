@@ -15,6 +15,7 @@ import (
 type Options struct {
 	Model     string
 	MaxTokens int
+	Downstream string
 }
 
 type rewriteRequest struct {
@@ -75,11 +76,32 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert.
 	opts := &convert.ConvertOptions{
-		Model:     h.opts.Model,
-		MaxTokens: h.opts.MaxTokens,
+		Model:      h.opts.Model,
+		MaxTokens:  h.opts.MaxTokens,
+		Downstream: h.opts.Downstream,
 	}
+
+	// Parse metadata for SSE stream lifecycle phases.
+	if len(req.Metadata) > 0 {
+		var meta struct {
+			Sid        string `json:"sid,omitempty"`
+			EventIndex int    `json:"event_index,omitempty"`
+			SSEPhase   string `json:"sse_phase,omitempty"`
+		}
+		if err := json.Unmarshal(req.Metadata, &meta); err == nil && meta.SSEPhase != "" {
+			out, err := convert.HandleSSEEvent(meta.Sid, meta.SSEPhase, meta.EventIndex, req.Data, opts)
+			if err != nil {
+				slog.Error("stream event", "phase", meta.SSEPhase, "err", err)
+				writeJSON(w, rewriteResponse{OK: false})
+				return
+			}
+			writeJSON(w, rewriteResponse{OK: true, Data: out})
+			return
+		}
+	}
+
+	// Non-streaming conversion.
 	out, err := convert.Convert(req.Data, opts)
 	if err != nil {
 		slog.Error("convert", "err", err)

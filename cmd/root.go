@@ -11,11 +11,12 @@ import (
 )
 
 var (
-	addr      string
-	model     string
-	maxTokens int
-	logLevel  string
-	logFormat string
+	addr        string
+	model       string
+	maxTokens   int
+	downstream  string
+	logLevel    string
+	logFormat   string
 )
 
 var rootCmd = &cobra.Command{
@@ -47,8 +48,9 @@ var rootCmd = &cobra.Command{
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return rewriter.ListenAndServe(addr, &rewriter.Options{
-			Model:     model,
-			MaxTokens: maxTokens,
+			Model:      model,
+			MaxTokens:  maxTokens,
+			Downstream: downstream,
 		})
 	},
 }
@@ -65,6 +67,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&addr, "addr", ":8000", "listening address")
 	rootCmd.PersistentFlags().StringVar(&model, "model", "claude-sonnet-4-20250514", "default Anthropic model ID")
 	rootCmd.PersistentFlags().IntVar(&maxTokens, "max-tokens", 8192, "default max_tokens")
+	rootCmd.PersistentFlags().StringVar(&downstream, "downstream", "deepseek-chat", "downstream OpenAI model ID")
 
 	rootCmd.SilenceErrors = true
 	rootCmd.SilenceUsage = true

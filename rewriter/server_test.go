@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"llm-api-converter/convert"
@@ -181,4 +182,53 @@ func TestIntegrationSmokeTest(t *testing.T) {
 	if !rr.OK {
 		t.Fatal("expected ok=true")
 	}
+}
+
+func TestRewriteEndpoint_SSEData(t *testing.T) {
+	opts := &Options{Model: "claude-sonnet-4-20250514", MaxTokens: 8192}
+	srv := newServer(opts)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	t.Run("OpenAI request inside SSE", func(t *testing.T) {
+		reqBody := rewriteRequest{
+			Data: []byte(`data: {"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`),
+		}
+		resp := doPost(t, ts.URL, reqBody)
+		if !resp.OK {
+			t.Fatal("expected ok=true")
+		}
+		out := string(resp.Data)
+		if !strings.HasPrefix(out, "data: ") {
+			t.Fatalf("expected SSE output, got: %s", out)
+		}
+	})
+
+	t.Run("Anthropic response inside SSE", func(t *testing.T) {
+		reqBody := rewriteRequest{
+			Data: []byte(`data: {"id":"msg_01","type":"message","role":"assistant","content":[{"type":"text","text":"Hello!"}],"model":"claude","stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`),
+		}
+		resp := doPost(t, ts.URL, reqBody)
+		if !resp.OK {
+			t.Fatal("expected ok=true")
+		}
+		out := string(resp.Data)
+		if !strings.HasPrefix(out, "data: ") {
+			t.Fatalf("expected SSE output, got: %s", out)
+		}
+	})
+
+	t.Run("non-SSE still works", func(t *testing.T) {
+		reqBody := rewriteRequest{
+			Data: []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`),
+		}
+		resp := doPost(t, ts.URL, reqBody)
+		if !resp.OK {
+			t.Fatal("expected ok=true")
+		}
+		out := string(resp.Data)
+		if strings.HasPrefix(out, "data: ") {
+			t.Fatalf("expected plain JSON, got SSE: %s", out)
+		}
+	})
 }

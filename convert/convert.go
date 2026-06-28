@@ -1,24 +1,252 @@
 package convert
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// ---------------------------------------------------------------------------
+// SSE event handling
+// ---------------------------------------------------------------------------
+
+// isSSE reports whether body appears to be an SSE event by checking for
+// known SSE field prefixes at the start of the data.
+func isSSE(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	switch {
+	case bytes.HasPrefix(body, []byte("data:")):
+		return true
+	case bytes.HasPrefix(body, []byte("event:")):
+		return true
+	case bytes.HasPrefix(body, []byte("id:")):
+		return true
+	}
+	return false
+}
+
+// parseSSEEvent parses raw SSE event bytes into fields. It handles
+// event:, data:, id:, retry: fields and ignores unknown lines.
+func parseSSEEvent(raw []byte) *SSEEvent {
+	evt := &SSEEvent{}
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		key, value, found := bytes.Cut(line, []byte(":"))
+		if !found {
+			continue
+		}
+		// SSE convention: "field: value" — strip one leading space if present.
+		if len(value) > 0 && value[0] == ' ' {
+			value = value[1:]
+		}
+
+		switch string(key) {
+		case "event":
+			evt.Event = string(value)
+		case "data":
+			if evt.Data != "" {
+				evt.Data += "\n"
+			}
+			evt.Data += string(value)
+		case "id":
+			evt.ID = string(value)
+		case "retry":
+			if ms, err := strconv.Atoi(string(value)); err == nil && ms > 0 {
+				evt.Retry = ms
+			}
+		}
+	}
+	return evt
+}
+
+// reconstructSSEEvent builds SSE-formatted bytes from the event fields.
+// It does NOT include the trailing \n\n event delimiter — the caller
+// (sniffer_sse.go) appends \n\n after the rewritten bytes.
+func reconstructSSEEvent(evt *SSEEvent) []byte {
+	var buf bytes.Buffer
+	if evt.ID != "" {
+		buf.WriteString("id: ")
+		buf.WriteString(evt.ID)
+		buf.WriteByte('\n')
+	}
+	if evt.Event != "" {
+		buf.WriteString("event: ")
+		buf.WriteString(evt.Event)
+		buf.WriteByte('\n')
+	}
+	for _, line := range strings.Split(evt.Data, "\n") {
+		buf.WriteString("data: ")
+		buf.WriteString(line)
+		buf.WriteByte('\n')
+	}
+	if evt.Retry > 0 {
+		buf.WriteString("retry: ")
+		buf.WriteString(strconv.Itoa(evt.Retry))
+		buf.WriteByte('\n')
+	}
+	// Strip trailing newline — the GOST proxy appends \n\n as the event delimiter.
+	raw := buf.Bytes()
+	if len(raw) > 0 && raw[len(raw)-1] == '\n' {
+		raw = raw[:len(raw)-1]
+	}
+	return raw
+}
+
+// convertSSEEvent converts the JSON data payload inside an SSE event
+// using the existing Convert function. Returns true if the data changed.
+func convertSSEEvent(evt *SSEEvent, opts *ConvertOptions) bool {
+	if evt.Data == "" {
+		return false
+	}
+	converted, err := Convert([]byte(evt.Data), opts)
+	if err != nil {
+		slog.Debug("sse convert error, using original data", "err", err)
+		return false
+	}
+	convertedStr := string(converted)
+	if convertedStr == evt.Data {
+		return false
+	}
+	evt.Data = convertedStr
+	return true
+}
+
+// ConvertSSE parses SSE-formatted body, converts the JSON data payload,
+// and reconstructs the SSE framing. Non-SSE content that looks like SSE
+// (e.g. "[DONE]") passes through unchanged.
+func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
+	if opts == nil {
+		opts = &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "deepseek-chat"}
+	}
+	if len(body) == 0 {
+		return body, nil
+	}
+
+	// "[DONE]" is a common SSE data marker — convert to Anthropic message_stop.
+	if bytes.Equal(bytes.TrimSpace(body), []byte("data: [DONE]")) {
+		return []byte("event: message_stop\ndata: {\"type\":\"message_stop\"}"), nil
+	}
+
+	evt := parseSSEEvent(body)
+
+	// Check for OpenAI streaming chunk: data payload with choices[].delta.
+	// This must be detected before the generic Convert() path since OpenAI
+	// streaming chunks have a different structure from non-streaming responses.
+	if evt.Data != "" && isOpenAIStreamChunk([]byte(evt.Data)) {
+		return convertOpenAIStreamChunkToAnthropic(evt, opts)
+	}
+
+	// Default: convert data payload with Convert() (handles Anthropic SSE → OpenAI data).
+	convertSSEEvent(evt, opts)
+	return reconstructSSEEvent(evt), nil
+}
+
+// convertOpenAIStreamChunkToAnthropic converts an OpenAI SSE streaming delta
+// to an Anthropic SSE content_block_delta / message_delta / message_stop event.
+func convertOpenAIStreamChunkToAnthropic(evt *SSEEvent, opts *ConvertOptions) ([]byte, error) {
+	var chunk struct {
+		Choices []struct {
+			Index        int              `json:"index"`
+			Delta        map[string]any   `json:"delta"`
+			FinishReason *string          `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(evt.Data), &chunk); err != nil || len(chunk.Choices) == 0 {
+		// Unrecognised format — pass through unchanged.
+		return reconstructSSEEvent(evt), nil
+	}
+
+	choice := chunk.Choices[0]
+
+	// Finish reason → message_delta (stream end).
+	if choice.FinishReason != nil && *choice.FinishReason != "" {
+		stopReason := mapOpenAIStreamFinish(*choice.FinishReason)
+		deltaJSON, _ := json.Marshal(map[string]any{
+			"type": "message_delta",
+			"delta": map[string]any{
+				"stop_reason":   stopReason,
+				"stop_sequence": nil,
+			},
+			"usage": map[string]any{
+				"output_tokens": 0,
+			},
+		})
+		return []byte("event: message_delta\ndata: " + string(deltaJSON)), nil
+	}
+
+	// Content delta → text_delta.
+	if content, ok := choice.Delta["content"].(string); ok && content != "" {
+		deltaJSON, _ := json.Marshal(map[string]any{
+			"type": "content_block_delta",
+			"index": 0,
+			"delta": map[string]any{
+				"type": "text_delta",
+				"text": content,
+			},
+		})
+		return []byte("event: content_block_delta\ndata: " + string(deltaJSON)), nil
+	}
+
+	// Reasoning content → thinking_delta.
+	if reasoning, ok := choice.Delta["reasoning_content"].(string); ok && reasoning != "" {
+		deltaJSON, _ := json.Marshal(map[string]any{
+			"type": "content_block_delta",
+			"index": 0,
+			"delta": map[string]any{
+				"type":     "thinking_delta",
+				"thinking": reasoning,
+			},
+		})
+		return []byte("event: content_block_delta\ndata: " + string(deltaJSON)), nil
+	}
+
+	// Empty delta (role announcement, e.g. delta:{"role":"assistant"}) — pass through as-is.
+	// The Claude SDK ignores unrecognised data: lines.
+	return reconstructSSEEvent(evt), nil
+}
+
+// mapOpenAIStreamFinish maps OpenAI finish_reason to Anthropic stop_reason.
+func mapOpenAIStreamFinish(reason string) string {
+	switch reason {
+	case "stop":
+		return "end_turn"
+	case "length":
+		return "max_tokens"
+	case "tool_calls":
+		return "tool_use"
+	default:
+		return reason
+	}
+}
 
 // Convert detects the input body format and performs bidirectional
 // conversion between OpenAI Chat Completions and Anthropic Messages formats.
 func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 	if opts == nil {
-		opts = &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192}
+		opts = &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "deepseek-chat"}
 	}
 
 	if len(body) == 0 {
 		return body, nil
+	}
+
+	// Auto-detect SSE framing: if the body starts with data:, event:,
+	// or id:, route through SSE-aware handling.
+	if isSSE(body) {
+		slog.Debug("detected SSE framing → converting via ConvertSSE")
+		return ConvertSSE(body, opts)
 	}
 
 	// Try parsing as a generic object to detect format.
@@ -28,14 +256,25 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 		return body, nil
 	}
 
+	// Detect: Anthropic Messages Request (messages + max_tokens or Anthropic content blocks).
+	if isAnthropicRequest(raw) {
+		slog.Debug("detected Anthropic Request → converting to OpenAI")
+		return convertAnthropicRequestToOpenAI(body, opts)
+	}
+
+	// Detect: OpenAI Chat Completions Response (choices array).
+	if isOpenAIResponse(raw) {
+		slog.Debug("detected OpenAI Response → converting to Anthropic")
+		return convertOpenAIResponseToAnthropic(body)
+	}
+
 	// Detect: Anthropic Messages Response (type "message" and stop_reason/usage).
-	// Must check BEFORE OpenAI request since Anthropic responses also have a "model" field.
 	if isAnthropicResponse(raw) {
 		slog.Debug("detected Anthropic Response → converting to OpenAI")
 		return convertAnthropicResponseToOpenAI(body)
 	}
 
-	// Detect: OpenAI Chat Completions Request (model or messages field)
+	// Detect: OpenAI Chat Completions Request (model or messages field).
 	if hasStringField(raw, "model") || hasArrayField(raw, "messages") {
 		slog.Debug("detected OpenAI Chat Request → converting to Anthropic")
 		return convertOpenAIRequestToAnthropic(body, opts)
@@ -70,6 +309,176 @@ func isAnthropicResponse(m map[string]any) bool {
 	}
 	if _, ok := m["usage"]; ok {
 		return true
+	}
+	return false
+}
+
+// isAnthropicRequest detects an Anthropic Messages API request body.
+// Key signals: messages content as typed-block arrays, max_tokens (required),
+// Anthropic-specific content block types (thinking, tool_use, tool_result, image).
+func isAnthropicRequest(m map[string]any) bool {
+	msgs, ok := m["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		return false
+	}
+
+	// Quick rejection: OpenAI-specific fields that Anthropic never uses.
+	if _, ok := m["frequency_penalty"]; ok {
+		return false
+	}
+	if _, ok := m["presence_penalty"]; ok {
+		return false
+	}
+	if _, ok := m["logit_bias"]; ok {
+		return false
+	}
+	if _, ok := m["response_format"]; ok {
+		return false
+	}
+	if _, ok := m["n"]; ok {
+		return false
+	}
+	if _, ok := m["seed"]; ok {
+		return false
+	}
+
+	// Quick rejection: OpenAI uses "stop" (string/array), Anthropic uses "stop_sequences" (array).
+	if _, ok := m["stop"]; ok {
+		return false
+	}
+
+	// OpenAI tool_choice can be a string (e.g. "auto", "required"); Anthropic is always an object.
+	if _, ok := m["tool_choice"].(string); ok {
+		return false
+	}
+
+	// Check messages for OpenAI-only patterns (role: system/tool/function in array).
+	for _, msg := range msgs {
+		mmsg, ok := msg.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := mmsg["role"].(string)
+		if role == "system" || role == "tool" || role == "function" {
+			return false
+		}
+	}
+
+	// Check first few messages for Anthropic-specific content block types.
+	for i := 0; i < len(msgs) && i < 3; i++ {
+		msg, ok := msgs[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		content, ok := msg["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, block := range content {
+			b, ok := block.(map[string]any)
+			if !ok {
+				continue
+			}
+			bt, _ := b["type"].(string)
+			switch bt {
+			case "thinking", "tool_use", "tool_result", "image":
+				// These types only exist in Anthropic content blocks.
+				return true
+			}
+		}
+	}
+
+	// Top-level system field is Anthropic-specific.
+	if _, ok := m["system"]; ok {
+		return true
+	}
+
+	// Anthropic's tool_choice uses "any" or "tool" (not "required" or "function").
+	if tc, ok := m["tool_choice"].(map[string]any); ok {
+		if t, _ := tc["type"].(string); t == "function" {
+			return false // OpenAI-style function-type tool_choice
+		}
+		if t, _ := tc["type"].(string); t == "any" || t == "tool" {
+			return true
+		}
+	}
+
+	// max_tokens is REQUIRED in Anthropic. If present AND messages use array
+	// content (not plain string), it's likely an Anthropic request — BUT only
+	// if the model name doesn't look OpenAI-ish (gpt/o1/o3/deepseek/claude).
+	if _, ok := m["max_tokens"]; ok && !hasOpenAIStyleModel(m) {
+		for i := 0; i < len(msgs) && i < 2; i++ {
+			msg, ok := msgs[i].(map[string]any)
+			if !ok {
+				continue
+			}
+			if _, ok := msg["content"].([]any); ok {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// hasOpenAIStyleModel returns true if the model field value looks like an
+// OpenAI-compatible model ID rather than Anthropic. Used to prevent false
+// positives where an OpenAI request with max_tokens + array content would
+// otherwise be classified as an Anthropic request.
+func hasOpenAIStyleModel(m map[string]any) bool {
+	model, ok := m["model"].(string)
+	if !ok || model == "" {
+		return false
+	}
+	// Check for common OpenAI / downstream model prefixes.
+	openAIPrefixes := []string{
+		"gpt-", "o1", "o3", "deepseek", "gemini-",
+	}
+	modelLower := strings.ToLower(model)
+	for _, p := range openAIPrefixes {
+		if strings.HasPrefix(modelLower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isOpenAIResponse detects an OpenAI Chat Completions response body.
+// Key signals: choices array with message/finish_reason fields.
+func isOpenAIResponse(m map[string]any) bool {
+	choices, ok := m["choices"].([]any)
+	if !ok || len(choices) == 0 {
+		return false
+	}
+	if choice, ok := choices[0].(map[string]any); ok {
+		if _, ok := choice["finish_reason"]; ok {
+			return true
+		}
+		if _, ok := choice["message"]; ok {
+			return true
+		}
+		if _, ok := choice["delta"]; ok {
+			return true // streaming chunk
+		}
+	}
+	return false
+}
+
+// isOpenAIStreamChunk detects an OpenAI SSE streaming data payload.
+// Format: {"choices":[{"index":0,"delta":{...},"finish_reason":null}]}
+func isOpenAIStreamChunk(data []byte) bool {
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	choices, ok := raw["choices"].([]any)
+	if !ok || len(choices) == 0 {
+		return false
+	}
+	if choice, ok := choices[0].(map[string]any); ok {
+		if _, ok := choice["delta"]; ok {
+			return true
+		}
 	}
 	return false
 }
@@ -368,6 +777,230 @@ func convertToolResultContent(msg OpenAIMessage) []AnthropicContent {
 }
 
 // ---------------------------------------------------------------------------
+// Anthropic Request → OpenAI Request
+// ---------------------------------------------------------------------------
+
+func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte, error) {
+	var req AnthropicRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		slog.Warn("failed to unmarshal Anthropic request", "err", err)
+		return body, nil
+	}
+
+	oai := OpenAIChatRequest{
+		Model:  opts.Downstream,
+		Stream: req.Stream,
+	}
+
+	if req.MaxTokens > 0 {
+		oai.MaxTokens = &req.MaxTokens
+	}
+	if req.Temperature != nil {
+		oai.Temperature = req.Temperature
+	}
+	if req.TopP != nil {
+		oai.TopP = req.TopP
+	}
+	if req.Metadata != nil {
+		oai.Metadata = req.Metadata
+	}
+
+	// Stop sequences → OpenAI stop.
+	if len(req.StopSequences) > 0 {
+		if len(req.StopSequences) == 1 {
+			oai.Stop = req.StopSequences[0]
+		} else {
+			anys := make([]any, len(req.StopSequences))
+			for i, s := range req.StopSequences {
+				anys[i] = s
+			}
+			oai.Stop = anys
+		}
+	}
+
+	// Top-level system → prepend as system message.
+	if len(req.System) > 0 {
+		var sysText string
+		for _, block := range req.System {
+			sysText += block.Text
+		}
+		oai.Messages = append(oai.Messages, OpenAIMessage{
+			Role:    "system",
+			Content: sysText,
+		})
+	}
+
+	// Messages.
+	for _, msg := range req.Messages {
+		oai.Messages = append(oai.Messages, convertAnthropicMessage(msg))
+	}
+
+	// Edge case: if no messages after conversion, inject minimal user message.
+	if len(oai.Messages) == 0 {
+		oai.Messages = []OpenAIMessage{
+			{Role: "user", Content: "..."},
+		}
+	}
+
+	// Tools.
+	if len(req.Tools) > 0 {
+		sortAnthropicTools(req.Tools)
+		oai.Tools = make([]OpenAITool, 0, len(req.Tools))
+		for _, t := range req.Tools {
+			oai.Tools = append(oai.Tools, OpenAITool{
+				Type: "function",
+				Function: OpenAIFunction{
+					Name:        t.Name,
+					Description: t.Description,
+					Parameters:  ensureObjectSchema(t.InputSchema),
+				},
+			})
+		}
+
+		// Tool choice mapping.
+		if req.ToolChoice != nil {
+			switch req.ToolChoice.Type {
+			case "auto":
+				oai.ToolChoice = "auto"
+			case "any":
+				oai.ToolChoice = "required"
+			case "none":
+				oai.ToolChoice = "none"
+			case "tool":
+				oai.ToolChoice = map[string]any{
+					"type": "function",
+					"function": map[string]any{
+						"name": req.ToolChoice.Name,
+					},
+				}
+			}
+		}
+	}
+
+	return json.Marshal(oai)
+}
+
+func convertAnthropicMessage(msg AnthropicMessage) OpenAIMessage {
+	switch msg.Role {
+	case "user":
+		return convertAnthropicUserMessage(msg)
+	case "assistant":
+		return convertAnthropicAssistantMessage(msg)
+	default:
+		return OpenAIMessage{Role: "user", Content: extractTextContent(msg.Content)}
+	}
+}
+
+func convertAnthropicUserMessage(msg AnthropicMessage) OpenAIMessage {
+	// Check for tool_result blocks (wrapped in "user" role in Anthropic).
+	for _, block := range msg.Content {
+		if block.Type == "tool_result" {
+			content := block.Content
+			if content == nil {
+				content = ""
+			}
+			return OpenAIMessage{
+				Role:       "tool",
+				ToolCallID: block.ToolUseID,
+				Content:    content,
+			}
+		}
+	}
+
+	// Normal user content — build multi-part content if needed.
+	var parts []map[string]any
+	for _, block := range msg.Content {
+		switch block.Type {
+		case "text":
+			if block.Text != "" {
+				parts = append(parts, map[string]any{
+					"type": "text",
+					"text": block.Text,
+				})
+			}
+		case "image":
+			if block.Source != nil && block.Source.Type == "base64" {
+				parts = append(parts, map[string]any{
+					"type": "image_url",
+					"image_url": map[string]any{
+						"url": "data:" + block.Source.MediaType + ";base64," + block.Source.Data,
+					},
+				})
+			}
+		}
+	}
+
+	if len(parts) == 1 && parts[0]["type"] == "text" {
+		return OpenAIMessage{Role: "user", Content: parts[0]["text"].(string)}
+	}
+	if len(parts) == 0 {
+		return OpenAIMessage{Role: "user", Content: ""}
+	}
+	contentArr := make([]any, len(parts))
+	for i, p := range parts {
+		contentArr[i] = p
+	}
+	return OpenAIMessage{Role: "user", Content: contentArr}
+}
+
+func convertAnthropicAssistantMessage(msg AnthropicMessage) OpenAIMessage {
+	var textParts []string
+	var reasoning string
+	var toolCalls []OpenAIToolCall
+
+	for _, block := range msg.Content {
+		switch block.Type {
+		case "text":
+			textParts = append(textParts, block.Text)
+		case "thinking":
+			t := block.Thinking
+			if t == "" {
+				t = block.Text
+			}
+			reasoning += t
+		case "tool_use":
+			args := ""
+			if block.Input != nil {
+				if b, err := json.Marshal(block.Input); err == nil {
+					args = string(b)
+				}
+			}
+			id := block.ID
+			if id == "" {
+				id = ensureToolID("")
+			}
+			toolCalls = append(toolCalls, OpenAIToolCall{
+				ID:   id,
+				Type: "function",
+				Function: OpenAIFunctionCall{
+					Name:      block.Name,
+					Arguments: args,
+				},
+			})
+		}
+	}
+
+	oaiMsg := OpenAIMessage{Role: "assistant"}
+	if reasoning != "" {
+		oaiMsg.ReasoningContent = reasoning
+	}
+	content := strings.Join(textParts, "")
+
+	if len(toolCalls) > 0 {
+		oaiMsg.ToolCalls = toolCalls
+		if content != "" {
+			oaiMsg.Content = content
+		} else {
+			oaiMsg.Content = nil
+		}
+	} else {
+		oaiMsg.Content = content
+	}
+
+	return oaiMsg
+}
+
+// ---------------------------------------------------------------------------
 // Anthropic Response → OpenAI Response
 // ---------------------------------------------------------------------------
 
@@ -472,6 +1105,183 @@ var (
 	strLength    = "length"
 	strToolCalls = "tool_calls"
 )
+
+// ---------------------------------------------------------------------------
+// SSE stream lifecycle management
+// ---------------------------------------------------------------------------
+
+// streamStates maps GOST session IDs to active StreamConverter instances.
+// Each stream's state is stored when a "start" phase event arrives and
+// deleted when the "end" phase event is processed.
+var streamStates sync.Map // sid (string) -> *StreamConverter
+
+// HandleSSEEvent processes an SSE stream lifecycle event.
+// It routes to the appropriate StreamConverter method based on the phase.
+func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *ConvertOptions) ([]byte, error) {
+	switch StreamPhase(phase) {
+	case StreamPhaseStart:
+		sc := NewStreamConverter(opts.Model)
+		streamStates.Store(sid, sc)
+		return sc.HandleStreamStart(), nil
+
+	case StreamPhaseEvent:
+		payload := extractSSEPayload(data)
+		if payload == nil {
+			return nil, nil // [DONE] marker, skip silently.
+		}
+
+		v, ok := streamStates.Load(sid)
+		if !ok {
+			slog.Warn("HandleSSEEvent: unknown stream, starting new", "sid", sid)
+			sc := NewStreamConverter(opts.Model)
+			streamStates.Store(sid, sc)
+			startData := sc.HandleStreamStart()
+			chunkData, err := sc.HandleChunk(payload)
+			if err != nil {
+				return startData, err
+			}
+			if len(chunkData) > 0 {
+				return append(startData, append([]byte("\n\n"), chunkData...)...), nil
+			}
+			return startData, nil
+		}
+		sc := v.(*StreamConverter)
+		return sc.HandleChunk(payload)
+
+	case StreamPhaseEnd:
+		v, ok := streamStates.Load(sid)
+		if !ok {
+			slog.Warn("HandleSSEEvent: unknown stream for end phase", "sid", sid)
+			return nil, nil
+		}
+		sc := v.(*StreamConverter)
+		streamStates.Delete(sid)
+		return sc.HandleStreamEnd(), nil
+	}
+
+	return nil, fmt.Errorf("unknown sse_phase: %s", phase)
+}
+
+// extractSSEPayload parses SSE event text and returns just the data payload.
+// The GOST sniffer sends raw SSE event text (e.g., "data: {...}") to the
+// plugin, but HandleChunk needs just the JSON payload without SSE framing.
+// "[DONE]" markers are consumed silently (return nil, no error).
+func extractSSEPayload(data []byte) []byte {
+	evt := parseSSEEvent(data)
+	if evt.Data == "[DONE]" {
+		return nil
+	}
+	if evt.Data != "" {
+		return []byte(evt.Data)
+	}
+	return data
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI Response → Anthropic Response
+// ---------------------------------------------------------------------------
+
+func convertOpenAIResponseToAnthropic(body []byte) ([]byte, error) {
+	var resp OpenAIChatResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		slog.Warn("failed to unmarshal OpenAI response", "err", err)
+		return body, nil
+	}
+
+	id := resp.ID
+	if strings.HasPrefix(id, "chatcmpl-") {
+		id = "msg_" + strings.TrimPrefix(id, "chatcmpl-")
+	} else if !strings.HasPrefix(id, "msg_") {
+		id = "msg_" + id
+	}
+
+	anth := AnthropicResponse{
+		ID:    id,
+		Type:  "message",
+		Role:  "assistant",
+		Model: resp.Model,
+		Usage: AnthropicUsage{
+			InputTokens:  resp.Usage.PromptTokens,
+			OutputTokens: resp.Usage.CompletionTokens,
+		},
+	}
+
+	if len(resp.Choices) > 0 {
+		msg := resp.Choices[0].Message
+		anth.StopReason = mapOpenAIFinishReason(resp.Choices[0].FinishReason)
+		anth.Content = convertOpenAIMessageToContent(msg)
+	}
+
+	return json.Marshal(anth)
+}
+
+func mapOpenAIFinishReason(reason *string) *string {
+	if reason == nil {
+		return nil
+	}
+	switch *reason {
+	case "stop":
+		s := "end_turn"
+		return &s
+	case "length":
+		s := "max_tokens"
+		return &s
+	case "tool_calls":
+		s := "tool_use"
+		return &s
+	case "content_filter":
+		s := "end_turn"
+		return &s
+	default:
+		return reason
+	}
+}
+
+func convertOpenAIMessageToContent(msg OpenAIMessage) []AnthropicContent {
+	var blocks []AnthropicContent
+
+	// Reasoning content → thinking block (must come before text).
+	if msg.ReasoningContent != "" {
+		blocks = append(blocks, AnthropicContent{
+			Type:     "thinking",
+			Thinking: msg.ReasoningContent,
+		})
+	}
+
+	// Text content.
+	text := extractTextContent(msg.Content)
+
+	// Tool calls.
+	calls := msg.ToolCalls
+	if msg.FunctionCall != nil {
+		calls = append(calls, OpenAIToolCall{
+			Type:     "function",
+			Function: *msg.FunctionCall,
+		})
+	}
+
+	if len(calls) > 0 {
+		if text != "" {
+			blocks = append(blocks, AnthropicContent{Type: "text", Text: text})
+		}
+		for _, tc := range calls {
+			var input any
+			if tc.Function.Arguments != "" {
+				_ = json.Unmarshal([]byte(tc.Function.Arguments), &input)
+			}
+			blocks = append(blocks, AnthropicContent{
+				Type:  "tool_use",
+				ID:    tc.ID,
+				Name:  tc.Function.Name,
+				Input: input,
+			})
+		}
+	} else {
+		blocks = append(blocks, AnthropicContent{Type: "text", Text: text})
+	}
+
+	return blocks
+}
 
 // ---------------------------------------------------------------------------
 // Utility helpers (canonical JSON, tool sorting, ID normalization)

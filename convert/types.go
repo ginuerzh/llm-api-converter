@@ -175,9 +175,91 @@ type AnthropicUsage struct {
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
 }
 
+// -------- SSE Event --------
+
+// SSEEvent represents a single Server-Sent Event as defined by the SSE spec.
+// Fields correspond to the event stream format:
+//
+//	[event: <type>]
+//	data: <payload>
+//	[id: <id>]
+//	[retry: <ms>]
+type SSEEvent struct {
+	Event string // event type (e.g. "message_start", "content_block_delta")
+	Data  string // JSON payload (the data: value)
+	ID    string // optional last-event-id
+	Retry int    // optional reconnection time in ms
+}
+
 // -------- ConvertOptions --------
 
+// ConvertOptions controls the conversion behavior.
 type ConvertOptions struct {
-	Model     string
+	// Model is the target Anthropic model ID when converting from OpenAI Request → Anthropic Request.
+	Model string
+	// MaxTokens is the default max_tokens value for Anthropic requests.
 	MaxTokens int
+	// Downstream is the target OpenAI model ID when converting from Anthropic Request → OpenAI Request.
+	Downstream string
+	// SSEPhase is the stream lifecycle phase: "start", "event", or "end".
+	// Empty means non-streaming conversion.
+	SSEPhase string
+	// SID is the GOST session ID for correlating stream lifecycle calls.
+	SID string
+	// EventIndex is the 0-based event index within a stream (only set when SSEPhase is "event").
+	EventIndex int
 }
+
+// -------- OpenAI Streaming Types --------
+
+// OpenAIStreamChunk is an OpenAI /v1/chat/completions streaming response chunk.
+type OpenAIStreamChunk struct {
+	ID      string              `json:"id,omitempty"`
+	Object  string              `json:"object,omitempty"`
+	Model   string              `json:"model,omitempty"`
+	Choices []OpenAIStreamChoice `json:"choices"`
+	Usage   *OpenAIUsage        `json:"usage,omitempty"`
+}
+
+// OpenAIStreamChoice is a single choice in a streaming chunk (delta instead of message).
+type OpenAIStreamChoice struct {
+	Index        int         `json:"index"`
+	Delta        OpenAIDelta `json:"delta"`
+	FinishReason *string     `json:"finish_reason"`
+}
+
+// OpenAIDelta is the delta payload inside a streaming chunk.
+type OpenAIDelta struct {
+	Role             string               `json:"role,omitempty"`
+	Content          string               `json:"content,omitempty"`
+	ReasoningContent string               `json:"reasoning_content,omitempty"`
+	ToolCalls        []OpenAIDeltaToolCall `json:"tool_calls,omitempty"`
+	FunctionCall     *OpenAIFunctionCall   `json:"function_call,omitempty"`
+}
+
+// OpenAIDeltaToolCall is a tool call entry inside a streaming delta.
+// Unlike OpenAIToolCall (which has no array index since non-streaming
+// tool_calls are plain arrays), streaming tool calls carry an .index
+// field identifying their position in the array.
+type OpenAIDeltaToolCall struct {
+	Index    int               `json:"index"`
+	ID       string            `json:"id,omitempty"`
+	Type     string            `json:"type,omitempty"`
+	Function OpenAIFunctionCall `json:"function"`
+}
+
+// streamToolState tracks partial tool call state across deltas.
+type streamToolState struct {
+	ID        string
+	Name      string
+	Arguments string
+}
+
+// StreamPhase describes the SSE stream lifecycle phase.
+type StreamPhase string
+
+const (
+	StreamPhaseStart StreamPhase = "start"
+	StreamPhaseEvent StreamPhase = "event"
+	StreamPhaseEnd   StreamPhase = "end"
+)

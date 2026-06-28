@@ -9,7 +9,7 @@ OpenCode go 的 DeepSeek API 仅支持 OpenAI format，若要接入 Claude Code 
 - **Request 方向**: OpenAI Chat Completions 请求体 → Anthropic Messages 请求体
 - **Response 方向**: Anthropic Messages 响应体 → OpenAI Chat Completions 响应体
 
-Reference: [deepseek-v4-opencode-claude-code-bridge](https://github.com/superheroYu/deepseek-v4-opencode-claude-code-bridge), [musistudio/llms](https://github.com/musistudio/llms)
+Reference: [deepseek-v4-opencode-claude-code-bridge](https://github.com/superheroYu/deepseek-v4-opencode-claude-code-bridge), [musistudio/llms](https://github.com/musistudio/llms), [opencode-cc](https://github.com/Kiowx/opencode-cc)
 
 ## Phase 1 范围
 
