@@ -1,0 +1,27 @@
+# Binaries
+llm-api-converter
+llm-api-converter-*
+
+# Build artifacts
+.build/
+
+# Codegraph index
+.codegraph/
+
+# Temporary fix scripts
+_fix*.py
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go workspace
+go.work
+go.work.sum
