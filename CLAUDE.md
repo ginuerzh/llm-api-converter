@@ -11,9 +11,9 @@ cd llm-api-converter && go build -o llm-api-converter .
 # Run standalone
 cd llm-api-converter && ./llm-api-converter \
   --addr :8000 \
-  --model claude-sonnet-4-20250514 \
+  --model deepseek-chat \
   --max-tokens 8192 \
-  --downstream deepseek-chat
+  --model-map "claude-opus=deepseek-v4-pro,claude-sonnet=deepseek-v4-flash"
 
 # With debug logging
 cd llm-api-converter && ./llm-api-converter --log.level debug --log.format text
@@ -57,6 +57,7 @@ Anthropic Response → OpenAI Response  (reverse direction)
 |---------|---------|
 | `main.go` | Entry point, delegates to `cmd.Execute()` |
 | `cmd/root.go` | Cobra CLI: `--addr`, `--model`, `--max-tokens`, `--downstream`, `--log.level`, `--log.format` |
+| `--model-map` | `` | Model mapping table: `prefix=target,...` (`*` for catch-all) |
 | `convert/` | Core conversion logic |
 | `convert/types.go` | All data types: OpenAI req/resp/streaming, Anthropic req/resp, SSE events, `ConvertOptions` |
 | `convert/convert.go` | `Convert()` auto-detect + all 4 conversion directions, SSE handling, message sequence sanitization |
@@ -119,9 +120,9 @@ File persistence via `SetPersistence(path)` with atomic write (tmp + rename), 30
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--addr` | `:8000` | Listening address |
-| `--model` | `claude-sonnet-4-20250514` | Target Anthropic model ID (when converting OpenAI→Anthropic) |
+| `--model` | `deepseek-chat` | Fallback model ID for both directions |
 | `--max-tokens` | `8192` | Default `max_tokens` |
-| `--downstream` | `deepseek-chat` | Downstream OpenAI model ID (when converting Anthropic→OpenAI) |
+| `--model-map` | `` | Model mapping table: `prefix=target,...` (`*` for catch-all) |
 | `--log.level` | `info` | Log level: debug, info, warn, error |
 | `--log.format` | `json` | Log format: text or json |
 

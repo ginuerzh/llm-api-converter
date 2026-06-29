@@ -21,41 +21,87 @@ The converter auto-detects the input format — no manual routing needed.
 go build -o llm-api-converter .
 
 # Run standalone
-./llm-api-converter --addr :8000 --model claude-sonnet-4-20250514 --downstream deepseek-chat
+./llm-api-converter --addr :8000 --model-map claude-opus=deepseek-v4-pro,claude-sonnet=deepseek-v4-flash,*=deepseek-v4-flash
 
 # Run with GOST
-gost -C gost.yml -D
+gost -C gost.yaml
 ```
 
-### GOST config
+### Claude Code → DeepSeek (via opencode-go)
+
+This setup lets Claude Code (Anthropic protocol) call DeepSeek models (OpenAI protocol) through the converter:
+
+```
+Claude Code → GOST (proxy) → llm-api-converter → opencode-go API → DeepSeek
+```
+
+**1. Start the converter:**
+
+```bash
+./llm-api-converter \
+  --addr :8000 \
+  --model deepseek-v4-flash \
+  --model-map "claude-opus=deepseek-v4-pro,*=deepseek-v4-flash"
+```
+
+**2. Configure GOST to intercept Anthropic API calls and forward them through the converter:**
 
 ```yaml
+# gost.yaml
 services:
-- name: anthropic-proxy
-  addr: :8080
+- name: claude-code-proxy
+  addr: :8787
   handler:
-    type: forward
+    type: tcp
     metadata:
       sniffing: true
   listener:
     type: tcp
   forwarder:
     nodes:
-    - name: upstream
-      addr: <your-api-host>:443
+    - name: opencode-go
+      addr: opencode.ai:443
+      tls:
+        secure: true
+        serverName: opencode.ai
       http:
+        host: opencode.ai
+        rewriteURL:
+        # Anthropic /v1/messages → OpenAI /v1/chat/completions
+        - match: /v1/messages
+          replacement: /zen/go/v1/chat/completions
+        requestHeader:
+          Authorization: "Bearer your-oc-apikey"
+          x-api-key: "your-oc-apikey"
         rewriteRequestBody:
         - rewriter: llm-converter
           type: application/json
         rewriteResponseBody:
         - rewriter: llm-converter
           type: "*"
+
 rewriters:
 - name: llm-converter
   plugin:
     type: http
     addr: http://127.0.0.1:8000/rewrite
 ```
+
+**3. Point Claude Code at the proxy:**
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+claude
+```
+
+All Anthropic traffic from Claude Code is intercepted by GOST, converted to OpenAI Chat Completions format by the plugin, and forwarded to the opencode-go API for DeepSeek inference. Responses and SSE streams are converted back to Anthropic format transparently.
+
+**Model mapping notes:**
+
+- `claude-opus` → `deepseek-v4-pro`: Routes requests with model name starting with `claude-opus` to DeepSeek V4 Pro 
+- `*` → `deepseek-v4-flash`: Catch-all fallback for any unmatched model prefix
+
+Update the `--model-map` to match your opencode-go deployment's available models.
 
 ## Capabilities
 
@@ -108,9 +154,9 @@ With optional file persistence, 30-day TTL, and FIFO eviction.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--addr` | `:8000` | Listening address |
-| `--model` | `claude-sonnet-4-20250514` | Target Anthropic model |
+| `--model` | `deepseek-chat | Default fallback model ID |
 | `--max-tokens` | `8192` | Default max_tokens |
-| `--downstream` | `deepseek-chat` | Downstream OpenAI model |
+| `--model-map` | `` | Model mapping: `prefix=target,...` (* for catch-all) |
 | `--log.level` | `info` | Log level |
 | `--log.format` | `json` | Log format (text or json) |
 
@@ -139,6 +185,11 @@ go test ./... -v -count=1
 go test ./... -race
 go test ./tests/e2e/ -v -timeout 5m
 ```
+
+## Related projects
+
+- [deepseek-v4-opencode-claude-code-bridge](https://github.com/superheroYu/deepseek-v4-opencode-claude-code-bridge) — DeepSeek V4 adapter for OpenCode and Claude Code
+- [opencode-cc](https://github.com/Kiowx/opencode-cc) — OpenCode Claude Code bridge
 
 ## License
 

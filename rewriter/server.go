@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 
 	"llm-api-converter/convert"
 )
@@ -15,7 +16,7 @@ import (
 type Options struct {
 	Model     string
 	MaxTokens int
-	Downstream string
+	ModelMap  string // raw --model-map flag value
 }
 
 type rewriteRequest struct {
@@ -42,13 +43,14 @@ func ListenAndServe(addr string, opts *Options) error {
 func newServer(opts *Options) http.Handler {
 	mux := http.NewServeMux()
 	rc := convert.NewReasoningCache(1000)
-	mux.Handle("/rewrite", &rewriteHandler{opts: opts, reasoningCache: rc})
+	mux.Handle("/rewrite", &rewriteHandler{opts: opts, reasoningCache: rc, modelMap: parseModelMap(opts.ModelMap)})
 	return mux
 }
 
 type rewriteHandler struct {
 	opts           *Options
 	reasoningCache *convert.ReasoningCache
+	modelMap       convert.ModelMap
 }
 
 func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +79,7 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	opts := &convert.ConvertOptions{
 		Model:          h.opts.Model,
 		MaxTokens:      h.opts.MaxTokens,
-		Downstream:     h.opts.Downstream,
+		ModelMap:       h.modelMap,
 		ReasoningCache: h.reasoningCache,
 	}
 
@@ -149,4 +151,29 @@ func extractAnthropicToolNames(data []byte) []string {
 		}
 	}
 	return names
+}
+
+// parseModelMap parses a comma-separated model map string into a ModelMap.
+// Format: "prefix1=target1,prefix2=target2,..." — * prefix is catch-all.
+func parseModelMap(s string) convert.ModelMap {
+	if s == "" {
+		return nil
+	}
+	var mm convert.ModelMap
+	for _, pair := range strings.Split(s, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		prefix, target, ok := strings.Cut(pair, "=")
+		if !ok || prefix == "" || target == "" {
+			slog.Warn("model-map: skipping malformed entry", "entry", pair)
+			continue
+		}
+		mm = append(mm, convert.ModelMapEntry{
+			SourcePrefix: strings.ToLower(strings.TrimSpace(prefix)),
+			TargetModel:  strings.TrimSpace(target),
+		})
+	}
+	return mm
 }

@@ -277,16 +277,50 @@ type SSEEvent struct {
 	Retry int    // optional reconnection time in ms
 }
 
+// -------- ModelMap --------
+
+// ModelMapEntry maps a source model prefix to a target model ID.
+type ModelMapEntry struct {
+	SourcePrefix string // lowercase prefix (e.g. "claude-opus"), or "*" for catch-all
+	TargetModel  string // target model (e.g. "deepseek-v4-pro")
+}
+
+// ModelMap is an ordered list of prefix-based model mapping rules, checked in order.
+type ModelMap []ModelMapEntry
+
+// Apply checks sourceModel against all entries and returns the target + true
+// on the first match. Specific prefixes are checked first in declaration order;
+// a catch-all entry ("*") is checked last only if no specific prefix matched.
+func (mm ModelMap) Apply(sourceModel string) (string, bool) {
+	sourceModel = strings.ToLower(sourceModel)
+	var catchAll ModelMapEntry
+	for _, entry := range mm {
+		if entry.SourcePrefix == "*" {
+			catchAll = entry
+			continue
+		}
+		if strings.HasPrefix(sourceModel, entry.SourcePrefix) {
+			return entry.TargetModel, true
+		}
+	}
+	if catchAll.SourcePrefix != "" {
+		return catchAll.TargetModel, true
+	}
+	return "", false
+}
+
 // -------- ConvertOptions --------
 
 // ConvertOptions controls the conversion behavior.
 type ConvertOptions struct {
-	// Model is the target Anthropic model ID when converting from OpenAI Request → Anthropic Request.
+	// Model is the fallback model ID for both request directions.
+	// Used only when mapping misses and the input model is empty.
 	Model string
 	// MaxTokens is the default max_tokens value for Anthropic requests.
 	MaxTokens int
-	// Downstream is the target OpenAI model ID when converting from Anthropic Request → OpenAI Request.
-	Downstream string
+	// ModelMap is an optional prefix-based model mapping table for both
+	// request directions. Checked before passthrough. Empty = passthrough only.
+	ModelMap ModelMap
 	// SSEPhase is the stream lifecycle phase: "start", "event", or "end".
 	// Empty means non-streaming conversion.
 	SSEPhase string

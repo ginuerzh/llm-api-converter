@@ -128,7 +128,7 @@ func convertSSEEvent(evt *SSEEvent, opts *ConvertOptions) bool {
 // (e.g. "[DONE]") passes through unchanged.
 func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 	if opts == nil {
-		opts = &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "deepseek-chat"}
+		opts = &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192}
 	}
 	if len(body) == 0 {
 		return body, nil
@@ -231,11 +231,34 @@ func mapOpenAIStreamFinish(reason string) string {
 	}
 }
 
+// resolveModel determines the output model ID for request-to-request conversion.
+// Priority: mapping (prefix match or catch-all) → passthrough (original input) → fallback.
+func resolveModel(inputModel, fallback string, mapping ModelMap) string {
+	if inputModel != "" {
+		if target, ok := mapping.Apply(inputModel); ok {
+			return target
+		}
+		return inputModel
+	}
+	return fallback
+}
+
+// extractModelFromData extracts the "model" field from raw JSON request data.
+func extractModelFromData(data []byte) string {
+	var raw struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return ""
+	}
+	return raw.Model
+}
+
 // Convert detects the input body format and performs bidirectional
 // conversion between OpenAI Chat Completions and Anthropic Messages formats.
 func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 	if opts == nil {
-		opts = &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "deepseek-chat"}
+		opts = &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192}
 	}
 
 	if len(body) == 0 {
@@ -795,7 +818,7 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 	}
 
 	anthropic := AnthropicRequest{
-		Model:     opts.Model,
+		Model:     resolveModel(req.Model, opts.Model, opts.ModelMap),
 		MaxTokens: opts.MaxTokens,
 		Stream:    req.Stream,
 	}
@@ -1087,10 +1110,12 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 		return body, nil
 	}
 
-	profile := classifyModel(opts.Downstream)
+	// Resolve output model: mapping → passthrough → fallback.
+	outputModel := resolveModel(req.Model, opts.Model, opts.ModelMap)
+	profile := classifyModel(outputModel)
 
 	oai := OpenAIChatRequest{
-		Model:  opts.Downstream,
+		Model:  outputModel,
 		Stream: req.Stream,
 	}
 
@@ -1127,7 +1152,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	}
 
 	// Tool choice instruction for DeepSeek (softened to system instruction).
-	extraInstruction := toolChoiceInstruction(req.ToolChoice, opts.Downstream)
+	extraInstruction := toolChoiceInstruction(req.ToolChoice, outputModel)
 
 	// Top-level system → prepend as system message.
 	if len(req.System) > 0 {
@@ -1184,7 +1209,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 		}
 
 		// Model-aware tool choice mapping.
-		oai.ToolChoice = anthropicToolChoiceToOpenAi(req.ToolChoice, opts.Downstream)
+		oai.ToolChoice = anthropicToolChoiceToOpenAi(req.ToolChoice, outputModel)
 	}
 
 	// stream_options for streaming requests (enables usage in final chunk).
@@ -1471,7 +1496,11 @@ func extractDeclaredTools(opts *ConvertOptions) []string {
 func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *ConvertOptions) ([]byte, error) {
 	switch StreamPhase(phase) {
 	case StreamPhaseStart:
-		sc := NewStreamConverter(opts.Model, opts.ReasoningCache, extractDeclaredTools(opts))
+		streamModel := opts.Model
+		if model := extractModelFromData(data); model != "" {
+			streamModel = resolveModel(model, opts.Model, opts.ModelMap)
+		}
+		sc := NewStreamConverter(streamModel, opts.ReasoningCache, extractDeclaredTools(opts))
 		streamStates.Store(sid, sc)
 		startData := sc.HandleStreamStart()
 		// First event data is now attached to the start phase signal

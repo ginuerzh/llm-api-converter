@@ -36,8 +36,8 @@ func TestRewriteEndpoint_OpenAIRequest(t *testing.T) {
 	if err := json.Unmarshal(resp.Data, &acr); err != nil {
 		t.Fatalf("unmarshal error: %v\nbody: %s", err, resp.Data)
 	}
-	if acr.Model != "claude-sonnet-4-20250514" {
-		t.Fatalf("model: want claude-sonnet-4-20250514, got %q", acr.Model)
+	if acr.Model != "gpt-4" {
+		t.Fatalf("model: want gpt-4, got %q", acr.Model)
 	}
 	if len(acr.Messages) != 1 {
 		t.Fatalf("want 1 message, got %d", len(acr.Messages))

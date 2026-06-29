@@ -14,7 +14,7 @@ var (
 	addr        string
 	model       string
 	maxTokens   int
-	downstream  string
+	modelMap    string
 	logLevel    string
 	logFormat   string
 )
@@ -50,7 +50,7 @@ var rootCmd = &cobra.Command{
 		return rewriter.ListenAndServe(addr, &rewriter.Options{
 			Model:      model,
 			MaxTokens:  maxTokens,
-			Downstream: downstream,
+			ModelMap:  modelMap,
 		})
 	},
 }
@@ -65,9 +65,9 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&logLevel, "log.level", "info", "log level: debug, info, warn or error")
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log.format", "json", "log format: text or json")
 	rootCmd.PersistentFlags().StringVar(&addr, "addr", ":8000", "listening address")
-	rootCmd.PersistentFlags().StringVar(&model, "model", "claude-sonnet-4-20250514", "default Anthropic model ID")
+	rootCmd.PersistentFlags().StringVar(&model, "model", "deepseek-chat", "default fallback model ID")
 	rootCmd.PersistentFlags().IntVar(&maxTokens, "max-tokens", 8192, "default max_tokens")
-	rootCmd.PersistentFlags().StringVar(&downstream, "downstream", "deepseek-chat", "downstream OpenAI model ID")
+	rootCmd.PersistentFlags().StringVar(&modelMap, "model-map", "", "model mapping table: prefix1=target1,prefix2=target2,... (* for catch-all)")
 
 	rootCmd.SilenceErrors = true
 	rootCmd.SilenceUsage = true

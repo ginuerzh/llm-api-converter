@@ -60,8 +60,8 @@ func TestConvert_SimpleUserMessage(t *testing.T) {
 	if err := json.Unmarshal(b, &a); err != nil {
 		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
 	}
-	if a.Model != "claude-sonnet-4-20250514" {
-		t.Fatalf("model: want claude-sonnet-4-20250514, got %q", a.Model)
+	if a.Model != "gpt-4" {
+		t.Fatalf("model: want gpt-4, got %q", a.Model)
 	}
 	if a.MaxTokens != 8192 {
 		t.Fatalf("max_tokens: want 8192, got %d", a.MaxTokens)
@@ -909,8 +909,8 @@ func TestConvertSSE_OpenAIRequest(t *testing.T) {
 	if err := json.Unmarshal([]byte(jsonPart), &acr); err != nil {
 		t.Fatalf("unmarshal Anthropic request: %v\nbody: %s", err, jsonPart)
 	}
-	if acr.Model != "claude-sonnet-4-20250514" {
-		t.Fatalf("model: want claude-sonnet-4-20250514, got %q", acr.Model)
+	if acr.Model != "gpt-4" {
+		t.Fatalf("model: want gpt-4, got %q", acr.Model)
 	}
 }
 
@@ -1169,8 +1169,8 @@ func TestIsAnthropicRequest_OpenAIReqWithMaxTokensAndArrayContent(t *testing.T) 
 	if err := json.Unmarshal(out, &a); err != nil {
 		t.Fatalf("expected valid Anthropic request output, got: %s", out)
 	}
-	if a.Model != "claude-sonnet-4-20250514" {
-		t.Fatalf("model: want claude-sonnet-4-20250514, got %q", a.Model)
+	if a.Model != "gpt-4" {
+		t.Fatalf("model: want gpt-4, got %q", a.Model)
 	}
 }
 
@@ -1212,7 +1212,7 @@ func TestConvert_AnthropicReqToOpenAIReq_SimpleUser(t *testing.T) {
 	if err := json.Unmarshal(b, &o); err != nil {
 		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
 	}
-	if o.Model != "deepseek-chat" {
+	if o.Model != "claude-sonnet-4-20250514" {
 		t.Fatalf("model: want deepseek-chat, got %q", o.Model)
 	}
 	if len(o.Messages) != 1 {
@@ -1401,7 +1401,7 @@ func TestConvert_AnthropicReqToOpenAIReq_Tools(t *testing.T) {
 
 func TestConvert_AnthropicReqToOpenAIReq_ToolChoiceAny(t *testing.T) {
 	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"name":"f","input_schema":{"type":"object"}}],"tool_choice":{"type":"any"}}`
-	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "gpt-4"}
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -1417,7 +1417,7 @@ func TestConvert_AnthropicReqToOpenAIReq_ToolChoiceAny(t *testing.T) {
 
 func TestConvert_AnthropicReqToOpenAIReq_ToolChoiceTool(t *testing.T) {
 	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"name":"f","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"f"}}`
-	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "gpt-4"}
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -1608,7 +1608,7 @@ func TestConvert_AnthropicReqToOpenAIReq_StringContent(t *testing.T) {
 	if err := json.Unmarshal(b, &o); err != nil {
 		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
 	}
-	if o.Model != "deepseek-chat" {
+	if o.Model != "claude-sonnet-4-20250514" {
 		t.Fatalf("model: want deepseek-chat, got %q", o.Model)
 	}
 	if len(o.Messages) != 1 {
@@ -1764,8 +1764,8 @@ func TestConvertViaAutoDetection_AnthropicReq(t *testing.T) {
 	if err := json.Unmarshal(b, &o); err != nil {
 		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
 	}
-	if o.Model != "deepseek-chat" {
-		t.Fatalf("model: want deepseek-chat, got %q", o.Model)
+	if o.Model != "claude" {
+		t.Fatalf("model: want claude, got %q", o.Model)
 	}
 }
 
@@ -1812,8 +1812,8 @@ func TestConvertViaAutoDetection_OpenAIReqStillWorks(t *testing.T) {
 	if err := json.Unmarshal(b, &a); err != nil {
 		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
 	}
-	if a.Model != "claude-sonnet-4-20250514" {
-		t.Fatalf("model: want claude-sonnet-4-20250514, got %q", a.Model)
+	if a.Model != "gpt-4" {
+		t.Fatalf("model: want gpt-4, got %q", a.Model)
 	}
 }
 
@@ -1870,9 +1870,8 @@ func TestConvert_ReasoningCache_StoreInject(t *testing.T) {
 		t.Fatalf("cache GetText: want 'thinking steps...', got %q, ok=%v", textV, ok)
 	}
 
-	// Step 2: Anthropic Request (tool_use, no thinking) → OpenAI Request (cache inject).
+	// Step 2: Anthropic Request (tool_use, no thinking)
 	opts2 := &ConvertOptions{
-		Downstream:     "deepseek-chat",
 		ReasoningCache: rc,
 	}
 	anthReq := `{
@@ -1908,7 +1907,6 @@ func TestConvert_ReasoningCache_Miss(t *testing.T) {
 	rc := NewReasoningCache(100)
 
 	opts := &ConvertOptions{
-		Downstream:     "deepseek-chat",
 		ReasoningCache: rc, // empty cache → miss
 	}
 	anthReq := `{
@@ -1974,9 +1972,8 @@ func TestConvert_ReasoningCache_Eviction(t *testing.T) {
 // anthropicOpts returns ConvertOptions configured for Anthropic→OpenAI direction.
 func anthropicOpts() *ConvertOptions {
 	return &ConvertOptions{
-		Model:      "claude-sonnet-4-20250514",
-		MaxTokens:  8192,
-		Downstream: "deepseek-chat",
+		Model:     "claude-sonnet-4-20250514",
+		MaxTokens: 8192,
 	}
 }
 
@@ -1987,7 +1984,7 @@ func anthropicOpts() *ConvertOptions {
 func TestConvert_DeepSeekToolChoice_AnyStripped(t *testing.T) {
 	// DeepSeek models strip forced tool_choice and inject a system instruction.
 	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"use a tool"}]}],"tools":[{"name":"f","input_schema":{"type":"object"}}],"tool_choice":{"type":"any"}}`
-	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "deepseek-chat"}
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat"}}}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -2007,7 +2004,7 @@ func TestConvert_DeepSeekToolChoice_AnyStripped(t *testing.T) {
 
 func TestConvert_DeepSeekToolChoice_ToolStripped(t *testing.T) {
 	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"use a tool"}]}],"tools":[{"name":"f","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"f"}}`
-	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "deepseek-chat"}
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat"}}}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -2026,7 +2023,7 @@ func TestConvert_DeepSeekToolChoice_ToolStripped(t *testing.T) {
 
 func TestConvert_DeepSeekThinkingAndEffort(t *testing.T) {
 	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"think"}]}],"thinking":{"type":"enabled","budget_tokens":4096},"output_config":{"effort":"max"}}`
-	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "deepseek-chat"}
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat"}}}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -2046,7 +2043,7 @@ func TestConvert_DeepSeekThinkingAndEffort(t *testing.T) {
 func TestConvert_NonDeepSeekNoThinkingEffort(t *testing.T) {
 	// Non-DeepSeek models should NOT get thinking/reasoning_effort.
 	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"think"}]}],"thinking":{"type":"enabled"},"output_config":{"effort":"max"}}`
-	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "gpt-4"}
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -2065,7 +2062,7 @@ func TestConvert_NonDeepSeekNoThinkingEffort(t *testing.T) {
 
 func TestConvert_StreamOptionsIncluded(t *testing.T) {
 	body := `{"model":"claude","max_tokens":8192,"stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, Downstream: "deepseek-chat"}
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
