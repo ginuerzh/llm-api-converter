@@ -1870,6 +1870,13 @@ func convertOpenAIMessageToContent(msg OpenAIMessage) []AnthropicContent {
 			})
 		}
 	} else {
+		// Ensure at least one valid text block — empty "" serializes as
+		// {"type":"text"} (no text field), malformed per Anthropic schema.
+		// DeepSeek-V4-Pro can spend all max_tokens on reasoning, returning
+		// empty content + finish_reason:length, which falls through here.
+		if text == "" {
+			text = " " // minimal placeholder so the response is parseable
+		}
 		blocks = append(blocks, AnthropicContent{Type: "text", Text: text})
 	}
 

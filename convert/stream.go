@@ -212,6 +212,16 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 		events = append(events, sc.textDelta("\n\n[stream interrupted]")...)
 	}
 
+	// Ensure at least one valid text block — a reasoning-only stream
+	// (DeepSeek-V4-Pro with a small max_tokens budget) produces a thinking
+	// block but no text, leaving the final content array empty. Claude Code's
+	// safety classifier cannot parse an empty/no-content response.
+	if sc.accumulatedText == "" && len(sc.toolCallByIndex) == 0 {
+		events = append(events, sc.ensureBlock("text", "")...)
+		events = append(events, sc.textDelta(" ")...)
+		events = append(events, sc.contentBlockStop())
+	}
+
 	// message_delta with stop_reason.
 	stopReason := "end_turn"
 	if sc.finishReason != "" {
