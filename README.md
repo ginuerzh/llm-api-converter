@@ -21,7 +21,7 @@ The converter auto-detects the input format — no manual routing needed.
 go build -o llm-api-converter .
 
 # Run standalone
-./llm-api-converter --addr :8000 --model-map claude-opus=deepseek-v4-pro,claude-sonnet=deepseek-v4-flash,*=deepseek-v4-flash
+./llm-api-converter --addr :8000 --model-map "claude-opus=deepseek-v4-pro:openai,claude-sonnet=deepseek-v4-flash,*=deepseek-v4-flash:openai"
 
 # Run with GOST
 gost -C gost.yaml
@@ -100,6 +100,8 @@ All Anthropic traffic from Claude Code is intercepted by GOST, converted to Open
 
 - `claude-opus` → `deepseek-v4-pro`: Routes requests with model name starting with `claude-opus` to DeepSeek V4 Pro 
 - `*` → `deepseek-v4-flash`: Catch-all fallback for any unmatched model prefix
+- **Downstream protocol override**: Append `:openai` or `:anthropic` after the target to declare what format the backend speaks (`prefix=target:protocol`). When the incoming request/response already matches that protocol, conversion is skipped — **but the model name is still rewritten** to the target. Use this when routing to a backend that speaks the same protocol as the client and you only want model-name remapping. Example: `claude-opus=deepseek-v4-pro:openai` keeps OpenAI→OpenAI traffic in OpenAI form while renaming the model.
+- **Optional target**: Omit the target to rewrite nothing and only skip conversion, e.g. `claude-opus=:openai` passes same-protocol traffic through with the original model name unchanged.
 
 Update the `--model-map` to match your opencode-go deployment's available models.
 
@@ -156,7 +158,7 @@ With optional file persistence, 30-day TTL, and FIFO eviction.
 | `--addr` | `:8000` | Listening address |
 | `--model` | `deepseek-chat | Default fallback model ID |
 | `--max-tokens` | `8192` | Default max_tokens |
-| `--model-map` | `` | Model mapping: `prefix=target,...` (* for catch-all) |
+| `--model-map` | `` | Model mapping: `prefix=target[:protocol],...` (* for catch-all, protocol: openai\|anthropic) |
 | `--log.level` | `info` | Log level |
 | `--log.format` | `json` | Log format (text or json) |
 

@@ -15,6 +15,13 @@ cd llm-api-converter && ./llm-api-converter \
   --max-tokens 8192 \
   --model-map "claude-opus=deepseek-v4-pro,claude-sonnet=deepseek-v4-flash"
 
+# With protocol override (skip conversion when format matches downstream,
+# but still rewrite the model name)
+cd llm-api-converter && ./llm-api-converter \
+  --addr :8000 \
+  --model deepseek-chat \
+  --model-map "claude-opus=deepseek-v4-pro:openai,*=deepseek-chat:openai"
+
 # With debug logging
 cd llm-api-converter && ./llm-api-converter --log.level debug --log.format text
 ```
@@ -56,8 +63,7 @@ Anthropic Response → OpenAI Response  (reverse direction)
 | Package | Purpose |
 |---------|---------|
 | `main.go` | Entry point, delegates to `cmd.Execute()` |
-| `cmd/root.go` | Cobra CLI: `--addr`, `--model`, `--max-tokens`, `--downstream`, `--log.level`, `--log.format` |
-| `--model-map` | `` | Model mapping table: `prefix=target,...` (`*` for catch-all) |
+| `cmd/root.go` | Cobra CLI: `--addr`, `--model`, `--max-tokens`, `--model-map`, `--log.level`, `--log.format` |
 | `convert/` | Core conversion logic |
 | `convert/types.go` | All data types: OpenAI req/resp/streaming, Anthropic req/resp, SSE events, `ConvertOptions` |
 | `convert/convert.go` | `Convert()` auto-detect + all 4 conversion directions, SSE handling, message sequence sanitization |
@@ -78,11 +84,30 @@ Anthropic Response → OpenAI Response  (reverse direction)
 
 `Convert()` detects the input format in this order:
 1. SSE framing (`data:`, `event:`, `id:` prefix) → `ConvertSSE`
-2. Anthropic Request (`messages` with `max_tokens` + no OpenAI-specific fields) → Anthropic→OpenAI
-3. OpenAI Response (`choices` array) → OpenAI→Anthropic
-4. Anthropic Response (`type:"message"` + `stop_reason`/`usage`) → Anthropic→OpenAI
-5. OpenAI Request (`model` or `messages` field) → OpenAI→Anthropic
-6. Unknown format → pass through unchanged
+2. Protocol-override passthrough (see [Model map & protocol override](#model-map--protocol-override))
+3. Anthropic Request (`messages` with `max_tokens` + no OpenAI-specific fields) → Anthropic→OpenAI
+4. OpenAI Response (`choices` array) → OpenAI→Anthropic
+5. Anthropic Response (`type:"message"` + `stop_reason`/`usage`) → Anthropic→OpenAI
+6. OpenAI Request (`model` or `messages` field) → OpenAI→Anthropic
+7. Unknown format → pass through unchanged
+
+### Model map & protocol override
+
+Each `--model-map` entry is `prefix=target[:protocol]`. `prefix` is matched case-insensitively against the request's `model` field (longest-prefix wins; `*` is catch-all). `target` is the rewritten model name sent downstream. `:protocol` is optional:
+
+- **unset** (no `:protocol`) — current auto-detect bidirectional conversion behavior (the default).
+- **`:openai` / `:anthropic`** — declares the downstream protocol. When the incoming request/response already matches that protocol, **conversion is skipped but the model name is still rewritten** to `target`. Used when routing to a backend that speaks the same protocol as the client and you only want model remapping.
+- **empty target** (`prefix=:openai`) — rewrite nothing, only skip conversion for same-protocol traffic.
+
+Resolution helpers (in `convert/convert.go` + `convert/types.go`):
+- `ModelMap.Apply(sourceModel) (target, protocol, ok)` — forward lookup by source prefix
+- `ModelMap.LookupTarget(targetModel) string` — case-insensitive reverse lookup of a target model's protocol; used for responses whose `model` is the downstream target (not a source prefix), so the protocol override still applies on the return path
+- `resolveModel(inputModel, fallback, mapping) (target, protocol)` — wraps `Apply` with passthrough/fallback
+
+The passthrough-with-model-rewrite runs in three sites:
+- `Convert()` — non-streaming request/response bodies
+- `ConvertSSE()` — standalone SSE events (with `LookupTarget` reverse lookup)
+- `HandleSSEEvent()` — OpenAI stream chunks (model rewritten in the chunk payload)
 
 ### Streaming architecture (OpenAI → Anthropic)
 
@@ -122,7 +147,7 @@ File persistence via `SetPersistence(path)` with atomic write (tmp + rename), 30
 | `--addr` | `:8000` | Listening address |
 | `--model` | `deepseek-chat` | Fallback model ID for both directions |
 | `--max-tokens` | `8192` | Default `max_tokens` |
-| `--model-map` | `` | Model mapping table: `prefix=target,...` (`*` for catch-all) |
+| `--model-map` | `` | Model mapping table: `prefix=target[:protocol],...` (`*` for catch-all, protocol: openai\|anthropic) |
 | `--log.level` | `info` | Log level: debug, info, warn, error |
 | `--log.format` | `json` | Log format: text or json |
 
@@ -152,6 +177,7 @@ cd llm-api-converter && go test ./tests/e2e/ -v -timeout 5m
 
 ## Known behaviors
 
+- **Protocol override passthrough**: A model-map `:protocol` suffix (`prefix=target:openai`/`:anthropic`) skips conversion for traffic already in that format, but the model name is still rewritten to `target`. Empty target (`prefix=:openai`) skips conversion and leaves the model unchanged. Unset protocol preserves the auto-detect conversion behavior.
 - **SSE passthrough**: Non-JSON/unknown SSE data passes through unchanged (`[DONE]` markers → `message_stop`)
 - **Empty messages**: After filtering (e.g., only system message), a minimal user message `"..."` is injected (Anthropic requires at least one message)
 - **Tool choice**: DeepSeek models reject forced function `tool_choice`; it's softened to a system instruction instead
