@@ -146,17 +146,38 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 	if opts.ModelMap != nil && evt.Data != "" {
 		var raw map[string]any
 		if err := json.Unmarshal([]byte(evt.Data), &raw); err == nil {
-			_, proto := resolveModel(extractModelFromData([]byte(evt.Data)), opts.Model, opts.ModelMap)
-			if proto == "openai" && isOpenAIStreamChunk([]byte(evt.Data)) {
-				slog.Debug("sse: protocol=openai, OpenAI stream chunk -> passthrough")
-				return body, nil
+			model := extractModelFromData([]byte(evt.Data))
+			targetModel, proto := resolveModel(model, opts.Model, opts.ModelMap)
+
+			// Reverse lookup: if the source prefix didn't match but the
+			// model appears as a target (e.g. response from downstream API),
+			// use the target's protocol.
+			if proto == "" && model != "" {
+				if lp := opts.ModelMap.LookupTarget(model); lp != "" {
+					proto = lp
+				}
 			}
-			if proto == "openai" && isOpenAIResponse(raw) {
-				slog.Debug("sse: protocol=openai, OpenAI response -> passthrough")
-				return body, nil
+
+			passthrough := false
+			if proto == "openai" && (isOpenAIStreamChunk([]byte(evt.Data)) || isOpenAIResponse(raw)) {
+				passthrough = true
 			}
 			if proto == "anthropic" && isAnthropicResponse(raw) {
-				slog.Debug("sse: protocol=anthropic, Anthropic response -> passthrough")
+				passthrough = true
+			}
+
+			if passthrough {
+				if targetModel != "" {
+					if origModel, ok := raw["model"].(string); ok && origModel != targetModel {
+						raw["model"] = targetModel
+						if newData, err := json.Marshal(raw); err == nil {
+							evt.Data = string(newData)
+							slog.Debug("sse: protocol passthrough with model rewrite", "model", targetModel)
+							return reconstructSSEEvent(evt), nil
+						}
+					}
+				}
+				slog.Debug("sse: protocol passthrough")
 				return body, nil
 			}
 		}
@@ -301,26 +322,32 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 	}
 
 	// Resolve downstream protocol override from model mapping.
-	// If set and the input format matches, pass through without conversion.
+	// If set and the input format matches, rewrite model name and pass through.
 	if opts.ModelMap != nil {
 		downstreamProtocol := ""
+		var targetModel string
 		if m, ok := raw["model"].(string); ok {
-			_, downstreamProtocol = resolveModel(m, opts.Model, opts.ModelMap)
+			targetModel, downstreamProtocol = resolveModel(m, opts.Model, opts.ModelMap)
 		}
-		if downstreamProtocol == "openai" && isOpenAIRequest(raw) {
-			slog.Debug("protocol=openai, input is OpenAI request -> passthrough")
-			return body, nil
+
+		passthrough := false
+		if downstreamProtocol == "openai" && (isOpenAIRequest(raw) || isOpenAIResponse(raw)) {
+			passthrough = true
 		}
-		if downstreamProtocol == "openai" && isOpenAIResponse(raw) {
-			slog.Debug("protocol=openai, input is OpenAI response -> passthrough")
-			return body, nil
+		if downstreamProtocol == "anthropic" && (isAnthropicRequest(raw) || isAnthropicResponse(raw)) {
+			passthrough = true
 		}
-		if downstreamProtocol == "anthropic" && isAnthropicRequest(raw) {
-			slog.Debug("protocol=anthropic, input is Anthropic request -> passthrough")
-			return body, nil
-		}
-		if downstreamProtocol == "anthropic" && isAnthropicResponse(raw) {
-			slog.Debug("protocol=anthropic, input is Anthropic response -> passthrough")
+
+		if passthrough {
+			if targetModel != "" && raw["model"] != targetModel {
+				raw["model"] = targetModel
+				modified, err := json.Marshal(raw)
+				if err == nil {
+					slog.Debug("protocol passthrough with model rewrite", "model", targetModel)
+					return modified, nil
+				}
+			}
+			slog.Debug("protocol passthrough")
 			return body, nil
 		}
 	}
@@ -1673,8 +1700,22 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 		sc := v.(*StreamConverter)
 
 		// Protocol passthrough: if the payload format matches the downstream
-		// protocol, return the original SSE event unchanged.
+		// protocol, rewrite model in chunk and pass through.
 		if sc.downstreamProtocol == "openai" && isOpenAIStreamChunk(payload) {
+			if sc.model != "" {
+				var chunkRaw map[string]any
+				if err := json.Unmarshal(payload, &chunkRaw); err == nil {
+					if old, ok := chunkRaw["model"].(string); ok && old != sc.model {
+						chunkRaw["model"] = sc.model
+						if newPayload, err := json.Marshal(chunkRaw); err == nil {
+							evt := parseSSEEvent(data)
+							evt.Data = string(newPayload)
+							slog.Debug("stream: protocol=openai passthrough with model rewrite", "model", sc.model)
+							return reconstructSSEEvent(evt), nil
+						}
+					}
+				}
+			}
 			slog.Debug("stream: protocol=openai, OpenAI chunk -> passthrough")
 			return data, nil
 		}

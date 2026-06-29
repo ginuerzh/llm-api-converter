@@ -371,6 +371,20 @@ func (mm ModelMap) Apply(sourceModel string) (string, string, bool) {
 	return "", "", false
 }
 
+// LookupTarget does a case-insensitive reverse lookup: returns the protocol
+// of the entry whose TargetModel matches the given model name. Used when a
+// request or response model is already the mapped target (e.g. downstream
+// API response) and the source-prefix path did not match.
+func (mm ModelMap) LookupTarget(targetModel string) string {
+	targetModel = strings.ToLower(targetModel)
+	for _, entry := range mm {
+		if strings.ToLower(entry.TargetModel) == targetModel && entry.Protocol != "" {
+			return entry.Protocol
+		}
+	}
+	return ""
+}
+
 // -------- ConvertOptions --------
 
 // ConvertOptions controls the conversion behavior.
