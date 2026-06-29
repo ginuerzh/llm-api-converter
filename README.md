@@ -27,6 +27,62 @@ go build -o llm-api-converter .
 gost -C gost.yaml
 ```
 
+### With Docker Compose
+
+Run the converter as a container alongside GOST. The published image is `ginuerzh/llm-api-converter` (multi-arch: amd64/arm64/arm v6/v7). Since the image `ENTRYPOINT` is the binary, `command:` supplies the CLI flags.
+
+```yaml
+# docker-compose.yml
+services:
+  llm-converter:
+    image: ginuerzh/llm-api-converter:latest
+    command:
+      - --addr
+      - :8000
+      - --model
+      - deepseek-v4-flash
+      - --model-map
+      - claude-opus=deepseek-v4-pro:openai,claude-sonnet=deepseek-v4-flash,*=deepseek-v4-flash:openai
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  gost:
+    image: ginuerzh/gost:latest
+    command: -C /etc/gost/gost.yaml
+    volumes:
+      - ./gost.yaml:/etc/gost/gost.yaml:ro
+    ports:
+      - "8787:8787"
+    depends_on:
+      - llm-converter
+    restart: unless-stopped
+```
+
+Point the GOST rewriter plugin at the converter's container address:
+
+```yaml
+# in gost.yaml
+rewriters:
+- name: llm-converter
+  plugin:
+    type: http
+    addr: http://llm-converter:8000/rewrite
+```
+
+```bash
+docker compose up -d
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+claude
+```
+
+Build the image locally instead of pulling:
+
+```bash
+docker build -t ginuerzh/llm-api-converter .
+# or, with the multi-arch buildx workflow from .github/workflows/buildx.yml
+```
+
 ### Claude Code → DeepSeek (via opencode-go)
 
 This setup lets Claude Code (Anthropic protocol) call DeepSeek models (OpenAI protocol) through the converter:
