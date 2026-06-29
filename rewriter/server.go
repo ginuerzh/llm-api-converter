@@ -154,7 +154,8 @@ func extractAnthropicToolNames(data []byte) []string {
 }
 
 // parseModelMap parses a comma-separated model map string into a ModelMap.
-// Format: "prefix1=target1,prefix2=target2,..." — * prefix is catch-all.
+// Format: "prefix1=target1[:protocol1],prefix2=target2[:protocol2],..." — * prefix is catch-all.
+// Protocol is optional (openai|anthropic); when unset, auto-detect is used.
 func parseModelMap(s string) convert.ModelMap {
 	if s == "" {
 		return nil
@@ -165,14 +166,27 @@ func parseModelMap(s string) convert.ModelMap {
 		if pair == "" {
 			continue
 		}
-		prefix, target, ok := strings.Cut(pair, "=")
-		if !ok || prefix == "" || target == "" {
+		prefix, rest, ok := strings.Cut(pair, "=")
+		if !ok || prefix == "" || rest == "" {
 			slog.Warn("model-map: skipping malformed entry", "entry", pair)
 			continue
 		}
+		target, protocol, _ := strings.Cut(rest, ":")
+		target = strings.TrimSpace(target)
+		protocol = strings.ToLower(strings.TrimSpace(protocol))
+		if target == "" {
+			slog.Warn("model-map: skipping entry with empty target", "entry", pair)
+			continue
+		}
+		// Validate protocol values: only "" (unset), "openai", or "anthropic".
+		if protocol != "" && protocol != "openai" && protocol != "anthropic" {
+			slog.Warn("model-map: unknown protocol, ignoring", "protocol", protocol, "entry", pair)
+			protocol = ""
+		}
 		mm = append(mm, convert.ModelMapEntry{
 			SourcePrefix: strings.ToLower(strings.TrimSpace(prefix)),
-			TargetModel:  strings.TrimSpace(target),
+			TargetModel:  target,
+			Protocol:     protocol,
 		})
 	}
 	return mm

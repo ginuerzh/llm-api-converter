@@ -131,6 +131,62 @@ type AnthropicRequest struct {
 	Metadata      any                    `json:"metadata,omitempty"`
 }
 
+// UnmarshalJSON implements json.Unmarshaler and normalizes the system field
+// which can be either a plain string (legacy) or an array of text blocks (current).
+func (r *AnthropicRequest) UnmarshalJSON(data []byte) error {
+	// Shadow type to break recursion.
+	type shadow struct {
+		Model         string                 `json:"model"`
+		Messages      []AnthropicMessage     `json:"messages"`
+		System        json.RawMessage        `json:"system,omitempty"`
+		MaxTokens     int                    `json:"max_tokens"`
+		Temperature   *float64               `json:"temperature,omitempty"`
+		TopP          *float64               `json:"top_p,omitempty"`
+		TopK          *int                   `json:"top_k,omitempty"`
+		StopSequences []string               `json:"stop_sequences,omitempty"`
+		Stream        *bool                  `json:"stream,omitempty"`
+		Thinking      *AnthropicThinking     `json:"thinking,omitempty"`
+		OutputConfig  *AnthropicOutputConfig `json:"output_config,omitempty"`
+		Tools         []AnthropicTool        `json:"tools,omitempty"`
+		ToolChoice    *AnthropicToolChoice   `json:"tool_choice,omitempty"`
+		Metadata      any                    `json:"metadata,omitempty"`
+	}
+	var s shadow
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	r.Model = s.Model
+	r.Messages = s.Messages
+	r.MaxTokens = s.MaxTokens
+	r.Temperature = s.Temperature
+	r.TopP = s.TopP
+	r.TopK = s.TopK
+	r.StopSequences = s.StopSequences
+	r.Stream = s.Stream
+	r.Thinking = s.Thinking
+	r.OutputConfig = s.OutputConfig
+	r.Tools = s.Tools
+	r.ToolChoice = s.ToolChoice
+	r.Metadata = s.Metadata
+
+	if len(s.System) == 0 || string(s.System) == "null" {
+		r.System = nil
+		return nil
+	}
+
+	// If it's a string, wrap it into a single text block.
+	if s.System[0] == '"' {
+		var text string
+		if err := json.Unmarshal(s.System, &text); err != nil {
+			return err
+		}
+		r.System = []AnthropicTextBlock{{Type: "text", Text: text}}
+		return nil
+	}
+
+	return json.Unmarshal(s.System, &r.System)
+}
+
 // modelProfile caches the detection result for a single request so that
 // repeated isDeepSeekModel/isOpenAIStyleModel calls don't re-parse the string.
 type modelProfile struct {
@@ -288,15 +344,16 @@ type SSEEvent struct {
 type ModelMapEntry struct {
 	SourcePrefix string // lowercase prefix (e.g. "claude-opus"), or "*" for catch-all
 	TargetModel  string // target model (e.g. "deepseek-v4-pro")
+	Protocol     string // downstream protocol: "" (auto-detect), "openai", "anthropic"
 }
 
 // ModelMap is an ordered list of prefix-based model mapping rules, checked in order.
 type ModelMap []ModelMapEntry
 
-// Apply checks sourceModel against all entries and returns the target + true
-// on the first match. Specific prefixes are checked first in declaration order;
+// Apply checks sourceModel against all entries and returns the target, protocol override,
+// and true on the first match. Specific prefixes are checked first in declaration order;
 // a catch-all entry ("*") is checked last only if no specific prefix matched.
-func (mm ModelMap) Apply(sourceModel string) (string, bool) {
+func (mm ModelMap) Apply(sourceModel string) (string, string, bool) {
 	sourceModel = strings.ToLower(sourceModel)
 	var catchAll ModelMapEntry
 	for _, entry := range mm {
@@ -305,13 +362,13 @@ func (mm ModelMap) Apply(sourceModel string) (string, bool) {
 			continue
 		}
 		if strings.HasPrefix(sourceModel, entry.SourcePrefix) {
-			return entry.TargetModel, true
+			return entry.TargetModel, entry.Protocol, true
 		}
 	}
 	if catchAll.SourcePrefix != "" {
-		return catchAll.TargetModel, true
+		return catchAll.TargetModel, catchAll.Protocol, true
 	}
-	return "", false
+	return "", "", false
 }
 
 // -------- ConvertOptions --------

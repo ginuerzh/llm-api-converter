@@ -15,6 +15,9 @@ import (
 type StreamConverter struct {
 	model string
 
+	// Downstream protocol override from model-map resolution.
+	downstreamProtocol string // "" = auto-detect, "openai", "anthropic"
+
 	// Content block state.
 	curBlockType   string // "text", "thinking", "tool_use", or "" (none)
 	curBlockIndex  int

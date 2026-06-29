@@ -2196,3 +2196,65 @@ func TestConvert_GetBestMultiTier(t *testing.T) {
 		t.Fatalf("GetBest: tool tier should take priority, got %q", result)
 	}
 }
+
+func TestAnthropicRequest_UnmarshalJSON_SystemString(t *testing.T) {
+	body := `{"model":"claude-opus-4","max_tokens":4096,"messages":[{"role":"user","content":"hello"}],"system":"you are a helpful assistant"}`
+	var req AnthropicRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(req.System) != 1 {
+		t.Fatalf("want 1 system block, got %d", len(req.System))
+	}
+	if req.System[0].Type != "text" || req.System[0].Text != "you are a helpful assistant" {
+		t.Fatalf("system: want {text, you are a helpful assistant}, got {%s, %s}", req.System[0].Type, req.System[0].Text)
+	}
+}
+
+func TestAnthropicRequest_UnmarshalJSON_SystemArray(t *testing.T) {
+	body := `{"model":"claude-opus-4","max_tokens":4096,"messages":[{"role":"user","content":"hello"}],"system":[{"type":"text","text":"be helpful"},{"type":"text","text":"be concise"}]}`
+	var req AnthropicRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if len(req.System) != 2 {
+		t.Fatalf("want 2 system blocks, got %d", len(req.System))
+	}
+	if req.System[0].Text != "be helpful" || req.System[1].Text != "be concise" {
+		t.Fatalf("system: want [be helpful, be concise], got [%s, %s]", req.System[0].Text, req.System[1].Text)
+	}
+}
+
+func TestAnthropicRequest_UnmarshalJSON_NoSystem(t *testing.T) {
+	body := `{"model":"claude-opus-4","max_tokens":4096,"messages":[{"role":"user","content":"hello"}]}`
+	var req AnthropicRequest
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if req.System != nil {
+		t.Fatalf("system should be nil, got %v", req.System)
+	}
+}
+
+func TestConvert_AnthropicRequestWithStringSystem(t *testing.T) {
+	// Anthropic request with string system → OpenAI request
+	body := `{"model":"claude-opus-4","max_tokens":4096,"messages":[{"role":"user","content":"hello"}],"system":"you are a helpful assistant"}`
+	oaiBody, err := Convert([]byte(body), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oai OpenAIChatRequest
+	if err := json.Unmarshal(oaiBody, &oai); err != nil {
+		t.Fatalf("unmarshal OpenAI error: %v\nbody: %s", err, oaiBody)
+	}
+	// The system string should become the first message with role=system
+	if len(oai.Messages) < 2 {
+		t.Fatalf("want at least 2 messages, got %d", len(oai.Messages))
+	}
+	if oai.Messages[0].Role != "system" {
+		t.Fatalf("first message role: want system, got %q", oai.Messages[0].Role)
+	}
+	if oai.Messages[0].Content != "you are a helpful assistant" {
+		t.Fatalf("system content: want %q, got %q", "you are a helpful assistant", oai.Messages[0].Content)
+	}
+}

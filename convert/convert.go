@@ -141,6 +141,27 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 
 	evt := parseSSEEvent(body)
 
+	// Protocol passthrough for SSE events: check if data payload already
+	// matches the downstream protocol and bypass conversion.
+	if opts.ModelMap != nil && evt.Data != "" {
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(evt.Data), &raw); err == nil {
+			_, proto := resolveModel(extractModelFromData([]byte(evt.Data)), opts.Model, opts.ModelMap)
+			if proto == "openai" && isOpenAIStreamChunk([]byte(evt.Data)) {
+				slog.Debug("sse: protocol=openai, OpenAI stream chunk -> passthrough")
+				return body, nil
+			}
+			if proto == "openai" && isOpenAIResponse(raw) {
+				slog.Debug("sse: protocol=openai, OpenAI response -> passthrough")
+				return body, nil
+			}
+			if proto == "anthropic" && isAnthropicResponse(raw) {
+				slog.Debug("sse: protocol=anthropic, Anthropic response -> passthrough")
+				return body, nil
+			}
+		}
+	}
+
 	// Check for OpenAI streaming chunk: data payload with choices[].delta.
 	// This must be detected before the generic Convert() path since OpenAI
 	// streaming chunks have a different structure from non-streaming responses.
@@ -231,16 +252,16 @@ func mapOpenAIStreamFinish(reason string) string {
 	}
 }
 
-// resolveModel determines the output model ID for request-to-request conversion.
+// resolveModel determines the output model ID and downstream protocol override.
 // Priority: mapping (prefix match or catch-all) → passthrough (original input) → fallback.
-func resolveModel(inputModel, fallback string, mapping ModelMap) string {
+func resolveModel(inputModel, fallback string, mapping ModelMap) (string, string) {
 	if inputModel != "" {
-		if target, ok := mapping.Apply(inputModel); ok {
-			return target
+		if target, proto, ok := mapping.Apply(inputModel); ok {
+			return target, proto
 		}
-		return inputModel
+		return inputModel, ""
 	}
-	return fallback
+	return fallback, ""
 }
 
 // extractModelFromData extracts the "model" field from raw JSON request data.
@@ -277,6 +298,31 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 	if err := json.Unmarshal(body, &raw); err != nil {
 		slog.Debug("not JSON, passing through", "err", err)
 		return body, nil
+	}
+
+	// Resolve downstream protocol override from model mapping.
+	// If set and the input format matches, pass through without conversion.
+	if opts.ModelMap != nil {
+		downstreamProtocol := ""
+		if m, ok := raw["model"].(string); ok {
+			_, downstreamProtocol = resolveModel(m, opts.Model, opts.ModelMap)
+		}
+		if downstreamProtocol == "openai" && isOpenAIRequest(raw) {
+			slog.Debug("protocol=openai, input is OpenAI request -> passthrough")
+			return body, nil
+		}
+		if downstreamProtocol == "openai" && isOpenAIResponse(raw) {
+			slog.Debug("protocol=openai, input is OpenAI response -> passthrough")
+			return body, nil
+		}
+		if downstreamProtocol == "anthropic" && isAnthropicRequest(raw) {
+			slog.Debug("protocol=anthropic, input is Anthropic request -> passthrough")
+			return body, nil
+		}
+		if downstreamProtocol == "anthropic" && isAnthropicResponse(raw) {
+			slog.Debug("protocol=anthropic, input is Anthropic response -> passthrough")
+			return body, nil
+		}
 	}
 
 	// Detect: Anthropic Messages Request (messages + max_tokens or Anthropic content blocks).
@@ -505,6 +551,24 @@ func isOpenAIResponse(m map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// isOpenAIRequest detects an OpenAI Chat Completions request body.
+// It checks for model/messages fields while rejecting known non-request formats.
+func isOpenAIRequest(m map[string]any) bool {
+	if !hasStringField(m, "model") && !hasArrayField(m, "messages") {
+		return false
+	}
+	if isAnthropicRequest(m) {
+		return false
+	}
+	if isAnthropicResponse(m) {
+		return false
+	}
+	if isOpenAIResponse(m) {
+		return false
+	}
+	return true
 }
 
 // isOpenAIStreamChunk detects an OpenAI SSE streaming data payload.
@@ -845,8 +909,9 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 		return body, nil
 	}
 
+	model, _ := resolveModel(req.Model, opts.Model, opts.ModelMap)
 	anthropic := AnthropicRequest{
-		Model:     resolveModel(req.Model, opts.Model, opts.ModelMap),
+		Model:     model,
 		MaxTokens: opts.MaxTokens,
 		Stream:    req.Stream,
 	}
@@ -1161,7 +1226,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	}
 
 	// Resolve output model: mapping → passthrough → fallback.
-	outputModel := resolveModel(req.Model, opts.Model, opts.ModelMap)
+	outputModel, _ := resolveModel(req.Model, opts.Model, opts.ModelMap)
 	profile := classifyModel(outputModel)
 
 	oai := OpenAIChatRequest{
@@ -1554,10 +1619,12 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 	switch StreamPhase(phase) {
 	case StreamPhaseStart:
 		streamModel := opts.Model
+		downstreamProtocol := ""
 		if model := extractModelFromData(data); model != "" {
-			streamModel = resolveModel(model, opts.Model, opts.ModelMap)
+			streamModel, downstreamProtocol = resolveModel(model, opts.Model, opts.ModelMap)
 		}
 		sc := NewStreamConverter(streamModel, opts.ReasoningCache, extractDeclaredTools(opts))
+		sc.downstreamProtocol = downstreamProtocol
 		streamStates.Store(sid, sc)
 		startData := sc.HandleStreamStart()
 		// First event data is now attached to the start phase signal
@@ -1585,7 +1652,13 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 		v, ok := streamStates.Load(sid)
 		if !ok {
 			slog.Warn("HandleSSEEvent: unknown stream, starting new", "sid", sid)
-			sc := NewStreamConverter(opts.Model, opts.ReasoningCache, extractDeclaredTools(opts))
+			streamModel_fb := opts.Model
+			downstreamProtocol_fb := ""
+			if model := extractModelFromData(payload); model != "" {
+				streamModel_fb, downstreamProtocol_fb = resolveModel(model, opts.Model, opts.ModelMap)
+			}
+			sc := NewStreamConverter(streamModel_fb, opts.ReasoningCache, extractDeclaredTools(opts))
+			sc.downstreamProtocol = downstreamProtocol_fb
 			streamStates.Store(sid, sc)
 			startData := sc.HandleStreamStart()
 			chunkData, err := sc.HandleChunk(payload)
@@ -1598,6 +1671,14 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			return startData, nil
 		}
 		sc := v.(*StreamConverter)
+
+		// Protocol passthrough: if the payload format matches the downstream
+		// protocol, return the original SSE event unchanged.
+		if sc.downstreamProtocol == "openai" && isOpenAIStreamChunk(payload) {
+			slog.Debug("stream: protocol=openai, OpenAI chunk -> passthrough")
+			return data, nil
+		}
+
 		return sc.HandleChunk(payload)
 
 	case StreamPhaseEnd:

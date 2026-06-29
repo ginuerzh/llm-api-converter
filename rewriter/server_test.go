@@ -309,3 +309,41 @@ func TestSSELifecyclePhases(t *testing.T) {
 			}
 		})
 }
+// -- parseModelMap tests ------------------------------------------
+
+func TestParseModelMap_WithProtocol(t *testing.T) {
+	mm := parseModelMap("a=b:openai,c=d:anthropic,e=f")
+	if len(mm) != 3 {
+		t.Fatalf("want 3 entries, got %d", len(mm))
+	}
+	if mm[0].Protocol != "openai" || mm[0].SourcePrefix != "a" || mm[0].TargetModel != "b" {
+		t.Fatalf("entry 0: want (a, b, openai), got (%s, %s, %s)", mm[0].SourcePrefix, mm[0].TargetModel, mm[0].Protocol)
+	}
+	if mm[1].Protocol != "anthropic" || mm[1].SourcePrefix != "c" || mm[1].TargetModel != "d" {
+		t.Fatalf("entry 1: want (c, d, anthropic), got (%s, %s, %s)", mm[1].SourcePrefix, mm[1].TargetModel, mm[1].Protocol)
+	}
+	if mm[2].Protocol != "" || mm[2].SourcePrefix != "e" || mm[2].TargetModel != "f" {
+		t.Fatalf("entry 2: want (e, f, ''), got (%s, %s, %s)", mm[2].SourcePrefix, mm[2].TargetModel, mm[2].Protocol)
+	}
+}
+func TestParseModelMap_ProtocolValidation(t *testing.T) {
+	mm := parseModelMap("a=b:invalid_protocol")
+	if len(mm) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(mm))
+	}
+	if mm[0].Protocol != "" {
+		t.Fatalf("invalid protocol should be reset to '', got %q", mm[0].Protocol)
+	}
+}
+
+func TestParseModelMap_BackwardCompatible(t *testing.T) {
+	mm := parseModelMap("claude-opus=deepseek-v4-pro,claude-sonnet=deepseek-v4-flash,*=deepseek-chat")
+	if len(mm) != 3 {
+		t.Fatalf("want 3 entries, got %d", len(mm))
+	}
+	for i, entry := range mm {
+		if entry.Protocol != "" {
+			t.Fatalf("entry %d: protocol should be empty, got %q", i, entry.Protocol)
+		}
+	}
+}
