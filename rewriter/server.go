@@ -81,6 +81,11 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ReasoningCache: h.reasoningCache,
 	}
 
+	// Extract declared tool names from Anthropic requests for tool restriction.
+	if names := extractAnthropicToolNames(req.Data); len(names) > 0 {
+		opts.DeclaredTools = names
+	}
+
 	// SSE lifecycle phases are metadata-only signals with nil body.
 	// Check BEFORE the empty-data guard so start/end phases reach HandleSSEEvent.
 	if len(req.Metadata) > 0 {
@@ -124,4 +129,24 @@ func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(v)
+}
+
+// extractAnthropicToolNames parses the request body as an Anthropic request and
+// returns the declared tool names. Returns nil if parsing fails or no tools.
+func extractAnthropicToolNames(data []byte) []string {
+	var probe struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil || len(probe.Tools) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(probe.Tools))
+	for _, t := range probe.Tools {
+		if t.Name != "" {
+			names = append(names, t.Name)
+		}
+	}
+	return names
 }

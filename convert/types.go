@@ -1,6 +1,9 @@
 package convert
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // -------- OpenAI Chat Completions (Request) --------
 
@@ -20,6 +23,8 @@ type OpenAIChatRequest struct {
 	ToolChoice     any        `json:"tool_choice,omitempty"`
 	Thinking       any        `json:"thinking,omitempty"`        // DeepSeek extended thinking
 	ReasoningEffort any       `json:"reasoning_effort,omitempty"` // DeepSeek reasoning effort
+	ThinkingBudget *int       `json:"thinking_budget,omitempty"` // DeepSeek thinking budget
+	OpenAIPromptCacheKey string `json:"prompt_cache_key,omitempty"` // upstream prompt cache key
 	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"` // ignored
 	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`  // ignored
 	N              *int       `json:"n,omitempty"`               // ignored
@@ -159,8 +164,40 @@ func isOpenAIStyleModel(model string) bool {
 }
 
 type AnthropicMessage struct {
-	Role    string              `json:"role"`
-	Content []AnthropicContent  `json:"content"`
+	Role    string             `json:"role"`
+	Content []AnthropicContent `json:"content"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler and normalizes the content field
+// which can be either a plain string (deprecated Anthropic API format) or
+// an array of typed content blocks (current format).
+func (m *AnthropicMessage) UnmarshalJSON(data []byte) error {
+	// Shadow type to break recursion.
+	type shadow struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	var s shadow
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	m.Role = s.Role
+
+	if len(s.Content) == 0 || string(s.Content) == "null" {
+		m.Content = nil
+		return nil
+	}
+
+	if s.Content[0] == '"' {
+		var text string
+		if err := json.Unmarshal(s.Content, &text); err != nil {
+			return err
+		}
+		m.Content = []AnthropicContent{{Type: "text", Text: text}}
+		return nil
+	}
+
+	return json.Unmarshal(s.Content, &m.Content)
 }
 
 type AnthropicContent struct {
@@ -261,6 +298,13 @@ type ConvertOptions struct {
 	// across requests. Used to handle DeepSeek V4's requirement that
 	// reasoning_content must be replayed when tool_calls are present.
 	ReasoningCache *ReasoningCache
+	// DeclaredTools lists the tool names declared in the original Anthropic request.
+	// When non-nil, tool_use blocks not in this list are filtered from the response
+	// to prevent upstream tool hallucination.
+	DeclaredTools []string
+	// StreamErrorMsg, when non-empty, causes HandleSSEEvent to emit an error event
+	// instead of normal stream conversion.
+	StreamErrorMsg string
 }
 
 // -------- OpenAI Streaming Types --------
@@ -315,4 +359,5 @@ const (
 	StreamPhaseStart StreamPhase = "start"
 	StreamPhaseEvent StreamPhase = "event"
 	StreamPhaseEnd   StreamPhase = "end"
+	StreamPhaseError StreamPhase = "error"
 )

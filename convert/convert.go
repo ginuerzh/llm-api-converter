@@ -403,17 +403,23 @@ func isAnthropicRequest(m map[string]any) bool {
 		}
 	}
 
-	// max_tokens is REQUIRED in Anthropic. If present AND messages use array
-	// content (not plain string), it's likely an Anthropic request — BUT only
-	// if the model name doesn't look OpenAI-ish (gpt/o1/o3/deepseek/claude).
+	// max_tokens is REQUIRED in Anthropic. If present AND the model doesn't
+	// look OpenAI-ish (gpt/o1/o3/deepseek/gemini), it's likely an Anthropic
+	// request. Accept both array content (current format) and string content
+	// (deprecated format still accepted by the API).
 	if _, ok := m["max_tokens"]; ok && !hasOpenAIStyleModel(m) {
 		for i := 0; i < len(msgs) && i < 2; i++ {
 			msg, ok := msgs[i].(map[string]any)
 			if !ok {
 				continue
 			}
-			if _, ok := msg["content"].([]any); ok {
+			switch c := msg["content"].(type) {
+			case []any, string:
 				return true
+			case nil:
+				continue
+			default:
+				_ = c
 			}
 		}
 	}
@@ -1452,12 +1458,20 @@ var (
 // deleted when the "end" phase event is processed.
 var streamStates sync.Map // sid (string) -> *StreamConverter
 
+// extractDeclaredTools returns declared tool names from ConvertOptions, or nil.
+func extractDeclaredTools(opts *ConvertOptions) []string {
+	if opts != nil && len(opts.DeclaredTools) > 0 {
+		return opts.DeclaredTools
+	}
+	return nil
+}
+
 // HandleSSEEvent processes an SSE stream lifecycle event.
 // It routes to the appropriate StreamConverter method based on the phase.
 func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *ConvertOptions) ([]byte, error) {
 	switch StreamPhase(phase) {
 	case StreamPhaseStart:
-		sc := NewStreamConverter(opts.Model, opts.ReasoningCache)
+		sc := NewStreamConverter(opts.Model, opts.ReasoningCache, extractDeclaredTools(opts))
 		streamStates.Store(sid, sc)
 		startData := sc.HandleStreamStart()
 		// First event data is now attached to the start phase signal
@@ -1485,7 +1499,7 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 		v, ok := streamStates.Load(sid)
 		if !ok {
 			slog.Warn("HandleSSEEvent: unknown stream, starting new", "sid", sid)
-			sc := NewStreamConverter(opts.Model, opts.ReasoningCache)
+			sc := NewStreamConverter(opts.Model, opts.ReasoningCache, extractDeclaredTools(opts))
 			streamStates.Store(sid, sc)
 			startData := sc.HandleStreamStart()
 			chunkData, err := sc.HandleChunk(payload)

@@ -6,7 +6,7 @@ import (
 )
 
 func TestStream_SignatureDelta(t *testing.T) {
-	sc := NewStreamConverter("claude-sonnet-4-20250514", nil)
+	sc := NewStreamConverter("claude-sonnet-4-20250514", nil, nil)
 	sc.HandleStreamStart()
 
 	_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"reasoning_content":"think..."},"finish_reason":null}]}`))
@@ -22,7 +22,7 @@ func TestStream_SignatureDelta(t *testing.T) {
 }
 
 func TestStream_UsagePassthrough(t *testing.T) {
-	sc := NewStreamConverter("claude-sonnet-4-20250514", nil)
+	sc := NewStreamConverter("claude-sonnet-4-20250514", nil, nil)
 	sc.HandleStreamStart()
 
 	_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}`))
@@ -39,7 +39,7 @@ func TestStream_UsagePassthrough(t *testing.T) {
 }
 
 func TestStream_Interrupted(t *testing.T) {
-	sc := NewStreamConverter("claude-sonnet-4-20250514", nil)
+	sc := NewStreamConverter("claude-sonnet-4-20250514", nil, nil)
 	sc.HandleStreamStart()
 
 	_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`))

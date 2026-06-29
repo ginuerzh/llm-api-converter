@@ -1594,6 +1594,103 @@ func TestConvert_OpenAIRespToAnthropicResp_FinishReasonLength(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Anthropic Request with string content (deprecated format)
+// ---------------------------------------------------------------------------
+
+func TestConvert_AnthropicReqToOpenAIReq_StringContent(t *testing.T) {
+	// Anthropic API still accepts content as a plain string (deprecated format).
+	body := `{"model":"claude-sonnet-4-20250514","max_tokens":8192,"messages":[{"role":"user","content":"hello"}]}`
+	b, err := Convert([]byte(body), anthropicOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o OpenAIChatRequest
+	if err := json.Unmarshal(b, &o); err != nil {
+		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
+	}
+	if o.Model != "deepseek-chat" {
+		t.Fatalf("model: want deepseek-chat, got %q", o.Model)
+	}
+	if len(o.Messages) != 1 {
+		t.Fatalf("want 1 message, got %d", len(o.Messages))
+	}
+	if o.Messages[0].Role != "user" {
+		t.Fatalf("role: want user, got %q", o.Messages[0].Role)
+	}
+	content, ok := o.Messages[0].Content.(string)
+	if !ok || content != "hello" {
+		t.Fatalf("content: want 'hello', got %v", o.Messages[0].Content)
+	}
+}
+
+func TestConvert_AnthropicReqToOpenAIReq_MixedStringAndArrayContent(t *testing.T) {
+	body := `{"model":"claude","max_tokens":8192,"messages":[
+		{"role":"user","content":"hello"},
+		{"role":"assistant","content":"hi there"},
+		{"role":"user","content":[{"type":"text","text":"how are you?"}]}
+	]}`
+	b, err := Convert([]byte(body), anthropicOpts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o OpenAIChatRequest
+	if err := json.Unmarshal(b, &o); err != nil {
+		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
+	}
+	if len(o.Messages) != 3 {
+		t.Fatalf("want 3 messages, got %d", len(o.Messages))
+	}
+	// First: string content "hello" → should be "hello"
+	content0, ok := o.Messages[0].Content.(string)
+	if !ok || content0 != "hello" {
+		t.Fatalf("messages[0] content: want 'hello', got %v", o.Messages[0].Content)
+	}
+	// Second: string content "hi there" → should be "hi there"
+	content1, ok := o.Messages[1].Content.(string)
+	if !ok || content1 != "hi there" {
+		t.Fatalf("messages[1] content: want 'hi there', got %v", o.Messages[1].Content)
+	}
+	// Third: array content "how are you?" → should be "how are you?"
+	content2, ok := o.Messages[2].Content.(string)
+	if !ok || content2 != "how are you?" {
+		t.Fatalf("messages[2] content: want 'how are you?', got %v", o.Messages[2].Content)
+	}
+}
+
+func TestAnthropicMessage_UnmarshalStringContent(t *testing.T) {
+	// Direct unmarshal of the struct — this is what was failing.
+	var msg AnthropicMessage
+	if err := json.Unmarshal([]byte(`{"role":"user","content":"hello"}`), &msg); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if msg.Role != "user" {
+		t.Fatalf("role: want user, got %q", msg.Role)
+	}
+	if len(msg.Content) != 1 {
+		t.Fatalf("content blocks: want 1, got %d", len(msg.Content))
+	}
+	if msg.Content[0].Type != "text" || msg.Content[0].Text != "hello" {
+		t.Fatalf("content[0]: want text/hello, got %s/%s", msg.Content[0].Type, msg.Content[0].Text)
+	}
+}
+
+func TestAnthropicMessage_UnmarshalArrayContent(t *testing.T) {
+	var msg AnthropicMessage
+	if err := json.Unmarshal([]byte(`{"role":"user","content":[{"type":"text","text":"hello"}]}`), &msg); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if msg.Role != "user" {
+		t.Fatalf("role: want user, got %q", msg.Role)
+	}
+	if len(msg.Content) != 1 {
+		t.Fatalf("content blocks: want 1, got %d", len(msg.Content))
+	}
+	if msg.Content[0].Type != "text" || msg.Content[0].Text != "hello" {
+		t.Fatalf("content[0]: want text/hello, got %s/%s", msg.Content[0].Type, msg.Content[0].Text)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // SSE streaming: OpenAI delta → Anthropic events
 // ---------------------------------------------------------------------------
 

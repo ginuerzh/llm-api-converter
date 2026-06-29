@@ -42,17 +42,34 @@ type StreamConverter struct {
 
 	// Whether the stream was interrupted (upstream error).
 	streamInterrupted bool
+
+	// Tool restriction: only emit tool_use blocks for declared tool names.
+	// When restrictTools is true and a tool name is not in declaredTools, the
+	// tool call delta is silently skipped to prevent tool hallucination.
+	restrictTools  bool
+	declaredTools  map[string]struct{}
 }
 
 // NewStreamConverter creates a StreamConverter for the given Anthropic model name
-// and optional reasoning cache.
-func NewStreamConverter(model string, reasoningCache *ReasoningCache) *StreamConverter {
-	return &StreamConverter{
+// and optional reasoning cache. declaredTools, if non-empty, restricts emitted
+// tool_use blocks to only those tool names.
+func NewStreamConverter(model string, reasoningCache *ReasoningCache, declaredTools []string) *StreamConverter {
+	sc := &StreamConverter{
 		model:           model,
 		nextBlockIndex:  0,
 		toolCallByIndex: make(map[int]*streamToolState),
 		reasoningCache:  reasoningCache,
 	}
+	if len(declaredTools) > 0 {
+		sc.restrictTools = true
+		sc.declaredTools = make(map[string]struct{}, len(declaredTools))
+		for _, name := range declaredTools {
+			if name != "" {
+				sc.declaredTools[name] = struct{}{}
+			}
+		}
+	}
+	return sc
 }
 
 // HandleStreamStart returns the Anthropic message_start + ping SSE events
@@ -195,7 +212,13 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 	// message_delta with stop_reason.
 	stopReason := "end_turn"
 	if sc.finishReason != "" {
-		stopReason = mapOpenAIStreamFinish(sc.finishReason)
+		stopReason = sc.finishReason
+		// If the upstream said "stop" but we accumulated tool calls, override
+		// to "tool_calls" so Claude Code knows tools were requested.
+		if stopReason == "stop" && len(sc.toolCallByIndex) > 0 {
+			stopReason = "tool_calls"
+		}
+		stopReason = mapOpenAIStreamFinish(stopReason)
 	}
 	usageMap := map[string]any{
 		"output_tokens": 0,
@@ -221,6 +244,19 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 // SetInterrupted marks the stream as interrupted (upstream error).
 func (sc *StreamConverter) SetInterrupted() {
 	sc.streamInterrupted = true
+}
+
+// EmitError returns an Anthropic-formatted error SSE event. It should be used
+// when the upstream stream encounters an error mid-stream to signal the
+// failure to the client in Anthropic wire format.
+func (sc *StreamConverter) EmitError(errType, message string) []byte {
+	if sc.finalized {
+		return nil
+	}
+	return []byte(fmt.Sprintf(
+		`event: error`+"\n"+`data: {"type":"error","error":{"type":"%s","message":"%s"}}`,
+		errType, message,
+	))
 }
 
 // ensureBlock transitions to a new content block if needed.
@@ -314,8 +350,18 @@ func (sc *StreamConverter) thinkingDelta(content string) [][]byte {
 }
 
 // handleToolCallDelta processes a single tool call delta entry.
+// If tool restriction is enabled and the tool name is not declared, the delta
+// is silently skipped to prevent tool hallucination.
 func (sc *StreamConverter) handleToolCallDelta(tc OpenAIDeltaToolCall) [][]byte {
 	idx := tc.Index
+
+	// Tool restriction: skip undeclared tool names on the first delta for a call.
+	name := tc.Function.Name
+	if sc.restrictTools && name != "" {
+		if _, ok := sc.declaredTools[name]; !ok {
+			return nil
+		}
+	}
 
 	// Check if we've already seen this tool call index.
 	existing, seen := sc.toolCallByIndex[idx]
