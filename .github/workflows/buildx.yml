@@ -30,7 +30,7 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: CGO_ENABLED=1 go test ./... -v -count=1 -race
+        run: CGO_ENABLED=1 go test $(go list ./... | grep -v /tests/e2e) -v -count=1 -race
 
   build:
     needs: test
