@@ -1197,6 +1197,18 @@ func TestIsAnthropicRequest_DeepSeekModelIsOpenAI(t *testing.T) {
 		t.Fatal("deepseek model should NOT be classified as Anthropic Request")
 	}
 }
+func TestIsAnthropicRequest_GLMModelIsOpenAI(t *testing.T) {
+	// glm-* models are OpenAI-compatible, not Anthropic.
+	body := `{"model":"glm-4.6","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if isAnthropicRequest(raw) {
+		t.Fatal("glm model should NOT be classified as Anthropic Request")
+	}
+}
+
 
 // ---------------------------------------------------------------------------
 // Anthropic Request → OpenAI Request
@@ -2059,6 +2071,58 @@ func TestConvert_NonDeepSeekNoThinkingEffort(t *testing.T) {
 		t.Fatal("Non-DeepSeek: reasoning_effort should not be set")
 	}
 }
+func TestConvert_GLMThinkingMapping(t *testing.T) {
+	// GLM models should get thinking with budget_tokens (not reasoning_effort).
+	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"think"}]}],"thinking":{"type":"enabled","budget_tokens":4096}}`
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "glm-4.6"}}}
+	b, err := Convert([]byte(body), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o OpenAIChatRequest
+	if err := json.Unmarshal(b, &o); err != nil {
+		t.Fatal(err)
+	}
+	if o.Thinking == nil {
+		t.Fatal("GLM: thinking field should be set")
+	}
+	thinking, ok := o.Thinking.(map[string]any)
+	if !ok {
+		t.Fatalf("GLM: thinking should be a map, got %T", o.Thinking)
+	}
+	if typ, _ := thinking["type"].(string); typ != "enabled" {
+		t.Fatalf("GLM: thinking.type should be 'enabled', got %q", typ)
+	}
+	budget, hasBudget := thinking["budget_tokens"]
+	if !hasBudget {
+		t.Fatal("GLM: thinking.budget_tokens should be set")
+	}
+	if b, ok := budget.(float64); !ok || int(b) != 4096 {
+		t.Fatalf("GLM: thinking.budget_tokens should be 4096, got %v", budget)
+	}
+	if o.ReasoningEffort != nil {
+		t.Fatal("GLM: reasoning_effort should NOT be set")
+	}
+	// GLM thinking without budget_tokens should still work.
+	body2 := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"think"}]}],"thinking":{"type":"enabled"}}`
+	opts2 := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "glm-4.6"}}}
+	b2, err := Convert([]byte(body2), opts2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o2 OpenAIChatRequest
+	if err := json.Unmarshal(b2, &o2); err != nil {
+		t.Fatal(err)
+	}
+	if o2.Thinking == nil {
+		t.Fatal("GLM: thinking field should be set even without budget")
+	}
+	thinking2, _ := o2.Thinking.(map[string]any)
+	if _, hasB := thinking2["budget_tokens"]; hasB {
+		t.Fatal("GLM: budget_tokens should not be set when Anthropic thinking has no budget")
+	}
+}
+
 
 func TestConvert_StreamOptionsIncluded(t *testing.T) {
 	body := `{"model":"claude","max_tokens":8192,"stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`

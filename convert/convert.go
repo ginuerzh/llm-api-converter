@@ -375,6 +375,19 @@ func isAnthropicRequest(m map[string]any) bool {
 		return false
 	}
 
+	// Anthropic tools have flat name + input_schema at top level, no "function" wrapper.
+	if tools, ok := m["tools"].([]any); ok && len(tools) > 0 {
+		if firstTool, ok := tools[0].(map[string]any); ok {
+			_, hasFunction := firstTool["function"]
+			_, hasName := firstTool["name"]
+			_, hasInputSchema := firstTool["input_schema"]
+			if !hasFunction && hasName && hasInputSchema {
+				return true
+			}
+		}
+	}
+
+
 	// Check messages for OpenAI-only patterns (role: system/tool/function in array).
 	for _, msg := range msgs {
 		mmsg, ok := msg.(map[string]any)
@@ -447,6 +460,7 @@ func isAnthropicRequest(m map[string]any) bool {
 		}
 	}
 
+
 	return false
 }
 
@@ -461,7 +475,7 @@ func hasOpenAIStyleModel(m map[string]any) bool {
 	}
 	// Check for common OpenAI / downstream model prefixes.
 	openAIPrefixes := []string{
-		"gpt-", "o1", "o3", "deepseek", "gemini-",
+		"gpt-", "o1", "o3", "deepseek", "gemini-", "glm-",
 	}
 	modelLower := strings.ToLower(model)
 	for _, p := range openAIPrefixes {
@@ -792,6 +806,20 @@ func thinkingToOpenAi(t *AnthropicThinking) any {
 	return map[string]any{"type": t.Type}
 }
 
+// thinkingToOpenAiGLM maps Anthropic thinking to GLM's structured thinking field.
+// GLM expects {"type":"enabled","budget_tokens":N} with budget_tokens forwarded
+// directly from the Anthropic thinking config (not mapped through reasoning_effort).
+func thinkingToOpenAiGLM(t *AnthropicThinking) any {
+	if t == nil {
+		return nil
+	}
+	result := map[string]any{"type": t.Type}
+	if t.Type == "enabled" && t.BudgetTokens > 0 {
+		result["budget_tokens"] = t.BudgetTokens
+	}
+	return result
+}
+
 // reasoningEffortToOpenAi maps Anthropic output_config.effort to OpenAI reasoning_effort.
 func reasoningEffortToOpenAi(cfg *AnthropicOutputConfig) any {
 	if cfg == nil || cfg.Effort == "" {
@@ -950,6 +978,28 @@ func extractTextContent(content any) string {
 	}
 	return fmt.Sprintf("%v", content)
 }
+
+// flattenContentForGLM flattens multi-part content arrays to plain strings.
+// GLM API does not support array-typed content (text + image_url parts).
+func flattenContentForGLM(msgs []OpenAIMessage) {
+	for i := range msgs {
+		switch c := msgs[i].Content.(type) {
+		case []any:
+			var textParts []string
+			for _, part := range c {
+				if m, ok := part.(map[string]any); ok {
+					if t, _ := m["type"].(string); t == "text" {
+						if txt, _ := m["text"].(string); txt != "" {
+							textParts = append(textParts, txt)
+						}
+					}
+				}
+			}
+			msgs[i].Content = strings.Join(textParts, "\n")
+		}
+	}
+}
+
 
 // convertMessageContent converts an OpenAI message into Anthropic content blocks.
 func convertMessageContent(msg OpenAIMessage) []AnthropicContent {
@@ -1145,10 +1195,12 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 		}
 	}
 
-	// Thinking config → OpenAI thinking (DeepSeek-compatible models only).
+	// Thinking config → model-specific OpenAI thinking field.
 	if profile.isDeepSeek {
 		oai.Thinking = thinkingToOpenAi(req.Thinking)
 		oai.ReasoningEffort = reasoningEffortToOpenAi(req.OutputConfig)
+	} else if isGLMModel(outputModel) {
+		oai.Thinking = thinkingToOpenAiGLM(req.Thinking)
 	}
 
 	// Tool choice instruction for DeepSeek (softened to system instruction).
@@ -1185,6 +1237,11 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	// Message sequence sanitization: coalesce adjacent tool calls, pair
 	// tool_calls with tool_results, handle orphans.
 	oai.Messages = sanitizeOpenAiToolMessageSequence(coalesceAdjacentAssistantToolCalls(oai.Messages))
+
+	// GLM API only accepts string content — flatten multi-part content arrays.
+	if isGLMModel(outputModel) {
+		flattenContentForGLM(oai.Messages)
+	}
 
 	// Edge case: if no messages after conversion, inject minimal user message.
 	if len(oai.Messages) == 0 {

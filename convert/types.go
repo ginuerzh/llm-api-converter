@@ -152,9 +152,14 @@ func isDeepSeekModel(model string) bool {
 	return strings.HasPrefix(ml, "deepseek")
 }
 
+func isGLMModel(model string) bool {
+	ml := strings.ToLower(model)
+	return strings.HasPrefix(ml, "glm-")
+}
+
 func isOpenAIStyleModel(model string) bool {
 	ml := strings.ToLower(model)
-	prefixes := []string{"gpt-", "o1", "o3", "deepseek", "gemini-"}
+	prefixes := []string{"gpt-", "o1", "o3", "deepseek", "gemini-", "glm-"}
 	for _, p := range prefixes {
 		if strings.HasPrefix(ml, p) {
 			return true
