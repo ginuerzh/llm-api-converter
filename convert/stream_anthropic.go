@@ -13,6 +13,7 @@ type responsesStreamHandler interface {
 	HandleStreamStart() []byte
 	HandleChunk(data []byte) ([]byte, error)
 	HandleStreamEnd() []byte
+	EmitError(message string) []byte
 }
 
 // AnthropicStreamConverter converts Anthropic SSE stream events to Responses
@@ -48,10 +49,11 @@ func NewAnthropicStreamConverter(model string) *AnthropicStreamConverter {
 	return &AnthropicStreamConverter{
 		model: model,
 		response: ResponsesResponse{
-			ID:     "resp_" + randHex(16),
-			Object: "response",
-			Status: "in_progress",
-			Model:  model,
+			ID:        "resp_" + randHex(16),
+			Object:    "response",
+			CreatedAt: time.Now().Unix(),
+			Status:    "in_progress",
+			Model:     model,
 		},
 		contentBlockTypes: make(map[int]string),
 		toolCallByIndex:   make(map[int]*fcState),
@@ -138,13 +140,13 @@ func (sc *AnthropicStreamConverter) HandleStreamEnd() []byte {
 
 	// Finalize text content part.
 	if sc.textPartIx >= 0 {
-		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseContentPartDone, PartIndex: &sc.textPartIx})
+		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseContentPartDone, ItemID: fmt.Sprintf("%s.msg", sc.response.ID), OutputIndex: &sc.textItemIx, ContentIndex: &sc.textPartIx, PartIndex: &sc.textPartIx})
 		events = append(events, eventBytes(ResponseContentPartDone, string(evt)))
-		evt, _ = json.Marshal(ResponsesStreamEvent{Type: ResponseOutputTextDone, TextDone: sc.accText})
+		evt, _ = json.Marshal(ResponsesStreamEvent{Type: ResponseOutputTextDone, ItemID: fmt.Sprintf("%s.msg", sc.response.ID), TextDone: sc.accText})
 		events = append(events, eventBytes(ResponseOutputTextDone, string(evt)))
 	}
 	if sc.textItemIx >= 0 {
-		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, OutputIndex: &sc.textItemIx})
+		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, ItemID: fmt.Sprintf("%s.msg", sc.response.ID), OutputIndex: &sc.textItemIx})
 		events = append(events, eventBytes(ResponseOutputItemDone, string(evt)))
 	}
 	// Finalize reasoning item.
@@ -180,10 +182,10 @@ func (sc *AnthropicStreamConverter) HandleStreamEnd() []byte {
 	// Finalize tool calls.
 	for _, fc := range sc.toolCallByIndex {
 		if fc.Arguments != "" {
-			evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDone, Arguments: canonicalJSONString(fc.Arguments)})
+			evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDone, ItemID: fc.ID, Arguments: canonicalJSONString(fc.Arguments)})
 			events = append(events, eventBytes(ResponseFunctionCallArgumentsDone, string(evt)))
 		}
-		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, OutputIndex: &fc.ItemIx})
+		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, ItemID: fc.ID, OutputIndex: &fc.ItemIx})
 		events = append(events, eventBytes(ResponseOutputItemDone, string(evt)))
 	}
 
@@ -261,7 +263,7 @@ func (sc *AnthropicStreamConverter) handleContentBlockStart(data []byte) ([]byte
 		sc.response.Output = append(sc.response.Output, item)
 		evt1, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemAdded, Item: &item})
 		events = append(events, eventBytes(ResponseOutputItemAdded, string(evt1)))
-		evt2, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseContentPartAdded, PartIndex: &sc.textPartIx})
+		evt2, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseContentPartAdded, ItemID: fmt.Sprintf("%s.msg", sc.response.ID), PartIndex: &sc.textPartIx})
 		events = append(events, eventBytes(ResponseContentPartAdded, string(evt2)))
 
 	case "tool_use":
@@ -346,7 +348,7 @@ func (sc *AnthropicStreamConverter) handleContentBlockDelta(data []byte) ([]byte
 			return nil, nil
 		}
 		sc.accText += delta.Text
-		evtBytes, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputTextDelta, Delta: delta.Text})
+		evtBytes, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputTextDelta, ItemID: fmt.Sprintf("%s.msg", sc.response.ID), Delta: delta.Text})
 		return eventBytes(ResponseOutputTextDelta, string(evtBytes)), nil
 
 	case "tool_use":
@@ -360,7 +362,11 @@ func (sc *AnthropicStreamConverter) handleContentBlockDelta(data []byte) ([]byte
 		if fc, ok := sc.toolCallByIndex[evt.Index]; ok {
 			fc.Arguments += delta.PartialJSON
 		}
-		evtBytes, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDelta, Arguments: delta.PartialJSON})
+		itemID := ""
+		if fc, ok := sc.toolCallByIndex[evt.Index]; ok {
+			itemID = fc.ID
+		}
+		evtBytes, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDelta, ItemID: itemID, Arguments: delta.PartialJSON})
 		return eventBytes(ResponseFunctionCallArgumentsDelta, string(evtBytes)), nil
 
 	case "thinking":
@@ -386,6 +392,21 @@ func (sc *AnthropicStreamConverter) handleContentBlockDelta(data []byte) ([]byte
 }
 
 // handleMessageDelta captures finish_reason and output token usage.
+// EmitError emits a response.failed event and marks the stream as finalized.
+func (sc *AnthropicStreamConverter) EmitError(message string) []byte {
+	if sc.finalized {
+		return nil
+	}
+	sc.finalized = true
+	sc.response.Status = "failed"
+	sc.response.Error = map[string]string{
+		"code":    "server_error",
+		"message": message,
+	}
+	evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFailed, Response: &sc.response})
+	return eventBytes(ResponseFailed, string(evt))
+}
+
 func (sc *AnthropicStreamConverter) handleMessageDelta(data []byte) ([]byte, error) {
 	var evt struct {
 		Delta struct {

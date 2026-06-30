@@ -843,10 +843,9 @@ func handleResponsesSSEEvent(sid, phase string, _ int, data []byte, opts *Conver
 	case StreamPhaseStart:
 		model := opts.Model
 		payload := extractSSEPayload(data)
-		if opts.RequestModel != "" {
-			if m, _, ok := opts.ModelMap.Apply(opts.RequestModel); ok {
-				model = m
-			}
+			if opts.RequestModel != "" {
+				model = opts.RequestModel
+			} else if m := extractModelFromData(payload); m != "" {
 		} else if m := extractModelFromData(payload); m != "" {
 			model, _ = resolveModel(m, opts.Model, opts.ModelMap)
 		}
@@ -879,9 +878,8 @@ func handleResponsesSSEEvent(sid, phase string, _ int, data []byte, opts *Conver
 			// Lazy-create converter from first event.
 			model := opts.Model
 			if opts.RequestModel != "" {
-				if m, _, ok := opts.ModelMap.Apply(opts.RequestModel); ok {
-					model = m
-				}
+				model = opts.RequestModel
+			} else if m := extractModelFromData(payload); m != "" {
 			} else if m := extractModelFromData(payload); m != "" {
 				model, _ = resolveModel(m, opts.Model, opts.ModelMap)
 			}
@@ -921,6 +919,21 @@ func handleResponsesSSEEvent(sid, phase string, _ int, data []byte, opts *Conver
 		responsesStreamStates.Delete(sid)
 		unmarkResponsesSession(sid)
 		return handler.HandleStreamEnd(), nil
+
+	case StreamPhaseError:
+		v, ok := responsesStreamStates.Load(sid)
+		if !ok {
+			unmarkResponsesSession(sid)
+			return nil, nil
+		}
+		handler := v.(responsesStreamHandler)
+		responsesStreamStates.Delete(sid)
+		unmarkResponsesSession(sid)
+		msg := "stream error"
+		if opts != nil && opts.StreamErrorMsg != "" {
+			msg = opts.StreamErrorMsg
+		}
+		return handler.EmitError(msg), nil
 	}
 	return nil, nil
 }

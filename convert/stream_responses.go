@@ -26,6 +26,7 @@ type ResponsesStreamConverter struct {
 	reasonItemIx  int // -1 = none
 	reasonPartIx  int // -1 = none
 	toolCallByIndex map[int]*fcState
+	seqNum         int // auto-incremented per emitted event
 }
 
 type fcState struct {
@@ -40,10 +41,16 @@ func NewResponsesStreamConverter(model string) *ResponsesStreamConverter {
 	return &ResponsesStreamConverter{
 		model: model,
 		response: ResponsesResponse{
-			ID:     "resp_" + randHex(16),
-			Object: "response",
-			Status: "in_progress",
-			Model:  model,
+			ID:                "resp_" + randHex(16),
+			Object:            "response",
+			CreatedAt:         time.Now().Unix(),
+			Status:            "in_progress",
+			Model:             model,
+			Text:              map[string]any{"format": map[string]any{"type": "text"}},
+			Truncation:        "disabled",
+			ToolChoice:        "auto",
+			ParallelToolCalls: boolPtr(true),
+				Reasoning:         map[string]any{"effort": nil, "summary": nil},
 		},
 		toolCallByIndex: make(map[int]*fcState),
 		textItemIx:      -1,
@@ -63,7 +70,9 @@ func (sc *ResponsesStreamConverter) HandleStreamStart() []byte {
 	sc.started = true
 	created, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseCreated, Response: &sc.response})
 	inProg, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseInProgress, Response: &sc.response})
-	return []byte("event: response.created\ndata: " + string(created) + "\n\nevent: response.in_progress\ndata: " + string(inProg))
+	e1 := sc.makeEvent(ResponseCreated, string(created))
+	e2 := sc.makeEvent(ResponseInProgress, string(inProg))
+	return append(append(e1, '\n', '\n'), e2...)
 }
 
 // HandleChunk processes one streaming delta chunk and returns Responses SSE events.
@@ -104,8 +113,8 @@ func (sc *ResponsesStreamConverter) HandleChunk(data []byte) ([]byte, error) {
 		if sc.textPartIx < 0 {
 			events = append(events, sc.startContentPart()...)
 		}
-		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputTextDelta, ContentIndex: &sc.textPartIx, Delta: delta.Content})
-		events = append(events, eventBytes(ResponseOutputTextDelta, string(evt)))
+		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputTextDelta, ItemID: fmt.Sprintf("%s.msg", sc.response.ID), OutputIndex: &sc.textItemIx, ContentIndex: &sc.textPartIx, Delta: delta.Content})
+		events = append(events, sc.makeEvent(ResponseOutputTextDelta, string(evt)))
 	}
 	if delta.ReasoningContent != "" {
 		sc.accReasoning += delta.ReasoningContent
@@ -120,7 +129,7 @@ func (sc *ResponsesStreamConverter) HandleChunk(data []byte) ([]byte, error) {
 				SummaryIndex: &sc.reasonPartIx,
 				Part:         ResponsesReasoningSummary{Type: "summary_text", Text: ""},
 			})
-			events = append(events, eventBytes(ResponseReasoningSummaryPartAdded, string(pevt)))
+			events = append(events, sc.makeEvent(ResponseReasoningSummaryPartAdded, string(pevt)))
 		}
 		evt, _ := json.Marshal(ResponsesStreamEvent{
 			Type:         ResponseReasoningSummaryDelta,
@@ -129,7 +138,7 @@ func (sc *ResponsesStreamConverter) HandleChunk(data []byte) ([]byte, error) {
 			SummaryIndex: &sc.reasonPartIx,
 			Delta:        delta.ReasoningContent,
 		})
-		events = append(events, eventBytes(ResponseReasoningSummaryDelta, string(evt)))
+		events = append(events, sc.makeEvent(ResponseReasoningSummaryDelta, string(evt)))
 	}
 	for _, tc := range delta.ToolCalls {
 		events = append(events, sc.handleToolCall(tc)...)
@@ -151,16 +160,6 @@ func (sc *ResponsesStreamConverter) HandleStreamEnd() []byte {
 	sc.finalized = true
 	var events [][]byte
 
-	if sc.textPartIx >= 0 {
-		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseContentPartDone, OutputIndex: &sc.textItemIx, ContentIndex: &sc.textPartIx, PartIndex: &sc.textPartIx})
-		events = append(events, eventBytes(ResponseContentPartDone, string(evt)))
-		evt, _ = json.Marshal(ResponsesStreamEvent{Type: ResponseOutputTextDone, ContentIndex: &sc.textPartIx, TextDone: sc.accText})
-		events = append(events, eventBytes(ResponseOutputTextDone, string(evt)))
-	}
-	if sc.textItemIx >= 0 {
-		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, OutputIndex: &sc.textItemIx})
-		events = append(events, eventBytes(ResponseOutputItemDone, string(evt)))
-	}
 	// Finalize reasoning item.
 	if sc.reasonItemIx >= 0 {
 		evt, _ := json.Marshal(ResponsesStreamEvent{
@@ -170,7 +169,7 @@ func (sc *ResponsesStreamConverter) HandleStreamEnd() []byte {
 			SummaryIndex: &sc.reasonPartIx,
 			SummaryText:  sc.accReasoning,
 		})
-		events = append(events, eventBytes(ResponseReasoningSummaryDone, string(evt)))
+		events = append(events, sc.makeEvent(ResponseReasoningSummaryDone, string(evt)))
 		evt, _ = json.Marshal(ResponsesStreamEvent{
 			Type:         ResponseReasoningSummaryPartDone,
 			ItemID:       fmt.Sprintf("%s.reasoning", sc.response.ID),
@@ -178,7 +177,7 @@ func (sc *ResponsesStreamConverter) HandleStreamEnd() []byte {
 			SummaryIndex: &sc.reasonPartIx,
 			Part:         ResponsesReasoningSummary{Type: "summary_text", Text: sc.accReasoning},
 		})
-		events = append(events, eventBytes(ResponseReasoningSummaryPartDone, string(evt)))
+		events = append(events, sc.makeEvent(ResponseReasoningSummaryPartDone, string(evt)))
 		evt, _ = json.Marshal(ResponsesStreamEvent{
 			Type:        ResponseOutputItemDone,
 			OutputIndex: &sc.reasonItemIx,
@@ -189,15 +188,41 @@ func (sc *ResponsesStreamConverter) HandleStreamEnd() []byte {
 				Summary: []ResponsesReasoningSummary{{Type: "summary_text", Text: sc.accReasoning}},
 			},
 		})
-		events = append(events, eventBytes(ResponseOutputItemDone, string(evt)))
+		events = append(events, sc.makeEvent(ResponseOutputItemDone, string(evt)))
+	}
+	// Finalize message item (output_index 1 after output_index 0).
+	if sc.textPartIx >= 0 {
+		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseContentPartDone, ItemID: fmt.Sprintf("%s.msg", sc.response.ID), OutputIndex: &sc.textItemIx, ContentIndex: &sc.textPartIx, PartIndex: &sc.textPartIx})
+		events = append(events, sc.makeEvent(ResponseContentPartDone, string(evt)))
+		evt, _ = json.Marshal(ResponsesStreamEvent{Type: ResponseOutputTextDone, ItemID: fmt.Sprintf("%s.msg", sc.response.ID), OutputIndex: &sc.textItemIx, ContentIndex: &sc.textPartIx, TextDone: sc.accText})
+		events = append(events, sc.makeEvent(ResponseOutputTextDone, string(evt)))
+	}
+	if sc.textItemIx >= 0 {
+		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, OutputIndex: &sc.textItemIx, Item: &ResponsesOutputItem{ID: fmt.Sprintf("%s.msg", sc.response.ID), Type: "message", Status: "completed", Role: "assistant", Content: []ResponsesContentPart{{Type: "output_text", Text: sc.accText}}}})
+		events = append(events, sc.makeEvent(ResponseOutputItemDone, string(evt)))
 	}
 	for _, fc := range sc.toolCallByIndex {
 		if fc.Arguments != "" {
-			evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDone, Arguments: canonicalJSONString(fc.Arguments)})
-			events = append(events, eventBytes(ResponseFunctionCallArgumentsDone, string(evt)))
+			evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDone, ItemID: fc.ID, OutputIndex: &fc.ItemIx, Arguments: canonicalJSONString(fc.Arguments)})
+			events = append(events, sc.makeEvent(ResponseFunctionCallArgumentsDone, string(evt)))
 		}
-		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, OutputIndex: &fc.ItemIx})
-		events = append(events, eventBytes(ResponseOutputItemDone, string(evt)))
+		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, ItemID: fc.ID, OutputIndex: &fc.ItemIx})
+		events = append(events, sc.makeEvent(ResponseOutputItemDone, string(evt)))
+	}
+
+	// Update output item statuses before building response.completed.
+	// Items are stored with "in_progress" when first created; individual
+	// response.output_item.done events were emitted, but sc.response.Output
+	// was never updated — so response.completed would report every item as
+	// "in_progress", breaking clients that validate item completion.
+	for i := range sc.response.Output {
+		item := &sc.response.Output[i]
+		if item.Status == "in_progress" {
+			item.Status = "completed"
+		}
+		if item.Type == "message" && sc.accText != "" {
+			item.Content = []ResponsesContentPart{{Type: "output_text", Text: sc.accText}}
+		}
 	}
 
 	now := time.Now().Unix()
@@ -211,7 +236,7 @@ func (sc *ResponsesStreamConverter) HandleStreamEnd() []byte {
 		eventType = ResponseIncomplete
 	}
 	completed, _ := json.Marshal(ResponsesStreamEvent{Type: eventType, Response: &sc.response})
-	events = append(events, eventBytes(eventType, string(completed)))
+	events = append(events, sc.makeEvent(eventType, string(completed)))
 	return bytes.Join(events, []byte("\n\n"))
 }
 
@@ -224,14 +249,14 @@ func (sc *ResponsesStreamConverter) startMessageItem() [][]byte {
 	}
 	sc.response.Output = append(sc.response.Output, item)
 	evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemAdded, OutputIndex: &sc.textItemIx, Item: &item})
-	return [][]byte{eventBytes(ResponseOutputItemAdded, string(evt))}
+	return [][]byte{sc.makeEvent(ResponseOutputItemAdded, string(evt))}
 }
 
 func (sc *ResponsesStreamConverter) startContentPart() [][]byte {
 	sc.partIndex++
 	sc.textPartIx = sc.partIndex
-	evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseContentPartAdded, OutputIndex: &sc.textItemIx, ContentIndex: &sc.textPartIx, PartIndex: &sc.textPartIx})
-	return [][]byte{eventBytes(ResponseContentPartAdded, string(evt))}
+	evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseContentPartAdded, ItemID: fmt.Sprintf("%s.msg", sc.response.ID), OutputIndex: &sc.textItemIx, ContentIndex: &sc.textPartIx, PartIndex: &sc.textPartIx})
+	return [][]byte{sc.makeEvent(ResponseContentPartAdded, string(evt))}
 }
 
 func (sc *ResponsesStreamConverter) startReasoningItem() [][]byte {
@@ -242,15 +267,30 @@ func (sc *ResponsesStreamConverter) startReasoningItem() [][]byte {
 	}
 	sc.response.Output = append(sc.response.Output, item)
 	evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemAdded, OutputIndex: &sc.reasonItemIx, Item: &item})
-	return [][]byte{eventBytes(ResponseOutputItemAdded, string(evt))}
+	return [][]byte{sc.makeEvent(ResponseOutputItemAdded, string(evt))}
+}
+
+// EmitError emits a response.failed event and marks the stream as finalized.
+func (sc *ResponsesStreamConverter) EmitError(message string) []byte {
+	if sc.finalized {
+		return nil
+	}
+	sc.finalized = true
+	sc.response.Status = "failed"
+	sc.response.Error = map[string]string{
+		"code":    "server_error",
+		"message": message,
+	}
+	evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFailed, Response: &sc.response})
+	return sc.makeEvent(ResponseFailed, string(evt))
 }
 
 func (sc *ResponsesStreamConverter) handleToolCall(tc OpenAIDeltaToolCall) [][]byte {
 	idx := tc.Index
 	if existing, seen := sc.toolCallByIndex[idx]; seen {
 		existing.Arguments += tc.Function.Arguments
-		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDelta, Arguments: tc.Function.Arguments})
-		return [][]byte{eventBytes(ResponseFunctionCallArgumentsDelta, string(evt))}
+		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDelta, ItemID: existing.ID, OutputIndex: &existing.ItemIx, Arguments: tc.Function.Arguments})
+		return [][]byte{sc.makeEvent(ResponseFunctionCallArgumentsDelta, string(evt))}
 	}
 
 	toolID := tc.ID
@@ -265,12 +305,12 @@ func (sc *ResponsesStreamConverter) handleToolCall(tc OpenAIDeltaToolCall) [][]b
 	}
 	sc.response.Output = append(sc.response.Output, item)
 	evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemAdded, OutputIndex: &sc.itemIndex, Item: &item})
-	events := [][]byte{eventBytes(ResponseOutputItemAdded, string(evt))}
+	events := [][]byte{sc.makeEvent(ResponseOutputItemAdded, string(evt))}
 
 	if tc.Function.Arguments != "" {
 		sc.toolCallByIndex[idx].Arguments = tc.Function.Arguments
-		devt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDelta, Arguments: tc.Function.Arguments})
-		events = append(events, eventBytes(ResponseFunctionCallArgumentsDelta, string(devt)))
+		devt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDelta, ItemID: toolID, OutputIndex: &sc.itemIndex, Arguments: tc.Function.Arguments})
+		events = append(events, sc.makeEvent(ResponseFunctionCallArgumentsDelta, string(devt)))
 	}
 	return events
 }
@@ -282,6 +322,17 @@ func (sc *ResponsesStreamConverter) setUsage(usage *OpenAIUsage) {
 	}
 }
 
+// makeEvent builds an SSE data line with an auto-incremented sequence_number.
+func (sc *ResponsesStreamConverter) makeEvent(evtType ResponsesStreamEventType, data string) []byte {
+	seq := sc.seqNum
+	sc.seqNum++
+	// Inject sequence_number after the opening brace.
+	injected := fmt.Sprintf(`{"sequence_number":%d,%s`, seq, data[1:])
+	return []byte("event: " + string(evtType) + "\ndata: " + injected)
+}
+
 func eventBytes(evtType ResponsesStreamEventType, data string) []byte {
 	return []byte("event: " + string(evtType) + "\ndata: " + data)
 }
+
+func boolPtr(b bool) *bool { return &b }

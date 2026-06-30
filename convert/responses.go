@@ -149,11 +149,13 @@ const (
 	ResponseFunctionCallArgumentsDelta  ResponsesStreamEventType = "response.function_call_arguments.delta"
 	ResponseFunctionCallArgumentsDone    ResponsesStreamEventType = "response.function_call_arguments.done"
 	ResponseIncomplete                ResponsesStreamEventType = "response.incomplete"
+	ResponseFailed                   ResponsesStreamEventType = "response.failed"
 )
 
 // ResponsesStreamEvent is a generic Responses API stream event envelope.
 type ResponsesStreamEvent struct {
-	Type         ResponsesStreamEventType `json:"type"`
+	Type           ResponsesStreamEventType `json:"type"`
+	SequenceNumber *int                     `json:"sequence_number,omitempty"`
 	Response     *ResponsesResponse       `json:"response,omitempty"`
 	Item         *ResponsesOutputItem     `json:"item,omitempty"`
 	OutputIndex  *int                     `json:"output_index,omitempty"`
@@ -525,7 +527,7 @@ func parseResponsesInput(input json.RawMessage) responsesInputParseResult {
 			}
 
 			msg := OpenAIMessage{Role: role}
-			msg.Content = responsesRawText(item.Content)
+			msg.Content = responsesContentToOpenAI(item.Content)
 			if role == "assistant" && pendingReasoning != "" {
 				msg.ReasoningContent = pendingReasoning
 				pendingReasoning = ""
@@ -674,6 +676,64 @@ func convertChatMessageToAnthropic(msg OpenAIMessage) AnthropicMessage {
 	}
 
 	return am
+}
+
+// responsesContentToOpenAI converts Responses API content to OpenAI format.
+// Returns a plain string for simple text content, or []OpenAIContentPart for
+// mixed content (e.g. text + images).
+func responsesContentToOpenAI(content json.RawMessage) any {
+	if len(content) == 0 || string(content) == "null" {
+		return ""
+	}
+	// Try string first.
+	var s string
+	if err := json.Unmarshal(content, &s); err == nil {
+		return s
+	}
+	// Try array of content parts.
+	var parts []map[string]any
+	if err := json.Unmarshal(content, &parts); err != nil {
+		return ""
+	}
+	// Check if all parts are text (can return as simple string).
+	allText := true
+	for _, p := range parts {
+		t, _ := p["type"].(string)
+		if t != "text" && t != "input_text" && t != "output_text" {
+			allText = false
+			break
+		}
+	}
+	if allText {
+		var texts []string
+		for _, p := range parts {
+			if txt, _ := p["text"].(string); txt != "" {
+				texts = append(texts, txt)
+			}
+		}
+		return strings.Join(texts, "\n")
+	}
+	// Mixed content: convert to OpenAI content parts.
+	converted := make([]OpenAIContentPart, 0, len(parts))
+	for _, p := range parts {
+		t, _ := p["type"].(string)
+		switch {
+		case t == "text" || t == "input_text" || t == "output_text":
+			txt, _ := p["text"].(string)
+			converted = append(converted, OpenAIContentPart{Type: "text", Text: txt})
+		case t == "input_image":
+			if imageURL, _ := p["image_url"].(string); imageURL != "" {
+				converted = append(converted, OpenAIContentPart{
+					Type:     "image_url",
+					ImageURL: &OpenAIImageURL{URL: imageURL},
+				})
+			}
+		}
+	}
+	if len(converted) == 1 && converted[0].Type == "text" {
+		return converted[0].Text // unwrap single text
+	}
+	return converted
 }
 
 // responsesRawText extracts plain text from content JSON (string or array).
