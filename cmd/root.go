@@ -52,6 +52,7 @@ var rootCmd = &cobra.Command{
 			Model:      model,
 			MaxTokens:  maxTokens,
 			Cache:     cacheBackend,
+				ModelMap:  modelMap,
 		})
 	},
 }

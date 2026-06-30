@@ -28,7 +28,7 @@ type rewriteRequest struct {
 
 type rewriteResponse struct {
 	OK   bool   `json:"ok"`
-	Data []byte `json:"data,omitempty"`
+	Data []byte `json:"data"`
 }
 
 // ListenAndServe starts the HTTP server on the given address.
@@ -115,7 +115,12 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			EventIndex int    `json:"event_index,omitempty"`
 			SSEPhase   string `json:"sse_phase,omitempty"`
 		}
-		if err := json.Unmarshal(req.Metadata, &meta); err == nil && meta.SSEPhase != "" {
+		if err := json.Unmarshal(req.Metadata, &meta); err == nil {
+			opts.SID = meta.Sid
+			opts.EventIndex = meta.EventIndex
+			opts.SSEPhase = meta.SSEPhase
+		}
+		if meta.SSEPhase != "" {
 			out, err := convert.HandleSSEEvent(meta.Sid, meta.SSEPhase, meta.EventIndex, req.Data, opts)
 			if err != nil {
 				slog.Error("stream event", "phase", meta.SSEPhase, "err", err)
@@ -131,6 +136,25 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(req.Data) == 0 {
 		slog.Debug("empty data in rewrite request (non-SSE) — pass through")
 		writeJSON(w, rewriteResponse{OK: true})
+		return
+	}
+
+	// Session-aware dispatch: when a Responses API session's SSE event
+	// arrives without SSEPhase metadata, route it through the stream
+	// handler so the chunk is consumed rather than leaked as raw data.
+	slog.Debug("pre-convert dispatch", "sid", opts.SID, "data_len", len(req.Data), "is_responses", opts.SID != "" && convert.IsResponsesSession(opts.SID))
+	if opts.SID != "" && convert.IsResponsesSession(opts.SID) {
+		out, err := convert.HandleSSEEvent(opts.SID, string(convert.StreamPhaseEvent), 0, req.Data, opts)
+		if err != nil {
+			slog.Warn("responses session event", "err", err)
+		}
+		if out != nil {
+			slog.Debug("responses session event output", "data", string(out))
+			writeJSON(w, rewriteResponse{OK: true, Data: out})
+			return
+		}
+		// Swallow: consumed by stream handler with no output to emit.
+		writeJSON(w, rewriteResponse{OK: true, Data: []byte{}})
 		return
 	}
 
@@ -156,6 +180,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 // It differentiates Anthropic requests (model + max_tokens + messages, no choices)
 // from OpenAI responses (choices array) to avoid false-positive caching.
 func extractModelFromPayload(data []byte) string {
+	// Anthropic request: model + max_tokens + messages, no choices.
 	var probe struct {
 		Model     string          `json:"model"`
 		MaxTokens int             `json:"max_tokens"`
@@ -168,6 +193,15 @@ func extractModelFromPayload(data []byte) string {
 	if probe.Model != "" && probe.MaxTokens > 0 &&
 		len(probe.Messages) > 0 && len(probe.Choices) == 0 {
 		return probe.Model
+	}
+	// Responses API request: model + input, no messages/choices/max_tokens.
+	var respProbe struct {
+		Model string          `json:"model"`
+		Input json.RawMessage `json:"input"`
+	}
+	if json.Unmarshal(data, &respProbe) == nil &&
+		respProbe.Model != "" && len(respProbe.Input) > 0 {
+		return respProbe.Model
 	}
 	return ""
 }

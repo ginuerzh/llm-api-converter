@@ -13,6 +13,27 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// Responses API session tracking
+// ---------------------------------------------------------------------------
+
+// responsesSessions tracks which SSE sessions are Responses API sessions.
+var responsesSessions sync.Map // sid → bool
+
+// responsesStreamStates tracks active Responses stream converters per session.
+var responsesStreamStates sync.Map // sid → *ResponsesStreamConverter
+
+func markResponsesSession(sid string)      { responsesSessions.Store(sid, true) }
+func IsResponsesSession(sid string) bool {
+	_, ok := responsesSessions.Load(sid)
+	return ok
+}
+
+func unmarkResponsesSession(sid string) {
+	responsesSessions.Delete(sid)
+	responsesStreamStates.Delete(sid)
+}
+
+// ---------------------------------------------------------------------------
 // SSE event handling
 // ---------------------------------------------------------------------------
 
@@ -350,6 +371,25 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 		}
 	}
 
+	// Detect: Responses API request (input field, no messages field).
+	// Must run BEFORE the protocol-passthrough block below: Responses requests
+	// have a "model" string field, which makes isOpenAIRequest return true,
+	// incorrectly triggering passthrough instead of full conversion to Chat/Anthropic.
+	if isResponsesRequest(raw) {
+		slog.Debug("detected Responses API Request → converting to Chat/Anthropic")
+		if opts.SID != "" {
+			markResponsesSession(opts.SID)
+		}
+		return convertResponsesRequest(body, opts)
+	}
+
+	// Detect: session is a Responses session — upstream response needs
+	// converting back to Responses API format.
+	if opts != nil && opts.SID != "" && IsResponsesSession(opts.SID) {
+		slog.Debug("Responses session upstream response → converting to Responses format")
+		return convertToResponsesResponse(body, opts)
+	}
+
 	// Resolve downstream protocol override from model mapping.
 	// If set and the input format matches, rewrite model name and pass through.
 	if opts.ModelMap != nil {
@@ -380,6 +420,8 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 			return body, nil
 		}
 	}
+
+
 
 	// Detect: Anthropic Messages Request (messages + max_tokens or Anthropic content blocks).
 	if isAnthropicRequest(raw) {
@@ -687,6 +729,11 @@ func newStreamConverterFromData(data []byte, opts *ConvertOptions) *StreamConver
 // HandleSSEEvent processes an SSE stream lifecycle event.
 // It routes to the appropriate StreamConverter method based on the phase.
 func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *ConvertOptions) ([]byte, error) {
+	// Route Responses API sessions to ResponsesStreamConverter.
+	if IsResponsesSession(sid) {
+		return handleResponsesSSEEvent(sid, phase, eventIndex, data, opts)
+	}
+
 	switch StreamPhase(phase) {
 	case StreamPhaseStart:
 		sc := newStreamConverterFromData(data, opts)
@@ -711,7 +758,7 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 	case StreamPhaseEvent:
 		payload := extractSSEPayload(data)
 		if payload == nil {
-			return nil, nil // [DONE] marker, skip silently.
+			return []byte{}, nil // [DONE] marker, swallow.
 		}
 
 		v, ok := streamStates.Load(sid)
@@ -752,7 +799,14 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			return data, nil
 		}
 
-		return sc.HandleChunk(payload)
+		out, err := sc.HandleChunk(payload)
+		if err != nil {
+			return nil, err
+		}
+		if out == nil {
+			return []byte{}, nil // consumed, swallow original
+		}
+		return out, nil
 
 	case StreamPhaseEnd:
 		v, ok := streamStates.Load(sid)
@@ -781,6 +835,94 @@ func extractSSEPayload(data []byte) []byte {
 		return []byte(evt.Data)
 	}
 	return data
+}
+
+// handleResponsesSSEEvent routes SSE lifecycle events for Responses API sessions.
+func handleResponsesSSEEvent(sid, phase string, _ int, data []byte, opts *ConvertOptions) ([]byte, error) {
+	switch StreamPhase(phase) {
+	case StreamPhaseStart:
+		model := opts.Model
+		payload := extractSSEPayload(data)
+		if opts.RequestModel != "" {
+			if m, _, ok := opts.ModelMap.Apply(opts.RequestModel); ok {
+				model = m
+			}
+		} else if m := extractModelFromData(payload); m != "" {
+			model, _ = resolveModel(m, opts.Model, opts.ModelMap)
+		}
+		var handler responsesStreamHandler
+		if isAnthropicStreamEvent(payload) {
+			handler = NewAnthropicStreamConverter(model)
+		} else {
+			handler = NewResponsesStreamConverter(model)
+		}
+		responsesStreamStates.Store(sid, handler)
+		out := handler.HandleStreamStart()
+		if payload != nil {
+			chunk, err := handler.HandleChunk(payload)
+			if err != nil {
+				return out, err
+			}
+			if len(chunk) > 0 {
+				return append(out, append([]byte("\n\n"), chunk...)...), nil
+			}
+		}
+		return out, nil
+
+	case StreamPhaseEvent:
+		payload := extractSSEPayload(data)
+		if payload == nil {
+			return []byte{}, nil // [DONE] marker, swallow.
+		}
+		v, ok := responsesStreamStates.Load(sid)
+		if !ok {
+			// Lazy-create converter from first event.
+			model := opts.Model
+			if opts.RequestModel != "" {
+				if m, _, ok := opts.ModelMap.Apply(opts.RequestModel); ok {
+					model = m
+				}
+			} else if m := extractModelFromData(payload); m != "" {
+				model, _ = resolveModel(m, opts.Model, opts.ModelMap)
+			}
+			var handler responsesStreamHandler
+			if isAnthropicStreamEvent(payload) {
+				handler = NewAnthropicStreamConverter(model)
+			} else {
+				handler = NewResponsesStreamConverter(model)
+			}
+			responsesStreamStates.Store(sid, handler)
+			startData := handler.HandleStreamStart()
+			chunk, err := handler.HandleChunk(payload)
+			if err != nil {
+				return startData, err
+			}
+			if len(chunk) > 0 {
+				return append(startData, append([]byte("\n\n"), chunk...)...), nil
+			}
+			return startData, nil
+		}
+		out, err := v.(responsesStreamHandler).HandleChunk(payload)
+		if err != nil {
+			return nil, err
+		}
+		if out == nil {
+			return []byte{}, nil // consumed, swallow original
+		}
+		return out, nil
+
+	case StreamPhaseEnd:
+		v, ok := responsesStreamStates.Load(sid)
+		if !ok {
+			unmarkResponsesSession(sid)
+			return nil, nil
+		}
+		handler := v.(responsesStreamHandler)
+		responsesStreamStates.Delete(sid)
+		unmarkResponsesSession(sid)
+		return handler.HandleStreamEnd(), nil
+	}
+	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
