@@ -1,6 +1,6 @@
 # CLAUDE.md — llm-api-converter
 
-LLM API protocol converter — GOST Rewriter plugin that converts bidirectionally between OpenAI Chat Completions and Anthropic Messages API formats. Runs as an HTTP plugin on `POST /rewrite`.
+LLM API protocol converter — GOST Rewriter plugin that converts bidirectionally between OpenAI Chat Completions and Anthropic Messages API formats. Runs as an HTTP plugin on `POST /rewrite`. Used with Claude Code, Codex CLI, OpenCode, and other LLM clients.
 
 ## Build & Run
 
