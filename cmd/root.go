@@ -11,12 +11,13 @@ import (
 )
 
 var (
-	addr        string
-	model       string
-	maxTokens   int
-	modelMap    string
-	logLevel    string
-	logFormat   string
+	addr         string
+	model        string
+	maxTokens    int
+	modelMap     string
+	logLevel     string
+	logFormat    string
+	cacheBackend string
 )
 
 var rootCmd = &cobra.Command{
@@ -50,7 +51,7 @@ var rootCmd = &cobra.Command{
 		return rewriter.ListenAndServe(addr, &rewriter.Options{
 			Model:      model,
 			MaxTokens:  maxTokens,
-			ModelMap:  modelMap,
+			Cache:     cacheBackend,
 		})
 	},
 }
@@ -68,6 +69,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&model, "model", "deepseek-chat", "default fallback model ID")
 	rootCmd.PersistentFlags().IntVar(&maxTokens, "max-tokens", 8192, "default max_tokens")
 	rootCmd.PersistentFlags().StringVar(&modelMap, "model-map", "", "model mapping: prefix=target[:protocol],... (* for catch-all, protocol: openai|anthropic)")
+	rootCmd.PersistentFlags().StringVar(&cacheBackend, "cache", "memory", "reasoning cache backend: memory (default) or file:<path>")
 
 	rootCmd.SilenceErrors = true
 	rootCmd.SilenceUsage = true

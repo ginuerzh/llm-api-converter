@@ -18,6 +18,7 @@ type Options struct {
 	Model     string
 	MaxTokens int
 	ModelMap  string // raw --model-map flag value
+	Cache     string // reasoning cache backend: "memory" (default) or "file:<path>"
 }
 
 type rewriteRequest struct {
@@ -43,7 +44,7 @@ func ListenAndServe(addr string, opts *Options) error {
 
 func newServer(opts *Options) http.Handler {
 	mux := http.NewServeMux()
-	rc := convert.NewReasoningCache(1000)
+	rc := newReasoningCache(opts.Cache, 1000)
 	mux.Handle("/rewrite", &rewriteHandler{opts: opts, reasoningCache: rc, modelMap: parseModelMap(opts.ModelMap)})
 	return mux
 }
@@ -206,6 +207,25 @@ func extractAnthropicToolNames(data []byte) []string {
 		}
 	}
 	return names
+}
+
+// newReasoningCache creates a ReasoningCache based on the cache spec string.
+// Format: "memory" (default) or "file:<path>".
+func newReasoningCache(spec string, maxSize int) *convert.ReasoningCache {
+	typ, option, _ := strings.Cut(spec, ":")
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "memory", "":
+		return convert.NewReasoningCache(maxSize)
+	case "file":
+		if option == "" {
+			slog.Warn("cache: file backend requires a path, falling back to memory")
+			return convert.NewReasoningCache(maxSize)
+		}
+		return convert.NewReasoningCacheWithFile(option, maxSize)
+	default:
+		slog.Warn("cache: unknown backend, falling back to memory", "type", typ)
+		return convert.NewReasoningCache(maxSize)
+	}
 }
 
 // parseModelMap parses a comma-separated model map string into a ModelMap.

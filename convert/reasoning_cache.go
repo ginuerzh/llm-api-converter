@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,27 +21,21 @@ import (
 // MUST include the original reasoning_content. This cache stores those mappings
 // so the converter can re-inject them when Claude Code compresses conversations.
 type ReasoningCache struct {
-	mu      sync.RWMutex
-	entries map[string]*cacheEntry
-	order   []string // FIFO insertion order for eviction
-	maxSize int
-
-	// Text-keyed reasoning (assistant text SHA256 → reasoning).
-	textEntries map[string]*cacheEntry
-	textOrder   []string
-
-	// Tool-context-keyed reasoning (SHA256(toolCtx+assistantText) → reasoning).
-	ctxEntries map[string]*cacheEntry
-	ctxOrder   []string
-
-	// Persistence.
-	path    string
-	dirty   bool
-	closeCh chan struct{}
+	toolStore ReasoningStore
+	textStore ReasoningStore
+	ctxStore  ReasoningStore
 
 	// Eviction policy.
-	maxAge    time.Duration
-	maxBytes  int // 0 = unlimited
+	maxAge time.Duration
+}
+
+// ReasoningStore is a thread-safe key-value store for one cache tier.
+type ReasoningStore interface {
+	Get(key string) *cacheEntry // nil if not found
+	Set(key string, entry *cacheEntry)
+	Delete(key string)
+	Len() int
+	Close() error // memoryStore: no-op; fileStore: final save + stop goroutine
 }
 
 // cacheEntry holds a reasoning value with metadata.
@@ -49,32 +44,31 @@ type cacheEntry struct {
 	AddedAt   time.Time `json:"added_at"`
 }
 
-// reasoningCachePersisted is the on-disk format.
-type reasoningCachePersisted struct {
-	Version              int                  `json:"version"`
-	Note                 string               `json:"note"`
-	UpdatedAt            int64                `json:"updated_at"`
-	ToolCallReasoning    map[string]cacheEntry `json:"tool_call_reasoning,omitempty"`
-	AssistantReasoning   map[string]cacheEntry `json:"assistant_reasoning,omitempty"`
-	ContextReasoning     map[string]cacheEntry `json:"context_reasoning,omitempty"`
-}
-
 // NewReasoningCache creates a cache with the given maxSize (minimum 1).
+// Uses in-memory storage (memoryStore) — no persistence.
 func NewReasoningCache(maxSize int) *ReasoningCache {
 	if maxSize < 1 {
 		maxSize = 1
 	}
 	return &ReasoningCache{
-		entries:     make(map[string]*cacheEntry),
-		order:       make([]string, 0, maxSize),
-		maxSize:     maxSize,
-		textEntries: make(map[string]*cacheEntry),
-		textOrder:   make([]string, 0, maxSize),
-		ctxEntries:  make(map[string]*cacheEntry),
-		ctxOrder:    make([]string, 0, maxSize),
-		closeCh:     make(chan struct{}),
-		maxAge:      30 * 24 * time.Hour, // 30 days default
+		toolStore: newMemoryStore(maxSize),
+		textStore: newMemoryStore(maxSize),
+		ctxStore:  newMemoryStore(maxSize),
+		maxAge:    30 * 24 * time.Hour, // 30 days default
 	}
+}
+
+// NewReasoningCacheWithFile creates a cache with file-backed persistence.
+// Each tier is stored in its own JSON file: <path>.tool.json, .text.json, .context.json.
+func NewReasoningCacheWithFile(path string, maxSize int) *ReasoningCache {
+	rc := NewReasoningCache(maxSize)
+
+	// Replace memory stores with file stores.
+	rc.toolStore = newFileStore(path+".tool.json", maxSize)
+	rc.textStore = newFileStore(path+".text.json", maxSize)
+	rc.ctxStore = newFileStore(path+".context.json", maxSize)
+
+	return rc
 }
 
 // ---- Tool call ID keyed ----
@@ -94,9 +88,7 @@ func (c *ReasoningCache) Put(toolIDs []string, reasoning string) {
 		return
 	}
 	key := c.cacheKey(toolIDs)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.putLocked(c.entries, c.order, &c.order, key, reasoning)
+	c.toolStore.Set(key, &cacheEntry{Reasoning: reasoning, AddedAt: time.Now()})
 }
 
 // Get retrieves the cached reasoning content for the given tool call IDs.
@@ -105,9 +97,7 @@ func (c *ReasoningCache) Get(toolIDs []string) (string, bool) {
 		return "", false
 	}
 	key := c.cacheKey(toolIDs)
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.getLocked(c.entries, key)
+	return c.getFromStore(c.toolStore, key)
 }
 
 // ---- Assistant text keyed ----
@@ -118,10 +108,7 @@ func (c *ReasoningCache) PutText(text, reasoning string) {
 		return
 	}
 	key := sha256Key(text)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.putLocked(c.textEntries, c.textOrder, &c.textOrder, key, reasoning)
-	c.markDirtyLocked()
+	c.textStore.Set(key, &cacheEntry{Reasoning: reasoning, AddedAt: time.Now()})
 }
 
 // GetText retrieves reasoning by assistant text content.
@@ -130,9 +117,7 @@ func (c *ReasoningCache) GetText(text string) (string, bool) {
 		return "", false
 	}
 	key := sha256Key(text)
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.getLocked(c.textEntries, key)
+	return c.getFromStore(c.textStore, key)
 }
 
 // ---- Tool context keyed ----
@@ -143,10 +128,7 @@ func (c *ReasoningCache) PutContext(ctxParts []string, assistantText, reasoning 
 	if key == "" || reasoning == "" {
 		return
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.putLocked(c.ctxEntries, c.ctxOrder, &c.ctxOrder, key, reasoning)
-	c.markDirtyLocked()
+	c.ctxStore.Set(key, &cacheEntry{Reasoning: reasoning, AddedAt: time.Now()})
 }
 
 // GetContext retrieves reasoning by tool context + assistant text.
@@ -155,47 +137,21 @@ func (c *ReasoningCache) GetContext(ctxParts []string, assistantText string) (st
 	if key == "" {
 		return "", false
 	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.getLocked(c.ctxEntries, key)
+	return c.getFromStore(c.ctxStore, key)
 }
 
 // ---- Internal helpers ----
 
-func (c *ReasoningCache) putLocked(entries map[string]*cacheEntry, order []string, orderPtr *[]string, key, reasoning string) {
-	now := time.Now()
-	if existing, ok := entries[key]; ok {
-		existing.Reasoning = reasoning
-		existing.AddedAt = now
-		return
-	}
-	if len(entries) >= c.maxSize {
-		evictLocked(entries, orderPtr)
-	}
-	entries[key] = &cacheEntry{Reasoning: reasoning, AddedAt: now}
-	*orderPtr = append(*orderPtr, key)
-}
-
-func (c *ReasoningCache) getLocked(entries map[string]*cacheEntry, key string) (string, bool) {
-	entry, ok := entries[key]
-	if !ok {
+func (c *ReasoningCache) getFromStore(s ReasoningStore, key string) (string, bool) {
+	entry := s.Get(key)
+	if entry == nil {
 		return "", false
 	}
 	if c.maxAge > 0 && time.Since(entry.AddedAt) > c.maxAge {
-		delete(entries, key)
+		s.Delete(key)
 		return "", false
 	}
 	return entry.Reasoning, true
-}
-
-func evictLocked(entries map[string]*cacheEntry, orderPtr *[]string) {
-	order := *orderPtr
-	if len(order) == 0 {
-		return
-	}
-	oldest := order[0]
-	*orderPtr = order[1:]
-	delete(entries, oldest)
 }
 
 func sha256Key(s string) string {
@@ -236,114 +192,222 @@ func (c *ReasoningCache) Delete(toolIDs []string) {
 		return
 	}
 	key := c.cacheKey(toolIDs)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.entries, key)
+	c.toolStore.Delete(key)
 }
 
 // Len returns the total number of entries across all tiers.
 func (c *ReasoningCache) Len() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.entries) + len(c.textEntries) + len(c.ctxEntries)
+	return c.toolStore.Len() + c.textStore.Len() + c.ctxStore.Len()
 }
 
-// ---- Persistence ----
+// Close shuts down all stores. For fileStore, this triggers a final save
+// and stops the auto-save goroutine. For memoryStore, it's a no-op.
+func (c *ReasoningCache) Close() error {
+	var firstErr error
+	for _, s := range []ReasoningStore{c.toolStore, c.textStore, c.ctxStore} {
+		if err := s.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
 
-// SetPersistence configures file-backed persistence. If path is non-empty,
-// the cache is loaded from the file and periodic saves are started.
-func (c *ReasoningCache) SetPersistence(path string) {
-	c.mu.Lock()
-	c.path = path
-	c.mu.Unlock()
-	if path != "" {
-		c.loadFromFile()
+// ---- memoryStore ----
+
+// memoryStore is an in-memory ReasoningStore with FIFO eviction.
+type memoryStore struct {
+	mu      sync.RWMutex
+	entries map[string]*cacheEntry
+	order   []string
+	maxSize int
+}
+
+func newMemoryStore(maxSize int) *memoryStore {
+	return &memoryStore{
+		entries: make(map[string]*cacheEntry),
+		order:   make([]string, 0, maxSize),
+		maxSize: maxSize,
 	}
 }
 
-// LoadFromFile loads cache state from the configured file path.
-func (c *ReasoningCache) loadFromFile() {
-	c.mu.Lock()
-	path := c.path
-	c.mu.Unlock()
-	if path == "" {
+func (ms *memoryStore) Get(key string) *cacheEntry {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	return ms.entries[key]
+}
+
+func (ms *memoryStore) Set(key string, entry *cacheEntry) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	if existing, ok := ms.entries[key]; ok {
+		existing.Reasoning = entry.Reasoning
+		existing.AddedAt = entry.AddedAt
 		return
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return // file not found or unreadable — start fresh
+	if len(ms.entries) >= ms.maxSize {
+		ms.evictLocked()
 	}
-	var p reasoningCachePersisted
-	if err := json.Unmarshal(data, &p); err != nil {
+	ms.entries[key] = entry
+	ms.order = append(ms.order, key)
+}
+
+func (ms *memoryStore) Delete(key string) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	delete(ms.entries, key)
+}
+
+func (ms *memoryStore) Len() int {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	return len(ms.entries)
+}
+
+func (ms *memoryStore) Close() error { return nil }
+
+func (ms *memoryStore) evictLocked() {
+	if len(ms.order) == 0 {
 		return
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	oldest := ms.order[0]
+	ms.order = ms.order[1:]
+	delete(ms.entries, oldest)
+}
 
-	for id, entry := range p.ToolCallReasoning {
-		c.entries[id] = &cacheEntry{Reasoning: entry.Reasoning, AddedAt: entry.AddedAt}
-		c.order = append(c.order, id)
+// snapshot returns a copy of all entries (for fileStore persistence).
+func (ms *memoryStore) snapshot() map[string]cacheEntry {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	snap := make(map[string]cacheEntry, len(ms.entries))
+	for k, v := range ms.entries {
+		snap[k] = *v
 	}
-	for text, entry := range p.AssistantReasoning {
-		c.textEntries[text] = &cacheEntry{Reasoning: entry.Reasoning, AddedAt: entry.AddedAt}
-		c.textOrder = append(c.textOrder, text)
-	}
-	for ctx, entry := range p.ContextReasoning {
-		c.ctxEntries[ctx] = &cacheEntry{Reasoning: entry.Reasoning, AddedAt: entry.AddedAt}
-		c.ctxOrder = append(c.ctxOrder, ctx)
+	return snap
+}
+
+// load replaces entries from a snapshot (for fileStore persistence).
+func (ms *memoryStore) load(entries map[string]cacheEntry) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	ms.entries = make(map[string]*cacheEntry, len(entries))
+	ms.order = make([]string, 0, len(entries))
+	for k, v := range entries {
+		entry := v // copy
+		ms.entries[k] = &entry
+		ms.order = append(ms.order, k)
 	}
 }
 
-// SaveNow flushes dirty entries to disk immediately.
-func (c *ReasoningCache) SaveNow() error {
-	c.mu.Lock()
-	path := c.path
-	if path == "" {
-		c.mu.Unlock()
+// ---- fileStore ----
+
+// fileStore is a ReasoningStore backed by a memoryStore with JSON file persistence.
+type fileStore struct {
+	ms      *memoryStore
+	path    string
+	dirty   bool
+	mu      sync.Mutex // protects dirty flag + file I/O
+	closeCh chan struct{}
+	stopped bool
+}
+
+type fileStorePersisted struct {
+	Version   int                    `json:"version"`
+	UpdatedAt int64                  `json:"updated_at"`
+	Entries   map[string]cacheEntry  `json:"entries"`
+}
+
+func newFileStore(path string, maxSize int) *fileStore {
+	fs := &fileStore{
+		ms:      newMemoryStore(maxSize),
+		path:    path,
+		closeCh: make(chan struct{}),
+	}
+	fs.loadFromFile()
+	go fs.autoSave()
+	return fs
+}
+
+func (fs *fileStore) Get(key string) *cacheEntry { return fs.ms.Get(key) }
+
+func (fs *fileStore) Set(key string, entry *cacheEntry) {
+	fs.ms.Set(key, entry)
+	fs.mu.Lock()
+	fs.dirty = true
+	fs.mu.Unlock()
+}
+
+func (fs *fileStore) Delete(key string) {
+	fs.ms.Delete(key)
+	fs.mu.Lock()
+	fs.dirty = true
+	fs.mu.Unlock()
+}
+
+func (fs *fileStore) Len() int { return fs.ms.Len() }
+
+func (fs *fileStore) Close() error {
+	fs.mu.Lock()
+	if fs.stopped {
+		fs.mu.Unlock()
 		return nil
 	}
-	p := c.snapshotLocked()
-	c.dirty = false
-	c.mu.Unlock()
+	fs.stopped = true
+	close(fs.closeCh)
+	fs.mu.Unlock()
+	return fs.save()
+}
 
+func (fs *fileStore) autoSave() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-fs.closeCh:
+			return
+		case <-ticker.C:
+			fs.mu.Lock()
+			dirty := fs.dirty
+			fs.dirty = false
+			fs.mu.Unlock()
+			if dirty {
+				if err := fs.save(); err != nil {
+					slog.Warn("cache: auto-save failed", "path", fs.path, "err", err)
+				}
+			}
+		}
+	}
+}
+
+func (fs *fileStore) save() error {
+	entries := fs.ms.snapshot()
+	p := fileStorePersisted{
+		Version:   2,
+		UpdatedAt: time.Now().UnixMilli(),
+		Entries:   entries,
+	}
 	data, err := json.Marshal(p)
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(path)
+	dir := filepath.Dir(fs.path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
+	tmp := fs.path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	return os.Rename(tmp, fs.path)
 }
 
-func (c *ReasoningCache) snapshotLocked() *reasoningCachePersisted {
-	tc := make(map[string]cacheEntry, len(c.entries))
-	for k, v := range c.entries {
-		tc[k] = *v
+func (fs *fileStore) loadFromFile() {
+	data, err := os.ReadFile(fs.path)
+	if err != nil {
+		return // file not found or unreadable — start fresh
 	}
-	at := make(map[string]cacheEntry, len(c.textEntries))
-	for k, v := range c.textEntries {
-		at[k] = *v
+	var p fileStorePersisted
+	if err := json.Unmarshal(data, &p); err != nil {
+		return
 	}
-	ct := make(map[string]cacheEntry, len(c.ctxEntries))
-	for k, v := range c.ctxEntries {
-		ct[k] = *v
-	}
-	return &reasoningCachePersisted{
-		Version:            2,
-		Note:               "DeepSeek V4 reasoning_content cache for llm-api-converter",
-		UpdatedAt:          time.Now().UnixMilli(),
-		ToolCallReasoning:   tc,
-		AssistantReasoning:  at,
-		ContextReasoning:    ct,
-	}
-}
-
-func (c *ReasoningCache) markDirtyLocked() {
-	c.dirty = true
+	fs.ms.load(p.Entries)
 }
