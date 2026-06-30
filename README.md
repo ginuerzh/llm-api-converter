@@ -2,6 +2,25 @@
 
 A GOST Rewriter HTTP plugin that converts bidirectionally between **OpenAI Chat Completions** and **Anthropic Messages API** formats. Designed for use with tools like Claude Code, Codex CLI, OpenCode, and other LLM clients that speak either protocol.
 
+## Table of Contents
+
+- [How it works](#how-it-works)
+- [Quick start](#quick-start)
+  - [With Docker Compose](#with-docker-compose)
+  - [Claude Code → DeepSeek (via opencode-go)](#claude-code--deepseek-via-opencode-go)
+  - [Codex CLI → DeepSeek (via opencode-go)](#codex-cli--deepseek-via-opencode-go)
+- [Capabilities](#capabilities)
+  - [Protocol conversion](#protocol-conversion)
+  - [Streaming](#streaming)
+  - [Multi-tier reasoning cache (DeepSeek V4)](#multi-tier-reasoning-cache-deepseek-v4)
+  - [Message sequence sanitization](#message-sequence-sanitization)
+  - [Content support](#content-support)
+- [CLI flags](#cli-flags)
+- [Project structure](#project-structure)
+- [Tests](#tests)
+- [Related projects](#related-projects)
+- [License](#license)
+
 ## How it works
 
 Deployed as a GOST rewriter plugin, it intercepts HTTP request/response bodies in a forward proxy and transparently converts between the two wire formats:
