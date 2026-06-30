@@ -337,6 +337,20 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 		return body, nil
 	}
 
+	// Warn when the response contains an error field (OpenAI or Anthropic format).
+	if errVal, ok := raw["error"]; ok {
+		switch v := errVal.(type) {
+		case map[string]any:
+			if msg, _ := v["message"].(string); msg != "" {
+				slog.Warn("response contains error", "message", msg, "type", v["type"])
+			} else {
+				slog.Warn("response contains error", "error", errVal)
+			}
+		default:
+			slog.Warn("response contains error", "error", errVal)
+		}
+	}
+
 	// Resolve downstream protocol override from model mapping.
 	// If set and the input format matches, rewrite model name and pass through.
 	if opts.ModelMap != nil {
