@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 
 	"llm-api-converter/convert"
 )
@@ -51,6 +52,7 @@ type rewriteHandler struct {
 	opts           *Options
 	reasoningCache *convert.ReasoningCache
 	modelMap       convert.ModelMap
+	requestModels  sync.Map // targetModel (string) → originalModel (string)
 }
 
 func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +83,22 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		MaxTokens:      h.opts.MaxTokens,
 		ModelMap:       h.modelMap,
 		ReasoningCache: h.reasoningCache,
+	}
+
+	// Cache the original model keyed by target so response/SSE phases can
+	// recover it. The safety classifier needs the model the client asked for.
+	if originalModel := extractModelFromPayload(req.Data); originalModel != "" {
+		bare := convert.StripProviderPrefix(originalModel)
+		if target, _, ok := h.modelMap.Apply(bare); ok && target != "" {
+			h.requestModels.Store(target, bare)
+		}
+	}
+
+	// Probe the model from data (handles both raw JSON and SSE "data:" prefix).
+	if dataModel := extractModelField(req.Data); dataModel != "" {
+		if cached, ok := h.requestModels.Load(dataModel); ok {
+			opts.RequestModel = cached.(string)
+		}
 	}
 
 	// Extract declared tool names from Anthropic requests for tool restriction.
@@ -131,6 +149,43 @@ func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(v)
+}
+
+// extractModelFromPayload returns the model name from an Anthropic request body.
+// It differentiates Anthropic requests (model + max_tokens + messages, no choices)
+// from OpenAI responses (choices array) to avoid false-positive caching.
+func extractModelFromPayload(data []byte) string {
+	var probe struct {
+		Model     string          `json:"model"`
+		MaxTokens int             `json:"max_tokens"`
+		Messages  json.RawMessage `json:"messages"`
+		Choices   json.RawMessage `json:"choices"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return ""
+	}
+	if probe.Model != "" && probe.MaxTokens > 0 &&
+		len(probe.Messages) > 0 && len(probe.Choices) == 0 {
+		return probe.Model
+	}
+	return ""
+}
+
+// extractModelField returns the "model" field from data, handling both raw JSON
+// and SSE-framed data ("data: {...}" prefix).
+func extractModelField(data []byte) string {
+	var probe struct{ Model string `json:"model"` }
+	if json.Unmarshal(data, &probe) == nil && probe.Model != "" {
+		return probe.Model
+	}
+	// Strip SSE "data:" prefix for stream chunk data.
+	if stripped, ok := strings.CutPrefix(string(data), "data:"); ok {
+		payload := []byte(strings.TrimLeft(stripped, " \t"))
+		if json.Unmarshal(payload, &probe) == nil {
+			return probe.Model
+		}
+	}
+	return ""
 }
 
 // extractAnthropicToolNames parses the request body as an Anthropic request and

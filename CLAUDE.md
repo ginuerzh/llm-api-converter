@@ -184,3 +184,4 @@ cd llm-api-converter && go test ./tests/e2e/ -v -timeout 5m
 - **Tool restriction**: When converting upstream responses, `tool_use` blocks not in the original Anthropic request's `tools` list are filtered to prevent tool hallucination
 - **ID normalization**: OpenAI `call_xxx` IDs → Anthropic `toolu_xxx` format (required by Anthropic SDK)
 - **Image handling**: Only `data:` URIs with `base64` encoding are supported for image conversion
+- **maxChunkSize requirement**: For **non-streaming** LLM responses, the GOST node's `rewriteResponseBody` rule must set `maxChunkSize` (e.g., `maxChunkSize: 2097152` for 2MB), otherwise chunked responses bypass the Rewriter plugin. Streaming (`text/event-stream`) bodies are unaffected.

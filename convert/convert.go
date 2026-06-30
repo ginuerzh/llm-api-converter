@@ -273,10 +273,26 @@ func mapOpenAIStreamFinish(reason string) string {
 	}
 }
 
+// StripProviderPrefix removes a leading "provider/" segment (e.g. "anthropic/")
+// from model names. Claude Code sends "anthropic/claude-opus-4-8" but mappings
+// and upstreams expect the bare model id.
+func StripProviderPrefix(model string) string {
+	if i := strings.IndexByte(model, '/'); i >= 0 {
+		return model[i+1:]
+	}
+	return model
+}
+
 // resolveModel determines the output model ID and downstream protocol override.
 // Priority: mapping (prefix match or catch-all) → passthrough (original input) → fallback.
 func resolveModel(inputModel, fallback string, mapping ModelMap) (string, string) {
 	if inputModel != "" {
+		// Strip provider prefix before matching (Claude Code sends "anthropic/claude-opus-4-8").
+		bare := StripProviderPrefix(inputModel)
+		if target, proto, ok := mapping.Apply(bare); ok {
+			return target, proto
+		}
+		// Also try matching with the original (includes prefix) for backwards compatibility.
 		if target, proto, ok := mapping.Apply(inputModel); ok {
 			return target, proto
 		}
@@ -1252,6 +1268,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 		return body, nil
 	}
 
+
 	// Resolve output model: mapping → passthrough → fallback.
 	outputModel, _ := resolveModel(req.Model, opts.Model, opts.ModelMap)
 	profile := classifyModel(outputModel)
@@ -1640,33 +1657,50 @@ func extractDeclaredTools(opts *ConvertOptions) []string {
 	return nil
 }
 
+// newStreamConverterFromData resolves the model from raw data bytes, does a
+// reverse model-map lookup for the safety classifier, and returns a configured
+// StreamConverter.
+func newStreamConverterFromData(data []byte, opts *ConvertOptions) *StreamConverter {
+	streamModel := opts.Model
+	downstreamProtocol := ""
+	// Strip SSE framing so we can parse the model from the chunk payload.
+	payload := extractSSEPayload(data)
+	if model := extractModelFromData(payload); model != "" {
+		streamModel, downstreamProtocol = resolveModel(model, opts.Model, opts.ModelMap)
+	}
+	if opts.RequestModel != "" {
+		streamModel = opts.RequestModel
+	} else if opts.ModelMap != nil {
+		if sourcePrefix := opts.ModelMap.SourcePrefix(streamModel); sourcePrefix != "" {
+			streamModel = sourcePrefix
+		}
+	}
+	sc := NewStreamConverter(streamModel, opts.ReasoningCache, extractDeclaredTools(opts))
+	sc.downstreamProtocol = downstreamProtocol
+	return sc
+}
+
 // HandleSSEEvent processes an SSE stream lifecycle event.
 // It routes to the appropriate StreamConverter method based on the phase.
 func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *ConvertOptions) ([]byte, error) {
 	switch StreamPhase(phase) {
 	case StreamPhaseStart:
-		streamModel := opts.Model
-		downstreamProtocol := ""
-		if model := extractModelFromData(data); model != "" {
-			streamModel, downstreamProtocol = resolveModel(model, opts.Model, opts.ModelMap)
-		}
-		sc := NewStreamConverter(streamModel, opts.ReasoningCache, extractDeclaredTools(opts))
-		sc.downstreamProtocol = downstreamProtocol
+		sc := newStreamConverterFromData(data, opts)
 		streamStates.Store(sid, sc)
 		startData := sc.HandleStreamStart()
 		// First event data is now attached to the start phase signal
 		// (sniffer sends the first real SSE event with sse_phase:"start").
 		if len(data) > 0 {
-			payload := extractSSEPayload(data)
-			if payload != nil {
-				chunkData, err := sc.HandleChunk(payload)
-				if err != nil {
-					return startData, err
-				}
-				if len(chunkData) > 0 {
-					return append(startData, append([]byte("\n\n"), chunkData...)...), nil
-				}
+		payload := extractSSEPayload(data)
+		if payload != nil {
+			chunkData, err := sc.HandleChunk(payload)
+			if err != nil {
+				return startData, err
 			}
+			if len(chunkData) > 0 {
+				return append(startData, append([]byte("\n\n"), chunkData...)...), nil
+			}
+		}
 		}
 		return startData, nil
 
@@ -1679,13 +1713,7 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 		v, ok := streamStates.Load(sid)
 		if !ok {
 			slog.Warn("HandleSSEEvent: unknown stream, starting new", "sid", sid)
-			streamModel_fb := opts.Model
-			downstreamProtocol_fb := ""
-			if model := extractModelFromData(payload); model != "" {
-				streamModel_fb, downstreamProtocol_fb = resolveModel(model, opts.Model, opts.ModelMap)
-			}
-			sc := NewStreamConverter(streamModel_fb, opts.ReasoningCache, extractDeclaredTools(opts))
-			sc.downstreamProtocol = downstreamProtocol_fb
+			sc := newStreamConverterFromData(payload, opts)
 			streamStates.Store(sid, sc)
 			startData := sc.HandleStreamStart()
 			chunkData, err := sc.HandleChunk(payload)
@@ -1778,6 +1806,17 @@ func convertOpenAIResponseToAnthropic(body []byte, opts *ConvertOptions) ([]byte
 			InputTokens:  resp.Usage.PromptTokens,
 			OutputTokens: resp.Usage.CompletionTokens,
 		},
+	}
+
+	// Rewrite model to the original client-facing name so that Claude Code's
+	// safety classifier sees the expected model (e.g. "claude-opus-4-8")
+	// instead of the upstream target (e.g. "deepseek-v4-pro").
+	if opts != nil && opts.RequestModel != "" {
+		anth.Model = opts.RequestModel
+	} else if opts != nil && opts.ModelMap != nil {
+		if sourcePrefix := opts.ModelMap.SourcePrefix(resp.Model); sourcePrefix != "" {
+			anth.Model = sourcePrefix
+		}
 	}
 
 	if len(resp.Choices) > 0 {

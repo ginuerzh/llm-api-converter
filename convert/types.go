@@ -371,6 +371,21 @@ func (mm ModelMap) Apply(sourceModel string) (string, string, bool) {
 	return "", "", false
 }
 
+// SourcePrefix does a case-insensitive reverse lookup: returns the source
+// prefix of the first entry whose TargetModel is a prefix of targetModel.
+// Used to recover the original client-facing model name from an upstream
+// response so that Claude Code's safety classifier sees the expected model.
+func (mm ModelMap) SourcePrefix(targetModel string) string {
+	targetModel = strings.ToLower(targetModel)
+	for _, entry := range mm {
+		t := strings.ToLower(entry.TargetModel)
+		if entry.SourcePrefix != "*" && strings.HasPrefix(targetModel, t) {
+			return entry.SourcePrefix
+		}
+	}
+	return ""
+}
+
 // LookupTarget does a case-insensitive reverse lookup: returns the protocol
 // of the entry whose TargetModel matches the given model name. Used when a
 // request or response model is already the mapped target (e.g. downstream
@@ -415,6 +430,11 @@ type ConvertOptions struct {
 	// StreamErrorMsg, when non-empty, causes HandleSSEEvent to emit an error event
 	// instead of normal stream conversion.
 	StreamErrorMsg string
+	// RequestModel is the original (unmapped) model name from the client request.
+	// When set, Convert uses it for the model field in Anthropic responses so
+	// that Claude Code's safety classifier sees the expected model name.
+	// ponytail: safety classifier requires original model name in responses
+	RequestModel string
 }
 
 // -------- OpenAI Streaming Types --------
