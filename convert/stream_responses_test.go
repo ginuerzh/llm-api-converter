@@ -1,6 +1,7 @@
 package convert
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -214,5 +215,60 @@ func TestResponsesStreamConverter_MultipleToolCalls(t *testing.T) {
 	end := sc.HandleStreamEnd()
 	if !strings.Contains(string(end), "function_call_arguments.done") {
 		t.Fatal("missing function_call_arguments.done")
+	}
+}
+
+// Regression: codex silently drops a function_call whose output_item.done item
+// lacks `arguments` (ResponseItem::FunctionCall requires it, no serde default).
+// The converter must carry the accumulated arguments in the done item.
+func TestResponsesStreamConverter_ToolCallDoneItemHasArguments(t *testing.T) {
+	sc := NewResponsesStreamConverter("deepseek-chat")
+	sc.HandleStreamStart()
+
+	// Tool call start (name + first arg fragment).
+	sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"exec_command","arguments":"{\"cmd\":"}}]},"finish_reason":null}]}`))
+	// Second arg fragment — exercises accumulation across deltas.
+	sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"ls\"}"}}]},"finish_reason":null}]}`))
+	sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
+
+	end := string(sc.HandleStreamEnd())
+
+	// Find the output_item.done whose item is a function_call and verify it
+	// carries the full accumulated arguments.
+	lines := strings.Split(end, "\n")
+	var doneItem *ResponsesOutputItem
+	for i, ln := range lines {
+		if !strings.HasPrefix(ln, "data: ") {
+			continue
+		}
+		if !strings.Contains(ln, `"type":"response.output_item.done"`) {
+			continue
+		}
+		var evt ResponsesStreamEvent
+		if err := json.Unmarshal([]byte(ln[6:]), &evt); err != nil {
+			t.Fatalf("unmarshal output_item.done event: %v\n%s", err, ln)
+		}
+		if evt.Item != nil && evt.Item.Type == "function_call" {
+			doneItem = evt.Item
+			break
+		}
+		_ = i
+	}
+	if doneItem == nil {
+		t.Fatal("no function_call output_item.done event emitted")
+	}
+	if doneItem.Name != "exec_command" {
+		t.Fatalf("done item name = %q, want exec_command", doneItem.Name)
+	}
+	if doneItem.Arguments == "" {
+		t.Fatal("done item arguments empty — codex would silently drop this tool call")
+	}
+	// Arguments must equal the concatenated, canonicalized deltas.
+	var got map[string]any
+	if err := json.Unmarshal([]byte(doneItem.Arguments), &got); err != nil {
+		t.Fatalf("done item arguments not valid JSON: %v\n%s", err, doneItem.Arguments)
+	}
+	if got["cmd"] != "ls" {
+		t.Fatalf("done item arguments = %v, want {\"cmd\":\"ls\"}", doneItem.Arguments)
 	}
 }

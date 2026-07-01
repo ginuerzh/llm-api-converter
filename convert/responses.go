@@ -553,27 +553,49 @@ func parseResponsesInput(input json.RawMessage) responsesInputParseResult {
 			if args == "" {
 				args = "{}"
 			}
-			toolID := item.ID
+			// Use call_id as the OpenAI tool_call.id — codex omits the `id`
+			// field on function_call items and only sets `call_id`.
+			// ponytail: id fallback for clients that still set it (none known).
+			toolID := item.CallID
+			if toolID == "" {
+				toolID = item.ID
+			}
 			if toolID == "" {
 				toolID = ensureToolID("")
 			}
 
-			msg := OpenAIMessage{
-				Role: "assistant",
-				ToolCalls: []OpenAIToolCall{{
+			// Coalesce consecutive function_calls (parallel tool calls)
+			// into a single assistant message. Chat Completions requires
+			// all parallel tool_calls in one message.
+			if len(result.messages) > 0 && result.messages[len(result.messages)-1].Role == "assistant" &&
+				len(result.messages[len(result.messages)-1].ToolCalls) > 0 {
+				last := &result.messages[len(result.messages)-1]
+				last.ToolCalls = append(last.ToolCalls, OpenAIToolCall{
 					ID:   toolID,
 					Type: "function",
 					Function: OpenAIFunctionCall{
 						Name:      item.Name,
 						Arguments: canonicalJSONString(args),
 					},
-				}},
+				})
+			} else {
+				msg := OpenAIMessage{
+					Role: "assistant",
+					ToolCalls: []OpenAIToolCall{{
+						ID:   toolID,
+						Type: "function",
+						Function: OpenAIFunctionCall{
+							Name:      item.Name,
+							Arguments: canonicalJSONString(args),
+						},
+					}},
+				}
+				if pendingReasoning != "" {
+					msg.ReasoningContent = pendingReasoning
+					pendingReasoning = ""
+				}
+				result.messages = append(result.messages, msg)
 			}
-			if pendingReasoning != "" {
-				msg.ReasoningContent = pendingReasoning
-				pendingReasoning = ""
-			}
-			result.messages = append(result.messages, msg)
 
 		case "function_call_output":
 			content := ""
@@ -610,22 +632,36 @@ func parseResponsesInput(input json.RawMessage) responsesInputParseResult {
 			if inputStr == "" {
 				inputStr = "{}"
 			}
-			msg := OpenAIMessage{
-				Role: "assistant",
-				ToolCalls: []OpenAIToolCall{{
+			// Coalesce with preceding assistant tool_calls (parallel tools).
+			if len(result.messages) > 0 && result.messages[len(result.messages)-1].Role == "assistant" &&
+				len(result.messages[len(result.messages)-1].ToolCalls) > 0 {
+				last := &result.messages[len(result.messages)-1]
+				last.ToolCalls = append(last.ToolCalls, OpenAIToolCall{
 					ID:   callID,
 					Type: "function",
 					Function: OpenAIFunctionCall{
 						Name:      item.Name,
 						Arguments: canonicalJSONString(inputStr),
 					},
-				}},
+				})
+			} else {
+				msg := OpenAIMessage{
+					Role: "assistant",
+					ToolCalls: []OpenAIToolCall{{
+						ID:   callID,
+						Type: "function",
+						Function: OpenAIFunctionCall{
+							Name:      item.Name,
+							Arguments: canonicalJSONString(inputStr),
+						},
+					}},
+				}
+				if pendingReasoning != "" {
+					msg.ReasoningContent = pendingReasoning
+					pendingReasoning = ""
+				}
+				result.messages = append(result.messages, msg)
 			}
-			if pendingReasoning != "" {
-				msg.ReasoningContent = pendingReasoning
-				pendingReasoning = ""
-			}
-			result.messages = append(result.messages, msg)
 
 		case "custom_tool_call_output":
 			callID := item.CallID
