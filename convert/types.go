@@ -401,6 +401,16 @@ func (mm ModelMap) LookupTarget(targetModel string) string {
 	return ""
 }
 
+// catchAllTarget returns the target model of the catch-all ("*") entry, if any.
+func (mm ModelMap) catchAllTarget() (string, bool) {
+	for _, entry := range mm {
+		if entry.SourcePrefix == "*" {
+			return entry.TargetModel, true
+		}
+	}
+	return "", false
+}
+
 // -------- ConvertOptions --------
 
 // ConvertOptions controls the conversion behavior.

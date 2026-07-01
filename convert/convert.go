@@ -304,11 +304,20 @@ func StripProviderPrefix(model string) string {
 }
 
 // resolveModel determines the output model ID and downstream protocol override.
-// Priority: mapping (prefix match or catch-all) → passthrough (original input) → fallback.
+// Priority: downstream target lookup → mapping (prefix match or catch-all) → passthrough → fallback.
 func resolveModel(inputModel, fallback string, mapping ModelMap) (string, string) {
 	if inputModel != "" {
 		// Strip provider prefix before matching (Claude Code sends "anthropic/claude-opus-4-8").
 		bare := StripProviderPrefix(inputModel)
+
+		// Check if the model is a downstream target first (e.g. response from
+		// upstream API).  When it is, preserve the model name and use the
+		// target entry's protocol — don't let a catch-all entry rewrite the
+		// model to a different value.
+		if lp := mapping.LookupTarget(bare); lp != "" {
+			return inputModel, lp
+		}
+
 		if target, proto, ok := mapping.Apply(bare); ok {
 			return target, proto
 		}
@@ -397,6 +406,20 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 		var targetModel string
 		if m, ok := raw["model"].(string); ok {
 			targetModel, downstreamProtocol = resolveModel(m, opts.Model, opts.ModelMap)
+
+			// When the model is a downstream target (response from
+			// upstream API), check whether the catch-all entry would
+			// rewrite it.  If the catch-all has a different target
+			// model, we are in an asymmetric setup (client !=
+			// downstream protocol) — skip passthrough so the
+			// response is converted back to the client format.
+			if opts.ModelMap.LookupTarget(m) != "" {
+				if catchTarget, ok := opts.ModelMap.catchAllTarget(); ok && catchTarget != "" && catchTarget != m {
+					slog.Debug("protocol override: skipping response passthrough (catch-all would rewrite downstream model)", "model", m, "catchAllTarget", catchTarget)
+					targetModel = ""
+					downstreamProtocol = ""
+				}
+			}
 		}
 
 		passthrough := false

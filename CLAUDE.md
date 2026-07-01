@@ -175,6 +175,16 @@ cd llm-api-converter && go vet ./...
 cd llm-api-converter && go test ./tests/e2e/ -v -timeout 5m
 ```
 
+## Responses API conversion (stateful stream)
+
+`ResponsesStreamConverter` lifecycle: `HandleStreamStart` → `HandleChunk` (delta merge) → `HandleStreamEnd` (final events). Unlike Chat streaming, deltas accumulate into complete items and events carry item references.
+
+Key gotchas:
+- **Codex silently drops items with missing required fields**: codex-rs SSE parser returns `Ok(None)` on deserialization failure — no error, no log. `ResponseItem::FunctionCall.arguments` has no `#[serde(default)]`, so `output_item.done` must carry the complete item with `arguments` populated (codex ignores `function_call_arguments.delta/.done` events and reads directly from `output_item.done`).
+- **`call_id` not `id`**: In Responses `function_call` items, use `call_id` as the OpenAI `tool_call.id` — codex omits the `id` field and only sets `call_id`.
+- **Parallel tool call coalescing**: Multiple consecutive `function_call` items in Responses must coalesce into a single assistant message with multiple `tool_calls` for Chat Completions format (same for `custom_tool_call` items).
+- **Anthropic billing header strip**: `x-anthropic-*` response headers must be stripped before returning to downstream, otherwise they cause 100% prefix cache misses on DeepSeek.
+
 ## Known behaviors
 
 - **Protocol override passthrough**: A model-map `:protocol` suffix (`prefix=target:openai`/`:anthropic`) skips conversion for traffic already in that format, but the model name is still rewritten to `target`. Empty target (`prefix=:openai`) skips conversion and leaves the model unchanged. Unset protocol preserves the auto-detect conversion behavior.
