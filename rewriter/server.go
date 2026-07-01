@@ -1,6 +1,7 @@
 package rewriter
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,9 +10,12 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"llm-api-converter/convert"
 )
+
+var reqIDSeq atomic.Int64
 
 // Options holds the configuration for the rewriter plugin server.
 type Options struct {
@@ -77,7 +81,7 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Debug("received request", "data", string(req.Data), "metadata", string(req.Metadata))
+	reqID := reqIDSeq.Add(1)
 
 	opts := &convert.ConvertOptions{
 		Model:          h.opts.Model,
@@ -123,50 +127,53 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if meta.SSEPhase != "" {
 			out, err := convert.HandleSSEEvent(meta.Sid, meta.SSEPhase, meta.EventIndex, req.Data, opts)
 			if err != nil {
-				slog.Error("stream event", "phase", meta.SSEPhase, "err", err)
+				slog.Error("stream event", "req_id", reqID, "phase", meta.SSEPhase, "err", err)
 				writeJSON(w, rewriteResponse{OK: false})
 				return
 			}
-			slog.Debug("stream response", "phase", meta.SSEPhase, "data", string(out))
+			slog.Debug("stream response", "req_id", reqID, "phase", meta.SSEPhase, "received", truncate(req.Data), "data", string(out))
 			writeJSON(w, rewriteResponse{OK: true, Data: out})
 			return
 		}
 	}
 
 	if len(req.Data) == 0 {
-		slog.Debug("empty data in rewrite request (non-SSE) — pass through")
+		slog.Debug("empty data in rewrite request (non-SSE) — pass through", "req_id", reqID)
 		writeJSON(w, rewriteResponse{OK: true})
 		return
 	}
 
 	// Session-aware dispatch: when a Responses API session's SSE event
-	// arrives without SSEPhase metadata, route it through the stream
-	// handler so the chunk is consumed rather than leaked as raw data.
-	slog.Debug("pre-convert dispatch", "sid", opts.SID, "data_len", len(req.Data), "is_responses", opts.SID != "" && convert.IsResponsesSession(opts.SID))
+	// arrives without SSEPhase metadata, route streaming chunks through
+	// HandleSSEEvent. Non-streaming (complete JSON) responses fall through
+	// to Convert() which handles Responses→Chat round-trip conversion.
 	if opts.SID != "" && convert.IsResponsesSession(opts.SID) {
-		out, err := convert.HandleSSEEvent(opts.SID, string(convert.StreamPhaseEvent), 0, req.Data, opts)
-		if err != nil {
-			slog.Warn("responses session event", "err", err)
-		}
-		if out != nil {
-			slog.Debug("responses session event output", "data", string(out))
-			writeJSON(w, rewriteResponse{OK: true, Data: out})
+		if isSSEFramed(req.Data) {
+			out, err := convert.HandleSSEEvent(opts.SID, string(convert.StreamPhaseEvent), 0, req.Data, opts)
+			if err != nil {
+				slog.Warn("responses session event", "req_id", reqID, "err", err)
+			}
+			if out != nil {
+				slog.Debug("responses session event output", "req_id", reqID, "received", truncate(req.Data), "data", string(out))
+				writeJSON(w, rewriteResponse{OK: true, Data: out})
+				return
+			}
+			// Swallow: consumed by stream handler with no output to emit.
+			writeJSON(w, rewriteResponse{OK: true, Data: []byte{}})
 			return
 		}
-		// Swallow: consumed by stream handler with no output to emit.
-		writeJSON(w, rewriteResponse{OK: true, Data: []byte{}})
-		return
+		slog.Debug("responses session non-SSE data → falling through to Convert()", "req_id", reqID)
 	}
 
 	// Non-streaming conversion.
 	out, err := convert.Convert(req.Data, opts)
 	if err != nil {
-		slog.Error("convert", "err", err)
+		slog.Error("convert", "req_id", reqID, "err", err)
 		writeJSON(w, rewriteResponse{OK: false})
 		return
 	}
 
-	slog.Debug("conversion response", "data", string(out))
+	slog.Debug("conversion response", "req_id", reqID, "received", truncate(req.Data), "data", string(out))
 	writeJSON(w, rewriteResponse{OK: true, Data: out})
 }
 
@@ -174,6 +181,19 @@ func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(v)
+}
+
+// truncate shortens long byte slices for debug logging.
+func truncate(b []byte) string {
+	if len(b) > 1024*1024 {
+		return string(b[:200]) + "..."
+	}
+	return string(b)
+}
+
+// isSSEFramed returns true if data starts with an SSE prefix (data:, event:, id:).
+func isSSEFramed(data []byte) bool {
+	return bytes.HasPrefix(data, []byte("data:")) || bytes.HasPrefix(data, []byte("event:")) || bytes.HasPrefix(data, []byte("id:"))
 }
 
 // extractModelFromPayload returns the model name from an Anthropic request body.
