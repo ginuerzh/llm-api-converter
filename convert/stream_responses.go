@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -27,6 +28,8 @@ type ResponsesStreamConverter struct {
 	reasonPartIx  int // -1 = none
 	toolCallByIndex map[int]*fcState
 	seqNum         int // auto-incremented per emitted event
+
+	toolSpecs map[string]codexToolSpec // tool name → spec for output item type mapping
 }
 
 type fcState struct {
@@ -53,6 +56,7 @@ func NewResponsesStreamConverter(model string) *ResponsesStreamConverter {
 				Reasoning:         map[string]any{"effort": nil, "summary": nil},
 		},
 		toolCallByIndex: make(map[int]*fcState),
+		toolSpecs:       make(map[string]codexToolSpec),
 		textItemIx:      -1,
 		textPartIx:      -1,
 		reasonItemIx:    -1,
@@ -106,15 +110,41 @@ func (sc *ResponsesStreamConverter) HandleChunk(data []byte) ([]byte, error) {
 	var events [][]byte
 
 	if delta.Content != "" {
-		sc.accText += delta.Content
-		if sc.textItemIx < 0 {
-			events = append(events, sc.startMessageItem()...)
+		text, thinkText := splitInlineThink(delta.Content)
+		if thinkText != "" {
+			sc.accReasoning += thinkText
+			if sc.reasonItemIx < 0 {
+				events = append(events, sc.startReasoningItem()...)
+				sc.reasonPartIx = 0
+				pevt, _ := json.Marshal(ResponsesStreamEvent{
+					Type:         ResponseReasoningSummaryPartAdded,
+					ItemID:       fmt.Sprintf("%s.reasoning", sc.response.ID),
+					OutputIndex:  &sc.reasonItemIx,
+					SummaryIndex: &sc.reasonPartIx,
+					Part:         ResponsesReasoningSummary{Type: "summary_text", Text: ""},
+				})
+				events = append(events, sc.makeEvent(ResponseReasoningSummaryPartAdded, string(pevt)))
+			}
+			evt, _ := json.Marshal(ResponsesStreamEvent{
+				Type:         ResponseReasoningSummaryDelta,
+				ItemID:       fmt.Sprintf("%s.reasoning", sc.response.ID),
+				OutputIndex:  &sc.reasonItemIx,
+				SummaryIndex: &sc.reasonPartIx,
+				Delta:        thinkText,
+			})
+			events = append(events, sc.makeEvent(ResponseReasoningSummaryDelta, string(evt)))
 		}
-		if sc.textPartIx < 0 {
-			events = append(events, sc.startContentPart()...)
+		if text != "" {
+			sc.accText += text
+			if sc.textItemIx < 0 {
+				events = append(events, sc.startMessageItem()...)
+			}
+			if sc.textPartIx < 0 {
+				events = append(events, sc.startContentPart()...)
+			}
+			evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputTextDelta, ItemID: fmt.Sprintf("%s.msg", sc.response.ID), OutputIndex: &sc.textItemIx, ContentIndex: &sc.textPartIx, Delta: text})
+			events = append(events, sc.makeEvent(ResponseOutputTextDelta, string(evt)))
 		}
-		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputTextDelta, ItemID: fmt.Sprintf("%s.msg", sc.response.ID), OutputIndex: &sc.textItemIx, ContentIndex: &sc.textPartIx, Delta: delta.Content})
-		events = append(events, sc.makeEvent(ResponseOutputTextDelta, string(evt)))
 	}
 	if delta.ReasoningContent != "" {
 		sc.accReasoning += delta.ReasoningContent
@@ -222,6 +252,9 @@ func (sc *ResponsesStreamConverter) HandleStreamEnd() []byte {
 		}
 		if item.Type == "message" && sc.accText != "" {
 			item.Content = []ResponsesContentPart{{Type: "output_text", Text: sc.accText}}
+		}
+		if item.Type == "function_call" && item.Name != "" {
+			item.Type = sc.toolTypeFromSpec(item.Name)
 		}
 	}
 
@@ -336,3 +369,45 @@ func eventBytes(evtType ResponsesStreamEventType, data string) []byte {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// splitInlineThink splits content on <think>...</think> prefix into
+// the think text and any remaining text. Returns (remaining, thinkContent).
+func splitInlineThink(content string) (string, string) {
+	const thinkOpen = "<think>"
+	const thinkClose = "</think>"
+	if !strings.HasPrefix(content, thinkOpen) {
+		return content, ""
+	}
+	rest := content[len(thinkOpen):]
+	closeIdx := strings.Index(rest, thinkClose)
+	if closeIdx < 0 {
+		// Opening think without close — treat whole rest as thinking.
+		return "", rest
+	}
+	return rest[closeIdx+len(thinkClose):], rest[:closeIdx]
+}
+
+
+// SetToolSpecs sets the tool specs for output item type mapping.
+func (sc *ResponsesStreamConverter) SetToolSpecs(specs map[string]codexToolSpec) {
+	sc.toolSpecs = specs
+}
+
+// toolTypeFromSpec returns the Responses API output item type for a tool name.
+func (sc *ResponsesStreamConverter) toolTypeFromSpec(name string) string {
+	if sc.toolSpecs == nil {
+		return "function_call"
+	}
+	spec, ok := sc.toolSpecs[name]
+	if !ok {
+		return "function_call"
+	}
+	switch spec.Kind {
+	case "custom":
+		return "custom_tool_call"
+	case "tool_search":
+		return "tool_search_call"
+	default:
+		return "function_call"
+	}
+}

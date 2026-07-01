@@ -481,6 +481,95 @@ func TestRewriterE2E_Passthrough(t *testing.T) {
 	}
 }
 
+// TestRewriterE2E_ResponsesNonStreaming verifies the Responses API round-trip:
+// Responses Request → GOST → Plugin (Responses→Chat) → Mock
+// → Plugin (Chat→Responses) → Responses Response.
+func TestRewriterE2E_ResponsesNonStreaming(t *testing.T) {
+	mock := startMockOpenAI(t, nil)
+	startPlugin(t)
+	startGost(t, mock.Listener.Addr().String())
+
+	responsesReq := `{
+		"model": "claude-sonnet-4-20250514",
+		"instructions": "You are a helpful assistant.",
+		"input": [
+			{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "What's the weather in Paris?"}]}
+		],
+		"tools": [{
+			"type": "function",
+			"name": "get_weather",
+			"description": "Get weather for a city",
+			"parameters": {"type": "object", "properties": {"city": {"type": "string"}}}
+		}],
+		"max_output_tokens": 500
+	}`
+
+	resp := postToGost(t, "/v1/responses", responsesReq)
+	body := readBody(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "application/json") {
+		t.Errorf("expected application/json content-type, got %q", ct)
+	}
+
+	var respResp struct {
+		ID     string `json:"id"`
+		Object string `json:"object"`
+		Status string `json:"status"`
+		Model  string `json:"model"`
+		Output []struct {
+			ID      string `json:"id"`
+			Type    string `json:"type"`
+			Status  string `json:"status"`
+			Role    string `json:"role,omitempty"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content,omitempty"`
+		} `json:"output"`
+		Usage *struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+			TotalTokens  int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &respResp); err != nil {
+		t.Fatalf("failed to parse Responses response: %v\nbody: %s", err, string(body))
+	}
+
+	if respResp.Object != "response" {
+		t.Errorf("expected object=response, got %q", respResp.Object)
+	}
+	if respResp.Status != "completed" {
+		t.Errorf("expected status=completed, got %q", respResp.Status)
+	}
+	if len(respResp.Output) == 0 {
+		t.Fatal("expected non-empty output array")
+	}
+	if respResp.Output[0].Type != "message" {
+		t.Errorf("expected output[0].type=message, got %q", respResp.Output[0].Type)
+	}
+	if len(respResp.Output[0].Content) == 0 || respResp.Output[0].Content[0].Text == "" {
+		t.Errorf("expected non-empty output[0].content[0].text")
+	}
+	if respResp.Usage == nil || respResp.Usage.InputTokens == 0 {
+		t.Errorf("expected usage.input_tokens > 0, got %v", respResp.Usage)
+	}
+	if respResp.Usage == nil || respResp.Usage.OutputTokens == 0 {
+		t.Errorf("expected usage.output_tokens > 0, got %v", respResp.Usage)
+	}
+	if !strings.HasPrefix(respResp.ID, "resp_") {
+		t.Errorf("expected id starting with resp_, got %q", respResp.ID)
+	}
+
+	t.Logf("responses response: id=%s object=%s status=%s output=%d",
+		respResp.ID, respResp.Object, respResp.Status, len(respResp.Output))
+}
+
 // TestRewriterE2E_MockServerVerification verifies that the mock OpenAI server
 // receives an OpenAI-format request (after Anthropic→OpenAI conversion).
 func TestRewriterE2E_MockServerVerification(t *testing.T) {

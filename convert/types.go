@@ -13,6 +13,7 @@ type OpenAIChatRequest struct {
 	Messages []OpenAIMessage `json:"messages"`
 
 	MaxTokens      *int       `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int `json:"max_completion_tokens,omitempty"`
 	Temperature    *float64   `json:"temperature,omitempty"`
 	TopP           *float64   `json:"top_p,omitempty"`
 	TopK           *int       `json:"top_k,omitempty"` // x Groq
@@ -435,6 +436,9 @@ type ConvertOptions struct {
 	// that Claude Code's safety classifier sees the expected model name.
 	// ponytail: safety classifier requires original model name in responses
 	RequestModel string
+	// CodexToolContext holds the tool context built during Responses→Chat
+	// conversion, used by Chat→Responses to emit correct output item types.
+	CodexToolContext *codexToolContext
 }
 
 // -------- OpenAI Streaming Types --------

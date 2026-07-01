@@ -122,9 +122,10 @@ type ResponsesUsage struct {
 
 // ResponsesUsageDetails holds breakdown details for token usage.
 type ResponsesUsageDetails struct {
-	CachedTokens int `json:"cached_tokens,omitempty"`
-	TextTokens   int `json:"text_tokens,omitempty"`
-	AudioTokens  int `json:"audio_tokens,omitempty"`
+	CachedTokens    int `json:"cached_tokens,omitempty"`
+	TextTokens      int `json:"text_tokens,omitempty"`
+	AudioTokens     int `json:"audio_tokens,omitempty"`
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 // -------- Responses API Streaming Types --------
@@ -222,6 +223,9 @@ func ConvertResponsesToChat(body []byte, opts *ConvertOptions) ([]byte, error) {
 	}
 	if req.MaxOutputTokens != nil {
 		chat.MaxTokens = req.MaxOutputTokens
+	} else if opts.MaxTokens > 0 {
+		maxTokens := opts.MaxTokens
+		chat.MaxTokens = &maxTokens
 	}
 	if req.Temperature != nil {
 		chat.Temperature = req.Temperature
@@ -241,7 +245,8 @@ func ConvertResponsesToChat(body []byte, opts *ConvertOptions) ([]byte, error) {
 	if len(req.Instructions) > 0 {
 		var instrText string
 		if err := json.Unmarshal(req.Instructions, &instrText); err == nil && instrText != "" {
-			result.systemTexts = append(result.systemTexts, instrText)
+			instrText = stripLeadingAnthropicBillingHeader(instrText)
+				result.systemTexts = append(result.systemTexts, instrText)
 		}
 	}
 	if len(result.systemTexts) > 0 {
@@ -251,6 +256,7 @@ func ConvertResponsesToChat(body []byte, opts *ConvertOptions) ([]byte, error) {
 		})
 	}
 	chat.Messages = append(chat.Messages, result.messages...)
+	chat.Messages = collapseSystemMessagesToHead(chat.Messages)
 
 	// Tools.
 	if len(req.Tools) > 0 {
@@ -263,6 +269,10 @@ func ConvertResponsesToChat(body []byte, opts *ConvertOptions) ([]byte, error) {
 				slog.Debug("skipping non-function Responses tool", "type", t.Type)
 				continue
 			}
+				// ponytail: custom tools get a single "input" string param schema
+				if t.Type == "custom" {
+					params = customToolInputSchema()
+				}
 			chat.Tools = append(chat.Tools, OpenAITool{
 				Type: "function",
 				Function: OpenAIFunction{
@@ -276,6 +286,9 @@ func ConvertResponsesToChat(body []byte, opts *ConvertOptions) ([]byte, error) {
 		chat.ToolChoice = mapResponsesToolChoice(req.ToolChoice)
 	}
 
+	if opts != nil {
+		opts.CodexToolContext = buildCodexToolContext(req.Tools)
+	}
 	return json.Marshal(chat)
 }
 
@@ -316,7 +329,8 @@ func ConvertResponsesToAnthropic(body []byte, opts *ConvertOptions) ([]byte, err
 	if len(req.Instructions) > 0 {
 		var instrText string
 		if err := json.Unmarshal(req.Instructions, &instrText); err == nil && instrText != "" {
-			result.systemTexts = append(result.systemTexts, instrText)
+				instrText = stripLeadingAnthropicBillingHeader(instrText)
+				result.systemTexts = append(result.systemTexts, instrText)
 		}
 	}
 	if len(result.systemTexts) > 0 {
@@ -401,11 +415,7 @@ func ConvertChatToResponses(body []byte, opts *ConvertOptions) ([]byte, error) {
 		}
 	}
 
-	r.Usage = &ResponsesUsage{
-		InputTokens:  resp.Usage.PromptTokens,
-		OutputTokens: resp.Usage.CompletionTokens,
-		TotalTokens:  resp.Usage.TotalTokens,
-	}
+	r.Usage = chatUsageToResponsesUsage(&resp, body)
 
 	return json.Marshal(r)
 }
@@ -473,6 +483,9 @@ func ConvertAnthropicToResponses(body []byte, opts *ConvertOptions) ([]byte, err
 		InputTokens:  resp.Usage.InputTokens,
 		OutputTokens: resp.Usage.OutputTokens,
 		TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
+		OutputTokensDetails: &ResponsesUsageDetails{
+			TextTokens: resp.Usage.OutputTokens,
+		},
 	}
 	return json.Marshal(r)
 }
@@ -639,16 +652,33 @@ func parseResponsesInput(input json.RawMessage) responsesInputParseResult {
 		case "reasoning":
 			textContent := responsesRawText(item.Text)
 			if textContent != "" {
-				pendingReasoning = textContent
+				pendingReasoning = appendDedupReasoning(pendingReasoning, textContent)
 			}
 			for _, s := range item.Summary {
 				if s.Text != "" {
-					if pendingReasoning != "" {
-						pendingReasoning += "\n"
-					}
-					pendingReasoning += s.Text
+					pendingReasoning = appendDedupReasoning(pendingReasoning, s.Text)
 				}
 			}
+		}
+	}
+
+	// Trailing reasoning → prior assistant: attach to last assistant message.
+	if pendingReasoning != "" && len(result.messages) > 0 {
+		last := &result.messages[len(result.messages)-1]
+		if last.Role == "assistant" && last.ReasoningContent == "" {
+			last.ReasoningContent = pendingReasoning
+			pendingReasoning = ""
+		}
+	}
+
+	// Backfill tool call reasoning placeholders: assistant messages with
+	// tool_calls but empty reasoning get "tool call". Required by
+	// kimi/DeepSeek models.
+	for i := range result.messages {
+		if result.messages[i].Role == "assistant" &&
+			len(result.messages[i].ToolCalls) > 0 &&
+			result.messages[i].ReasoningContent == "" {
+			result.messages[i].ReasoningContent = "tool call"
 		}
 	}
 
@@ -728,6 +758,16 @@ func responsesContentToOpenAI(content json.RawMessage) any {
 					ImageURL: &OpenAIImageURL{URL: imageURL},
 				})
 			}
+			case t == "input_file":
+				converted = append(converted, OpenAIContentPart{
+					Type: "text",
+					Text: fmt.Sprintf("[input_file: %v]", p["input_file"]),
+				})
+			case t == "input_audio":
+				converted = append(converted, OpenAIContentPart{
+					Type: "text",
+					Text: fmt.Sprintf("[input_audio: %v]", p["input_audio"]),
+				})
 		}
 	}
 	if len(converted) == 1 && converted[0].Type == "text" {
@@ -753,7 +793,7 @@ func responsesRawText(content json.RawMessage) string {
 	if err := json.Unmarshal(content, &parts); err == nil {
 		var texts []string
 		for _, p := range parts {
-			if t, ok := p["type"].(string); ok && t == "text" {
+			if t, ok := p["type"].(string); ok && (t == "text" || t == "input_text" || t == "output_text") {
 				if txt, _ := p["text"].(string); txt != "" {
 					texts = append(texts, txt)
 				}
@@ -959,6 +999,10 @@ func convertToResponsesResponse(body []byte, opts *ConvertOptions) ([]byte, erro
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return body, nil
 	}
+	// Detect upstream error and normalize to Responses error format.
+	if _, ok := raw["error"]; ok {
+		return chatErrorToResponseError(body)
+	}
 	if isOpenAIResponse(raw) {
 		return ConvertChatToResponses(body, opts)
 	}
@@ -975,4 +1019,193 @@ func convertToResponsesResponse(body []byte, opts *ConvertOptions) ([]byte, erro
 type responsesInputParseResult struct {
 	messages       []OpenAIMessage
 	systemTexts    []string
+}
+
+// stripLeadingAnthropicBillingHeader removes the first leading
+// "x-anthropic-billing-header:" line from s, preserving subsequent
+// occurrences. Same behavior as cc-switch.
+func stripLeadingAnthropicBillingHeader(s string) string {
+	const prefix = "x-anthropic-billing-header:"
+	if strings.HasPrefix(s, prefix) {
+		if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+			rest := s[idx+1:]
+			// ponytail: strip trailing blank lines (handles \r\n and \n).
+			rest = strings.TrimLeft(rest, "\r\n")
+			return rest
+		}
+		return ""
+	}
+	return s
+}
+
+// appendDedupReasoning appends text to pending reasoning, skipping if text
+// is already a substring of the accumulated reasoning.
+func appendDedupReasoning(current, text string) string {
+	if current == "" {
+		return text
+	}
+	if strings.Contains(current, text) {
+		return current
+	}
+	return current + "\n" + text
+}
+
+// collapseSystemMessagesToHead merges all system messages into a single
+// first message, joining content with "\n\n". Required for MiniMax
+// compatibility.
+func collapseSystemMessagesToHead(msgs []OpenAIMessage) []OpenAIMessage {
+	var texts []string
+	out := make([]OpenAIMessage, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == "system" {
+			if s, ok := m.Content.(string); ok && s != "" {
+				texts = append(texts, s)
+			}
+			continue
+		}
+		out = append(out, m)
+	}
+	if len(texts) > 0 {
+		out = append([]OpenAIMessage{{Role: "system", Content: strings.Join(texts, "\n\n")}}, out...)
+	}
+	return out
+}
+
+// chatUsageToResponsesUsage extracts Chat API usage into Responses API usage,
+// including optional cached_tokens and reasoning_tokens details.
+func chatUsageToResponsesUsage(resp *OpenAIChatResponse, body []byte) *ResponsesUsage {
+	u := &ResponsesUsage{
+		InputTokens:  resp.Usage.PromptTokens,
+		OutputTokens: resp.Usage.CompletionTokens,
+		TotalTokens:  resp.Usage.TotalTokens,
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return u
+	}
+	usageRaw, _ := raw["usage"].(map[string]any)
+	if usageRaw == nil {
+		return u
+	}
+	if pt, _ := usageRaw["prompt_tokens_details"].(map[string]any); pt != nil {
+		if ct, _ := pt["cached_tokens"].(float64); ct > 0 {
+			u.InputTokensDetails = &ResponsesUsageDetails{CachedTokens: int(ct)}
+		}
+	}
+	if ct, _ := usageRaw["completion_tokens_details"].(map[string]any); ct != nil {
+		od := &ResponsesUsageDetails{}
+		if rt, _ := ct["reasoning_tokens"].(float64); rt > 0 {
+			od.ReasoningTokens = int(rt)
+		}
+		u.OutputTokensDetails = od
+	}
+	if cr, _ := usageRaw["cache_read_input_tokens"].(float64); cr > 0 {
+		if u.InputTokensDetails == nil {
+			u.InputTokensDetails = &ResponsesUsageDetails{}
+		}
+		u.InputTokensDetails.CachedTokens = int(cr)
+	}
+	return u
+}
+
+// chatErrorToResponseError normalizes upstream Chat API errors into Responses
+// API error format. Handles standard OpenAI format, MiniMax base_resp, and
+// bare strings.
+func chatErrorToResponseError(body []byte) ([]byte, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return body, nil
+	}
+	errVal := raw["error"]
+	if errMap, ok := errVal.(map[string]any); ok {
+		resp := newResponsesResponse()
+		resp.Status = "failed"
+		resp.Error = errMap
+		return json.Marshal(resp)
+	}
+	if errStr, ok := errVal.(string); ok {
+		resp := newResponsesResponse()
+		resp.Status = "failed"
+		resp.Error = map[string]string{"message": errStr}
+		return json.Marshal(resp)
+	}
+	return body, nil
+}
+
+// codexToolSpec describes a single tool as seen by Codex, capturing
+// its kind (function/namespace/custom/tool_search) and flattened name.
+type codexToolSpec struct {
+	Kind      string
+	Name      string
+	Namespace string
+}
+
+// codexToolContext maps flat chat-format tool names back to their original
+// Responses API tool specification. Built during request conversion and
+// used during response conversion to emit correct output item types.
+type codexToolContext struct {
+	byChatName map[string]codexToolSpec
+}
+
+// buildCodexToolContext scans Responses API tools and builds the context.
+func buildCodexToolContext(tools []ResponsesTool) *codexToolContext {
+	ctx := &codexToolContext{byChatName: make(map[string]codexToolSpec)}
+	for _, t := range tools {
+		name, _, _ := extractToolParts(t)
+		switch t.Type {
+		case "custom":
+			ctx.byChatName[name] = codexToolSpec{Kind: "custom", Name: name}
+		case "tool_search":
+			ctx.byChatName[name] = codexToolSpec{Kind: "tool_search", Name: name}
+		default:
+			ctx.byChatName[name] = codexToolSpec{Kind: "function", Name: name}
+		}
+	}
+	return ctx
+}
+
+// toResponsesOutputItem maps a chat-format tool call back to a Responses API
+// output item, using the tool context to determine the correct type.
+func (ctx *codexToolContext) toResponsesOutputItem(tc OpenAIToolCall) ResponsesOutputItem {
+	spec, ok := ctx.byChatName[tc.Function.Name]
+	if !ok {
+		spec = codexToolSpec{Kind: "function", Name: tc.Function.Name}
+	}
+	item := ResponsesOutputItem{
+		ID:     tc.ID,
+		CallID: tc.ID,
+		Name:   tc.Function.Name,
+	}
+	if tc.Function.Arguments != "" {
+		item.Arguments = canonicalJSONString(tc.Function.Arguments)
+	}
+	switch spec.Kind {
+	case "custom":
+		item.Type = "custom_tool_call"
+		item.Status = "completed"
+	case "tool_search":
+		item.Type = "tool_search_call"
+		item.Status = "completed"
+	default:
+		item.Type = "function_call"
+		item.Status = "completed"
+		if spec.Namespace != "" {
+			item.Type = "function_call"
+		}
+	}
+	return item
+}
+
+// customToolInputSchema returns a JSON Schema for a single "input" string
+// parameter, used as the function definition for custom tools in Chat API.
+// ponytail: downstream Chat APIs don't understand custom tools, so we give
+// them a generic string input.
+func customToolInputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"input": map[string]any{"type": "string"},
+		},
+		"required": []string{"input"},
+	}
 }

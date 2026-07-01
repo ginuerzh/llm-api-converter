@@ -185,9 +185,18 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 	}
 
 	model, _ := resolveModel(req.Model, opts.Model, opts.ModelMap)
+	// Respect the request's max_tokens / max_completion_tokens if set,
+	// otherwise fall back to the CLI --max-tokens flag (default 8192).
+	// ponytail: upstream APIs often default to unreasonably low limits.
+	maxTokens := opts.MaxTokens
+	if req.MaxTokens != nil && *req.MaxTokens > 0 {
+		maxTokens = *req.MaxTokens
+	} else if req.MaxCompletionTokens != nil && *req.MaxCompletionTokens > 0 {
+		maxTokens = *req.MaxCompletionTokens
+	}
 	anthropic := AnthropicRequest{
 		Model:     model,
-		MaxTokens: opts.MaxTokens,
+		MaxTokens: maxTokens,
 		Stream:    req.Stream,
 	}
 

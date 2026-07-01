@@ -211,7 +211,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	if len(req.System) > 0 {
 		var sysText string
 		for _, block := range req.System {
-			sysText += block.Text
+			sysText += stripLeadingAnthropicBillingHeader(block.Text)
 		}
 		if extraInstruction != "" {
 			sysText = sysText + "\n\n" + extraInstruction

@@ -408,8 +408,29 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 		}
 
 		if passthrough {
-			if targetModel != "" && raw["model"] != targetModel {
+			modelChanged := targetModel != "" && raw["model"] != targetModel
+			if modelChanged {
 				raw["model"] = targetModel
+			}
+
+			// Inject max_completion_tokens for requests missing it.
+			// Codex never sends max_tokens / max_completion_tokens, and
+			// upstream APIs default to very low limits (~100-200 tokens),
+			// causing the model to be cut off mid-turn.
+			// ponytail: only inject for request-like bodies, not responses.
+			tokensInjected := false
+			if opts.MaxTokens > 0 {
+				if _, hasMT := raw["max_tokens"]; !hasMT {
+					if _, hasMCT := raw["max_completion_tokens"]; !hasMCT {
+						if _, hasMsg := raw["messages"]; hasMsg {
+							raw["max_completion_tokens"] = opts.MaxTokens
+							tokensInjected = true
+						}
+					}
+				}
+			}
+
+			if modelChanged || tokensInjected {
 				modified, err := json.Marshal(raw)
 				if err == nil {
 					slog.Debug("protocol passthrough with model rewrite", "model", targetModel)
@@ -854,6 +875,9 @@ func handleResponsesSSEEvent(sid, phase string, _ int, data []byte, opts *Conver
 			handler = NewAnthropicStreamConverter(model)
 		} else {
 			handler = NewResponsesStreamConverter(model)
+			if opts != nil && opts.CodexToolContext != nil {
+				handler.(*ResponsesStreamConverter).SetToolSpecs(opts.CodexToolContext.byChatName)
+			}
 		}
 		responsesStreamStates.Store(sid, handler)
 		out := handler.HandleStreamStart()
@@ -888,6 +912,9 @@ func handleResponsesSSEEvent(sid, phase string, _ int, data []byte, opts *Conver
 				handler = NewAnthropicStreamConverter(model)
 			} else {
 				handler = NewResponsesStreamConverter(model)
+				if opts != nil && opts.CodexToolContext != nil {
+					handler.(*ResponsesStreamConverter).SetToolSpecs(opts.CodexToolContext.byChatName)
+				}
 			}
 			responsesStreamStates.Store(sid, handler)
 			startData := handler.HandleStreamStart()
