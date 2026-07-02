@@ -266,8 +266,9 @@ Codex CLI sends Responses API requests to `/v1/responses`; GOST intercepts them,
 | Anthropic Request → OpenAI Request | For forwarding to OpenAI-compatible downstreams (DeepSeek, etc.) |
 | Anthropic Response → OpenAI Response | For returning OpenAI-format responses to clients |
 | Responses API Request → Chat Completions Request | For forwarding Codex CLI (Responses API) to OpenAI Chat Completions backends |
+| Responses API Request → Anthropic Request | When the model-map routes a Responses request to an Anthropic downstream |
 | Chat Completions Response → Responses API Response | Converting upstream Chat response back to Responses API format |
-| Chat Completions Request → Responses API Request | Converting any Chat request to Responses API format |
+| Anthropic Response → Responses API Response | Converting upstream Anthropic response back to Responses API format |
 
 ### Streaming
 
