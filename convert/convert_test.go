@@ -1,6 +1,7 @@
 package convert
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -1209,7 +1210,6 @@ func TestIsAnthropicRequest_GLMModelIsOpenAI(t *testing.T) {
 	}
 }
 
-
 // ---------------------------------------------------------------------------
 // Anthropic Request → OpenAI Request
 // ---------------------------------------------------------------------------
@@ -2123,7 +2123,6 @@ func TestConvert_GLMThinkingMapping(t *testing.T) {
 	}
 }
 
-
 func TestConvert_StreamOptionsIncluded(t *testing.T) {
 	body := `{"model":"claude","max_tokens":8192,"stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
 	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192}
@@ -2256,5 +2255,58 @@ func TestConvert_AnthropicRequestWithStringSystem(t *testing.T) {
 	}
 	if oai.Messages[0].Content != "you are a helpful assistant" {
 		t.Fatalf("system content: want %q, got %q", "you are a helpful assistant", oai.Messages[0].Content)
+	}
+}
+
+func TestHandleSSEEvent_AnthropicPassthroughStreaming(t *testing.T) {
+	mm := ModelMap{
+		{SourcePrefix: "claude-opus", TargetModel: "deepseek-v4-pro", Protocol: "anthropic"},
+		{SourcePrefix: "*", TargetModel: "deepseek-v4-flash", Protocol: "anthropic"},
+	}
+	store := NewSessionStore()
+	opts := &ConvertOptions{
+		Model:        "deepseek-chat",
+		MaxTokens:    8192,
+		ModelMap:     mm,
+		SessionStore: store,
+		URI:          "/v1/messages",
+		Direction:    "response",
+	}
+
+	// Stream start: Anthropic message_start should pass through unchanged.
+	startData := []byte(`event: message_start` + "\n" + `data: {"type":"message_start","message":{"id":"msg_abc","type":"message","role":"assistant","model":"deepseek-v4-pro","content":[],"stop_reason":null,"stop_sequence":null}}`)
+	out, err := HandleSSEEvent("test-sid", string(StreamPhaseStart), 0, startData, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"model":"claude-opus"`) {
+		t.Fatalf("stream start: expected passthrough with source model, got: %s", out)
+	}
+
+	// Delta event should pass through unchanged.
+	deltaData := []byte(`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hello"}}`)
+	out2, err := HandleSSEEvent("test-sid", string(StreamPhaseEvent), 0, deltaData, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(out2, []byte("event:")) {
+		t.Fatalf("stream event: expected SSE-framed output, got: %s", out2)
+	}
+	if !strings.Contains(string(out2), "thinking_delta") {
+		t.Fatalf("stream event: expected passthrough of thinking delta, got: %s", out2)
+	}
+
+	// Stream end: passthrough should return nil.
+	out3, err := HandleSSEEvent("test-sid", string(StreamPhaseEnd), 0, nil, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out3 != nil {
+		t.Fatalf("stream end: expected nil for passthrough, got: %s", out3)
+	}
+
+	// Session should be cleaned up.
+	if sess := store.Get("test-sid"); sess != nil {
+		t.Fatal("session should be deleted after stream end")
 	}
 }

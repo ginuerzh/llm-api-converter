@@ -565,7 +565,14 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 
 		// Passthrough: same protocol.
 		if from != ProtocolUnknown && from == to {
-			handler := NewPassthroughStreamHandler(opts.RequestModel, to)
+			// Compute client-facing model for message_start rewrite.
+			sourceModel := opts.RequestModel
+			if sourceModel == "" && model != "" && opts.ModelMap != nil {
+				if prefix := opts.ModelMap.SourcePrefix(model); prefix != "" {
+					sourceModel = prefix
+				}
+			}
+			handler := NewPassthroughStreamHandler(sourceModel, to)
 			if store != nil {
 				store.Set(sid, &Session{ID: sid, From: from, To: to, StreamHandler: handler})
 			}
@@ -627,7 +634,14 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			return startData, nil
 		}
 
-		out, err := handler.HandleChunk(payload)
+		// Passthrough handlers expect SSE-framed input from the start
+		// phase, but extractSSEPayload strips framing. Pass the raw
+		// SSE event to preserve proper formatting for the client.
+		chunkInput := payload
+		if _, ok := handler.(*PassthroughStreamHandler); ok {
+			chunkInput = data
+		}
+		out, err := handler.HandleChunk(chunkInput)
 		if err != nil {
 			return nil, err
 		}
