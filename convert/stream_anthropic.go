@@ -146,7 +146,14 @@ func (sc *AnthropicStreamConverter) HandleStreamEnd() []byte {
 		events = append(events, eventBytes(ResponseOutputTextDone, string(evt)))
 	}
 	if sc.textItemIx >= 0 {
-		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, ItemID: fmt.Sprintf("%s.msg", sc.response.ID), OutputIndex: &sc.textItemIx})
+		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, OutputIndex: &sc.textItemIx,
+			Item: &ResponsesOutputItem{
+				ID:      fmt.Sprintf("%s.msg", sc.response.ID),
+				Type:    "message",
+				Status:  "completed",
+				Role:    "assistant",
+				Content: []ResponsesContentPart{{Type: "output_text", Text: sc.accText}},
+			}})
 		events = append(events, eventBytes(ResponseOutputItemDone, string(evt)))
 	}
 	// Finalize reasoning item.
@@ -185,8 +192,23 @@ func (sc *AnthropicStreamConverter) HandleStreamEnd() []byte {
 			evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDone, ItemID: fc.ID, Arguments: canonicalJSONString(fc.Arguments)})
 			events = append(events, eventBytes(ResponseFunctionCallArgumentsDone, string(evt)))
 		}
-		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, ItemID: fc.ID, OutputIndex: &fc.ItemIx})
+		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, OutputIndex: &fc.ItemIx,
+			Item: &ResponsesOutputItem{
+				ID: fc.ID, Type: "function_call", Status: "completed",
+				CallID: fc.ID, Name: fc.Name, Arguments: canonicalJSONString(fc.Arguments),
+			}})
 		events = append(events, eventBytes(ResponseOutputItemDone, string(evt)))
+	}
+
+	// Update output item statuses before building response.completed.
+	for i := range sc.response.Output {
+		item := &sc.response.Output[i]
+		if item.Status == "in_progress" {
+			item.Status = "completed"
+		}
+		if item.Type == "message" && sc.accText != "" {
+			item.Content = []ResponsesContentPart{{Type: "output_text", Text: sc.accText}}
+		}
 	}
 
 	// response.completed or response.incomplete.
