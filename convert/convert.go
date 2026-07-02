@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -458,6 +459,7 @@ func detectByBody(raw map[string]any, opts *ConvertOptions) (Protocol, Direction
 }
 
 // passthrough rewrites the model field and injects max_completion_tokens.
+// Model replacement is done at byte level to preserve JSON field order.
 // Returns the original body unchanged when nothing is modified.
 func passthrough(raw map[string]any, targetModel string, opts *ConvertOptions, originalBody []byte) ([]byte, error) {
 	modelChanged := false
@@ -479,6 +481,12 @@ func passthrough(raw map[string]any, targetModel string, opts *ConvertOptions, o
 	}
 
 	if modelChanged || tokensInjected {
+		// Model-only: replace in original bytes to preserve field order.
+		if modelChanged && !tokensInjected {
+			result := modelValueRe.ReplaceAll(originalBody, []byte(`${1}"`+targetModel+`"`))
+			slog.Debug("passthrough with model rewrite (byte-level)", "model", targetModel)
+			return result, nil
+		}
 		if modified, err := json.Marshal(raw); err == nil {
 			slog.Debug("passthrough with rewrite", "model", targetModel)
 			return modified, nil
@@ -487,6 +495,8 @@ func passthrough(raw map[string]any, targetModel string, opts *ConvertOptions, o
 	slog.Debug("passthrough unchanged")
 	return originalBody, nil
 }
+
+var modelValueRe = regexp.MustCompile(`("model"\s*:\s*)"([^"\\]|\\.)*"`)
 
 
 // ---------------------------------------------------------------------------
