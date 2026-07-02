@@ -171,42 +171,6 @@ type ResponsesStreamEvent struct {
 	SummaryText  string                   `json:"summary_text,omitempty"`
 }
 
-// -------- Detection --------
-
-// isResponsesRequest detects an OpenAI Responses API request body.
-// Key signals: has "input" field, does NOT have "messages".
-func isResponsesRequest(m map[string]any) bool {
-	if _, ok := m["messages"]; ok {
-		return false
-	}
-	if _, ok := m["input"]; ok {
-		return true
-	}
-	return false
-}
-
-// isResponsesResponse detects an OpenAI Responses API response body.
-// Key signals: object is "response" or has "output" array of typed items.
-func isResponsesResponse(m map[string]any) bool {
-	if obj, ok := m["object"].(string); ok && obj == "response" {
-		return true
-	}
-	if output, ok := m["output"].([]any); ok && len(output) > 0 {
-		if first, ok := output[0].(map[string]any); ok {
-			if t, _ := first["type"].(string); t != "" {
-				return true
-			}
-		}
-	}
-	// Empty output array is still a Responses response if object is present.
-	if _, ok := m["output"]; ok {
-		if _, ok := m["object"]; ok {
-			return true
-		}
-	}
-	return false
-}
-
 // -------- Request Conversion: Responses → Chat --------
 
 // ConvertResponsesToChat converts a Responses API request body to an OpenAI Chat request.
@@ -1045,13 +1009,12 @@ func convertToResponsesResponse(body []byte, opts *ConvertOptions) ([]byte, erro
 	if _, ok := raw["error"]; ok {
 		return chatErrorToResponseError(body)
 	}
-	if isOpenAIResponse(raw) {
+	switch detectSource(raw) {
+	case ProtocolOpenAIChat:
 		return ConvertChatToResponses(body, opts)
-	}
-	if isAnthropicResponse(raw) {
+	case ProtocolAnthropic:
 		return ConvertAnthropicToResponses(body, opts)
-	}
-	if isResponsesResponse(raw) {
+	case ProtocolOpenAIResponses:
 		return body, nil
 	}
 	return body, nil

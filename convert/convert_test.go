@@ -8,7 +8,7 @@ import (
 )
 
 func opts() *ConvertOptions {
-	return &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192}
+	return &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, URI: "/v1/chat/completions", Direction: "request"}
 }
 
 // ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ func TestConvert_PassthroughNonJSON(t *testing.T) {
 
 func TestConvert_PassthroughUnknownJSON(t *testing.T) {
 	body := []byte(`{"foo":"bar","count":42}`)
-	b, err := Convert(body, opts())
+	b, err := Convert(body, &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -982,76 +982,132 @@ func TestConvertViaAutoDetection_PlainJSON(t *testing.T) {
 // Detection tests
 // ---------------------------------------------------------------------------
 
-func TestIsAnthropicRequest_DetectsCorrectly(t *testing.T) {
+func TestDetectSource_AnthropicRequestMarkers(t *testing.T) {
 	tests := []struct {
-		name string
-		json string
-		want bool
+		name    string
+		json    string
+		want    Protocol
 	}{
 		{
 			name: "anthropic with thinking block",
 			json: `{"model":"claude","max_tokens":8192,"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"..."}]}]}`,
-			want: true,
+			want: ProtocolAnthropic,
 		},
 		{
 			name: "anthropic with tool_use block",
 			json: `{"model":"claude","max_tokens":8192,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"f","input":{}}]}]}`,
-			want: true,
+			want: ProtocolAnthropic,
 		},
 		{
 			name: "anthropic with tool_result block",
 			json: `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"ok"}]}]}`,
-			want: true,
+			want: ProtocolAnthropic,
 		},
 		{
 			name: "anthropic with image block",
 			json: `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"aa"}}]}]}`,
-			want: true,
+			want: ProtocolAnthropic,
 		},
 		{
 			name: "anthropic with top-level system",
 			json: `{"model":"claude","max_tokens":8192,"system":[{"type":"text","text":"be helpful"}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
-			want: true,
+			want: ProtocolAnthropic,
 		},
 		{
 			name: "anthropic with tool_choice.any",
 			json: `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"name":"f","input_schema":{"type":"object"}}],"tool_choice":{"type":"any"}}`,
-			want: true,
+			want: ProtocolAnthropic,
 		},
 		{
-			name: "anthropic with max_tokens and array content",
-			json: `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
-			want: true,
+			name: "anthropic with tool_choice.tool",
+			json: `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tool_choice":{"type":"tool","name":"f"}}`,
+			want: ProtocolAnthropic,
+		},
+		{
+			name: "anthropic with stop_sequences",
+			json: `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"stop_sequences":["stop"]}`,
+			want: ProtocolAnthropic,
+		},
+		{
+			name: "anthropic with flat tools (name+input_schema)",
+			json: `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"name":"f","input_schema":{"type":"object"}}]}`,
+			want: ProtocolAnthropic,
 		},
 		{
 			name: "openai with frequency_penalty",
 			json: `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"frequency_penalty":0.5}`,
-			want: false,
+			want: ProtocolOpenAIChat,
 		},
 		{
 			name: "openai with stop field",
 			json: `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"stop":"done"}`,
-			want: false,
+			want: ProtocolOpenAIChat,
 		},
 		{
 			name: "openai with tool role in messages",
 			json: `{"model":"gpt-4","messages":[{"role":"tool","content":"result"}]}`,
-			want: false,
+			want: ProtocolOpenAIChat,
 		},
 		{
 			name: "openai with system role in messages",
 			json: `{"model":"gpt-4","messages":[{"role":"system","content":"be helpful"},{"role":"user","content":"hi"}]}`,
-			want: false,
+			want: ProtocolOpenAIChat,
 		},
 		{
-			name: "openai tool_choice as string",
+			name: "openai tool_choice auto string + function tools",
 			json: `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}],"tool_choice":"auto"}`,
-			want: false,
+			want: ProtocolOpenAIChat,
 		},
 		{
 			name: "openai with n field",
 			json: `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"n":2}`,
-			want: false,
+			want: ProtocolOpenAIChat,
+		},
+		{
+			name: "openai with presence_penalty",
+			json: `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"presence_penalty":0.5}`,
+			want: ProtocolOpenAIChat,
+		},
+		{
+			name: "openai with logit_bias",
+			json: `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"logit_bias":{"123":-1}}`,
+			want: ProtocolOpenAIChat,
+		},
+		{
+			name: "openai with response_format",
+			json: `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"json_object"}}`,
+			want: ProtocolOpenAIChat,
+		},
+		{
+			name: "openai with seed",
+			json: `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}],"seed":42}`,
+			want: ProtocolOpenAIChat,
+		},
+		{
+			name: "openai function role in messages",
+			json: `{"model":"gpt-4","messages":[{"role":"function","name":"f","content":"result"}]}`,
+			want: ProtocolOpenAIChat,
+		},
+		{
+			name: "openai tool_calls in message",
+			json: `{"model":"gpt-4","messages":[{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"}}]}]}`,
+			want: ProtocolOpenAIChat,
+		},
+		// Minimal request without distinguishing features -> Unknown (not guessed).
+		{
+			name: "minimal request with max_tokens - no positive markers",
+			json: `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+			want: ProtocolUnknown,
+		},
+		{
+			name: "minimal openai request - no positive markers",
+			json: `{"model":"gpt-4","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+			want: ProtocolUnknown,
+		},
+		{
+			name: "unknown JSON without features",
+			json: `{"foo":"bar"}`,
+			want: ProtocolUnknown,
 		},
 	}
 
@@ -1061,38 +1117,43 @@ func TestIsAnthropicRequest_DetectsCorrectly(t *testing.T) {
 			if err := json.Unmarshal([]byte(tt.json), &raw); err != nil {
 				t.Fatal(err)
 			}
-			if got := isAnthropicRequest(raw); got != tt.want {
-				t.Errorf("isAnthropicRequest() = %v, want %v\nbody: %s", got, tt.want, tt.json)
+			if got := detectSource(raw); got != tt.want {
+				t.Errorf("detectSource() = %v (%s), want %v (%s)\nbody: %s", got, got.String(), tt.want, tt.want.String(), tt.json)
 			}
 		})
 	}
 }
 
-func TestIsOpenAIResponse_DetectsCorrectly(t *testing.T) {
+func TestDetectSource_OpenAIResponse(t *testing.T) {
 	tests := []struct {
 		name string
 		json string
-		want bool
+		want Protocol
 	}{
 		{
 			name: "full non-streaming response",
 			json: `{"id":"chatcmpl-xyz","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
-			want: true,
+			want: ProtocolOpenAIChat,
 		},
 		{
 			name: "streaming delta chunk",
 			json: `{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`,
-			want: true,
-		},
-		{
-			name: "unknown JSON without choices",
-			json: `{"foo":"bar"}`,
-			want: false,
+			want: ProtocolOpenAIChat,
 		},
 		{
 			name: "anthropic response",
 			json: `{"id":"msg_01","type":"message","role":"assistant","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
-			want: false,
+			want: ProtocolAnthropic,
+		},
+		{
+			name: "responses response",
+			json: `{"id":"resp_01","object":"response","status":"completed","output":[]}`,
+			want: ProtocolOpenAIResponses,
+		},
+		{
+			name: "unknown JSON without features",
+			json: `{"foo":"bar"}`,
+			want: ProtocolUnknown,
 		},
 	}
 
@@ -1102,8 +1163,8 @@ func TestIsOpenAIResponse_DetectsCorrectly(t *testing.T) {
 			if err := json.Unmarshal([]byte(tt.json), &raw); err != nil {
 				t.Fatal(err)
 			}
-			if got := isOpenAIResponse(raw); got != tt.want {
-				t.Errorf("isOpenAIResponse() = %v, want %v\nbody: %s", got, tt.want, tt.json)
+			if got := detectSource(raw); got != tt.want {
+				t.Errorf("detectSource() = %v, want %v\nbody: %s", got, tt.want, tt.json)
 			}
 		})
 	}
@@ -1150,19 +1211,28 @@ func TestIsOpenAIStreamChunk_DetectsCorrectly(t *testing.T) {
 // Detection edge case regression tests
 // ---------------------------------------------------------------------------
 
-func TestIsAnthropicRequest_OpenAIReqWithMaxTokensAndArrayContent(t *testing.T) {
-	// Regression: an OpenAI request with max_tokens and array-style content
-	// should NOT be classified as Anthropic Request.
+func TestDetectSource_MinimalRequest_PassthroughWithoutURI(t *testing.T) {
+	// A minimal request with no distinguishing features returns Unknown.
 	body := `{"model":"gpt-4","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(body), &raw); err != nil {
 		t.Fatal(err)
 	}
-	if isAnthropicRequest(raw) {
-		t.Fatal("OpenAI request with max_tokens + array content should NOT be Anthropic Request")
+	if got := detectSource(raw); got != ProtocolUnknown {
+		t.Fatalf("detectSource() = %v, want Unknown (no positive markers)", got)
 	}
-	// Should be caught by catch-all as OpenAI Request → Anthropic Request.
-	out, err := Convert([]byte(body), opts())
+}
+
+func TestConvert_MinimalOpenAIReqWithURI(t *testing.T) {
+	// Minimal OpenAI request with URI fallback should detect and convert.
+	body := `{"model":"gpt-4","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
+	opts := &ConvertOptions{
+		Model:     "claude-sonnet-4-20250514",
+		MaxTokens: 8192,
+		URI:       "/v1/chat/completions",
+		Direction: "request",
+	}
+	out, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1175,38 +1245,52 @@ func TestIsAnthropicRequest_OpenAIReqWithMaxTokensAndArrayContent(t *testing.T) 
 	}
 }
 
-func TestIsAnthropicRequest_CustomModelName(t *testing.T) {
-	// Anthropic request with a non-standard model name should still be detected.
+func TestConvert_MinimalAnthropicReqWithURI(t *testing.T) {
+	// Minimal Anthropic request with URI fallback should detect and convert.
 	body := `{"model":"my-custom-model","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	var raw map[string]any
-	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+	opts := &ConvertOptions{
+		Model:     "claude-sonnet-4-20250514",
+		MaxTokens: 8192,
+		URI:       "/v1/messages",
+		Direction: "request",
+	}
+	out, err := Convert([]byte(body), opts)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !isAnthropicRequest(raw) {
-		t.Fatal("Anthropic request with custom model should be detected as Anthropic Request")
+	var o OpenAIChatRequest
+	if err := json.Unmarshal(out, &o); err != nil {
+		t.Fatalf("unmarshal error: %v\nbody: %s", err, out)
+	}
+	if len(o.Messages) != 1 {
+		t.Fatalf("want 1 message, got %d", len(o.Messages))
+	}
+	if o.Messages[0].Role != "user" {
+		t.Fatalf("role: want user, got %q", o.Messages[0].Role)
 	}
 }
 
-func TestIsAnthropicRequest_DeepSeekModelIsOpenAI(t *testing.T) {
-	// deepseek-* models are OpenAI-compatible, not Anthropic.
+func TestDetectSource_DeepSeekModelWithNoMarkers(t *testing.T) {
+	// deepseek model with only max_tokens + array content = Unknown.
 	body := `{"model":"deepseek-chat","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(body), &raw); err != nil {
 		t.Fatal(err)
 	}
-	if isAnthropicRequest(raw) {
-		t.Fatal("deepseek model should NOT be classified as Anthropic Request")
+	if got := detectSource(raw); got != ProtocolUnknown {
+		t.Fatalf("detectSource() = %v, want Unknown", got)
 	}
 }
-func TestIsAnthropicRequest_GLMModelIsOpenAI(t *testing.T) {
-	// glm-* models are OpenAI-compatible, not Anthropic.
+
+func TestDetectSource_GLMModelWithNoMarkers(t *testing.T) {
+	// glm model with only max_tokens + array content = Unknown.
 	body := `{"model":"glm-4.6","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(body), &raw); err != nil {
 		t.Fatal(err)
 	}
-	if isAnthropicRequest(raw) {
-		t.Fatal("glm model should NOT be classified as Anthropic Request")
+	if got := detectSource(raw); got != ProtocolUnknown {
+		t.Fatalf("detectSource() = %v, want Unknown", got)
 	}
 }
 
@@ -1986,6 +2070,8 @@ func anthropicOpts() *ConvertOptions {
 	return &ConvertOptions{
 		Model:     "claude-sonnet-4-20250514",
 		MaxTokens: 8192,
+		URI:       "/v1/messages",
+		Direction: "request",
 	}
 }
 
@@ -2125,7 +2211,7 @@ func TestConvert_GLMThinkingMapping(t *testing.T) {
 
 func TestConvert_StreamOptionsIncluded(t *testing.T) {
 	body := `{"model":"claude","max_tokens":8192,"stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192}
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, URI: "/v1/messages", Direction: "request"}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -2308,5 +2394,148 @@ func TestHandleSSEEvent_AnthropicPassthroughStreaming(t *testing.T) {
 	// Session should be cleaned up.
 	if sess := store.Get("test-sid"); sess != nil {
 		t.Fatal("session should be deleted after stream end")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Body-primary detection: custom endpoints must not depend on URI.
+// ---------------------------------------------------------------------------
+
+// TestConvert_CustomEndpoint_BodyDetection verifies that an Anthropic-shaped
+// request on a non-canonical endpoint (/v1/llm) is detected via body markers
+// (top-level system + tools[].input_schema) — URI never participates.
+func TestConvert_CustomEndpoint_BodyDetection(t *testing.T) {
+	opts := &ConvertOptions{
+		Model: "deepseek-chat", MaxTokens: 8192,
+		URI: "/v1/llm", Direction: "request",
+		ModelMap: ModelMap{{SourcePrefix: "*", TargetModel: "deepseek-chat", Protocol: "openai"}},
+	}
+	body := `{"model":"claude-sonnet-4","max_tokens":100,"system":"s",` +
+		`"tools":[{"name":"t","input_schema":{"type":"object","properties":{}}}],` +
+		`"messages":[{"role":"user","content":"hi"}]}`
+	out, err := Convert([]byte(body), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Source detected as Anthropic → converted to OpenAI Chat downstream.
+	// Converted request has no top-level "system" and no "input_schema";
+	// model is rewritten to the downstream target.
+	if bytes.Contains(out, []byte(`"input_schema"`)) || bytes.Contains(out, []byte(`"system":"s"`)) {
+		t.Fatalf("expected Anthropic→OpenAI conversion, body still Anthropic-shaped: %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"deepseek-chat"`)) {
+		t.Fatalf("expected model rewritten to deepseek-chat: %s", out)
+	}
+}
+
+// TestConvert_PathologicalMinimal_Passthrough verifies that a minimal request
+// with no distinguishing body markers on a non-canonical endpoint yields
+// ProtocolUnknown and is returned completely unchanged (no guess, no rewrite).
+func TestConvert_PathologicalMinimal_Passthrough(t *testing.T) {
+	opts := &ConvertOptions{
+		Model: "deepseek-chat", MaxTokens: 8192,
+		URI: "/v1/llm", Direction: "request",
+		ModelMap: ModelMap{{SourcePrefix: "*", TargetModel: "deepseek-chat", Protocol: "openai"}},
+	}
+	body := `{"model":"x","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`
+	out, err := Convert([]byte(body), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != body {
+		t.Fatalf("expected unchanged passthrough, got: %s", out)
+	}
+}
+
+// TestConvert_ResponseUsesSessionClientProtocol verifies the request→response
+// session carry: client protocol detected on the request is stored in the
+// session and read on the response, so a response with an EMPTY URI (as when
+// resp.Request==nil) still converts back to the client protocol.
+func TestConvert_ResponseUsesSessionClientProtocol(t *testing.T) {
+	store := NewSessionStore()
+	mm := ModelMap{{SourcePrefix: "*", TargetModel: "deepseek-chat", Protocol: "openai"}}
+
+	// 1. Request: Anthropic client on /v1/messages → converted to OpenAI downstream.
+	reqOpts := &ConvertOptions{
+		Model: "deepseek-chat", MaxTokens: 8192, ModelMap: mm,
+		SID: "sess-rt", SessionStore: store,
+		URI: "/v1/messages", Direction: "request",
+	}
+	anthReq := `{"model":"claude-sonnet-4","max_tokens":100,"system":"s","messages":[{"role":"user","content":"hi"}]}`
+	if _, err := Convert([]byte(anthReq), reqOpts); err != nil {
+		t.Fatal(err)
+	}
+	sess := store.Get("sess-rt")
+	if sess == nil || sess.From != ProtocolAnthropic {
+		t.Fatalf("session.From should be Anthropic after request, got %+v", sess)
+	}
+
+	// 2. Response: downstream returns OpenAI Chat, URI EMPTY (resp.Request==nil).
+	// Client protocol must come from the session, not the URI.
+	respOpts := &ConvertOptions{
+		Model: "deepseek-chat", MaxTokens: 8192, ModelMap: mm,
+		SID: "sess-rt", SessionStore: store,
+		URI: "", Direction: "response",
+	}
+	openaiResp := `{"id":"x","object":"chat.completion","model":"deepseek-chat",` +
+		`"choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],` +
+		`"usage":{"prompt_tokens":1,"completion_tokens":1}}`
+	out, err := Convert([]byte(openaiResp), respOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// source=OpenAIChat (choices), client=Anthropic (session) → converted to Anthropic.
+	if !bytes.Contains(out, []byte(`"type":"message"`)) {
+		t.Fatalf("expected OpenAI→Anthropic conversion using session client proto, got: %s", out)
+	}
+	// Session must be deleted after the non-streaming response (pair complete).
+	if sess := store.Get("sess-rt"); sess != nil {
+		t.Fatalf("session should be deleted after response, got %+v", sess)
+	}
+}
+
+// TestHandleSSEEvent_AsymmetricProtocolOverride_UsesSessionClient verifies the
+// streaming path reads the client protocol from the session (stored at request
+// time) instead of deriving the target from resolveModel. With a `:openai`
+// override and an Anthropic client, the OpenAI stream chunks must convert back
+// to Anthropic — not passthrough (which resolveModel's downstream=openai would do).
+func TestHandleSSEEvent_AsymmetricProtocolOverride_UsesSessionClient(t *testing.T) {
+	mm := ModelMap{{SourcePrefix: "*", TargetModel: "deepseek-chat", Protocol: "openai"}}
+	store := NewSessionStore()
+
+	// 1. Request: Anthropic client → stores session.From=Anthropic.
+	reqOpts := &ConvertOptions{
+		Model: "deepseek-chat", MaxTokens: 8192, ModelMap: mm,
+		SessionStore: store, SID: "asym-sid",
+		URI: "/v1/messages", Direction: "request",
+	}
+	anthReq := `{"model":"claude-sonnet-4","max_tokens":100,"system":"s","messages":[{"role":"user","content":"hi"}]}`
+	if _, err := Convert([]byte(anthReq), reqOpts); err != nil {
+		t.Fatal(err)
+	}
+	if sess := store.Get("asym-sid"); sess == nil || sess.From != ProtocolAnthropic {
+		t.Fatalf("request should store session.From=Anthropic, got %+v", sess)
+	}
+
+	// 2. Streaming response: OpenAI chunk. Must convert to Anthropic via session.From.
+	respOpts := &ConvertOptions{
+		Model: "deepseek-chat", MaxTokens: 8192, ModelMap: mm,
+		SessionStore: store, SID: "asym-sid",
+		URI: "/v1/messages", Direction: "response",
+	}
+	startData := []byte(`data: {"id":"chatcmpl-x","object":"chat.completion.chunk","model":"deepseek-chat","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}`)
+	out, err := HandleSSEEvent("asym-sid", string(StreamPhaseStart), 0, startData, respOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// StreamConverter (OpenAI→Anthropic) emits Anthropic SSE.
+	if !bytes.Contains(out, []byte(`message_start`)) {
+		t.Fatalf("expected OpenAI→Anthropic stream conversion using session.From, got: %s", out)
+	}
+	// And it must NOT have chosen a passthrough handler.
+	if sess := store.Get("asym-sid"); sess != nil {
+		if _, ok := sess.StreamHandler.(*PassthroughStreamHandler); ok {
+			t.Fatal("got PassthroughStreamHandler — streaming target did not use session.From")
+		}
 	}
 }

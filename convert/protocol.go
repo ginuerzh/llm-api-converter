@@ -42,22 +42,19 @@ var uriTable = map[string]struct{ Req, Resp Protocol }{
 	"/v1/responses":        {ProtocolOpenAIResponses, ProtocolOpenAIResponses},
 }
 
-// detectProtocol resolves the protocol and direction from GOST metadata.
-func detectProtocol(uri, direction string) (Protocol, Direction, bool) {
-	dir := DirectionRequest
-	if direction == "response" {
-		dir = DirectionResponse
-	}
+// detectByURI resolves the protocol from the GOST URI metadata.
+// Used as an optional fallback when detectSource returns Unknown.
+func detectByURI(uri string, dir Direction) Protocol {
 	for pattern, entry := range uriTable {
 		if !strings.Contains(uri, pattern) {
 			continue
 		}
 		if dir == DirectionRequest {
-			return entry.Req, dir, true
+			return entry.Req
 		}
-		return entry.Resp, dir, true
+		return entry.Resp
 	}
-	return ProtocolUnknown, 0, false
+	return ProtocolUnknown
 }
 
 // resolveModelTarget returns the target model from the model map, or inputModel if no match.
@@ -108,12 +105,9 @@ func resolveModel(inputModel string, inputProtocol Protocol, mm ModelMap) (targe
 	if inputModel != "" {
 		bare := StripProviderPrefix(inputModel)
 
-
 		// The model matches a downstream target (e.g. response body has
 		// the rewritten model name). Return the declared protocol from the
-		// model-map entry. Callers on the response path handle asymmetric
-		// conversion back to the client protocol by comparing body-based
-		// detection against the URI-expected format.
+		// model-map entry.
 		if lp := mm.lookupTargetProtocol(bare); lp != "" {
 			return inputModel, parseProtocol(lp)
 		}

@@ -38,6 +38,7 @@ type rewriteResponse struct {
 func ListenAndServe(addr string, opts *Options) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
+		slog.Error(fmt.Sprintf("server listen: %v", err))
 		return err
 	}
 	slog.Info(fmt.Sprintf("server listening on %v", ln.Addr()))

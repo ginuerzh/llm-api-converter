@@ -40,7 +40,7 @@ func TestModelMapApply_WithProtocol(t *testing.T) {
 
 func TestConvert_ProtocolOpenAI_OpenAIReqPassthrough(t *testing.T) {
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`
-	opts := &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "*", TargetModel: "deepseek-chat", Protocol: "openai"}}}
+	opts := &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "*", TargetModel: "deepseek-chat", Protocol: "openai"}}, URI: "/v1/chat/completions", Direction: "request"}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestConvert_ProtocolOpenAI_OpenAIReqPassthrough(t *testing.T) {
 
 func TestConvert_ProtocolOpenAI_AnthropicReqConverted(t *testing.T) {
 	body := `{"model":"claude-sonnet-4","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	opts := &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "*", TargetModel: "deepseek-chat", Protocol: "openai"}}}
+	opts := &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "*", TargetModel: "deepseek-chat", Protocol: "openai"}}, URI: "/v1/messages", Direction: "request"}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestConvert_ProtocolOpenAI_AnthropicReqConverted(t *testing.T) {
 
 func TestConvert_ProtocolAnthropic_AnthropicReqPassthrough(t *testing.T) {
 	body := `{"model":"claude-sonnet-4","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	opts := &ConvertOptions{Model: "claude-sonnet-4", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "*", TargetModel: "claude-sonnet-4", Protocol: "anthropic"}}}
+	opts := &ConvertOptions{Model: "claude-sonnet-4", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "*", TargetModel: "claude-sonnet-4", Protocol: "anthropic"}}, URI: "/v1/messages", Direction: "request"}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +91,7 @@ func TestConvert_ProtocolAnthropic_AnthropicReqPassthrough(t *testing.T) {
 
 func TestConvert_ProtocolAnthropic_AnthropicReqPassthroughWithRename(t *testing.T) {
 	body := `{"model":"claude-opus-4","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	opts := &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude-opus", TargetModel: "minimax-m3", Protocol: "anthropic"}}}
+	opts := &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude-opus", TargetModel: "minimax-m3", Protocol: "anthropic"}}, URI: "/v1/messages", Direction: "request"}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +114,7 @@ func TestConvert_ProtocolAnthropic_AnthropicReqPassthroughWithRename(t *testing.
 
 func TestConvert_ProtocolAnthropic_OpenAIReqConverted(t *testing.T) {
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`
-	opts := &ConvertOptions{Model: "claude-sonnet-4", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "*", TargetModel: "claude-sonnet-4", Protocol: "anthropic"}}}
+	opts := &ConvertOptions{Model: "claude-sonnet-4", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "*", TargetModel: "claude-sonnet-4", Protocol: "anthropic"}}, URI: "/v1/chat/completions", Direction: "request"}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestConvert_ProtocolAnthropic_AnthropicRespPassthrough(t *testing.T) {
 
 func TestConvert_ProtocolUnset_CurrentBehavior(t *testing.T) {
 	body := `{"model":"claude-opus-4","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	opts := &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude-opus", TargetModel: "deepseek-v4-pro"}}}
+	opts := &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude-opus", TargetModel: "deepseek-v4-pro"}}, URI: "/v1/messages", Direction: "request"}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +178,7 @@ func TestConvert_ProtocolCatchAll(t *testing.T) {
 		{SourcePrefix: "*", TargetModel: "deepseek-chat", Protocol: "openai"},
 	}
 	body := `{"model":"unknown-model","messages":[{"role":"user","content":"hello"}]}`
-	opts := &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192, ModelMap: mm}
+	opts := &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192, ModelMap: mm, URI: "/v1/chat/completions", Direction: "request"}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -237,7 +237,7 @@ func TestConvert_ProtocolOpenAI_AsymmetricReqConverted(t *testing.T) {
 		{SourcePrefix: "claude-opus", TargetModel: "deepseek-v4-pro", Protocol: "openai"},
 		{SourcePrefix: "*", TargetModel: "deepseek-v4-flash", Protocol: "openai"},
 	}
-	opts := &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192, ModelMap: mm}
+	opts := &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192, ModelMap: mm, URI: "/v1/messages", Direction: "request"}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -594,7 +594,25 @@ func fuzzMatrixConvert(t *testing.T, mm ModelMap, shapeName, model string) {
 	}
 	body := strings.ReplaceAll(shape.tmpl, "{MODEL}", model)
 
-	opts := &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192, ModelMap: mm}
+		opts := &ConvertOptions{
+			Model:     "deepseek-chat",
+			MaxTokens: 8192,
+			ModelMap:  mm,
+		}
+		switch shape.format {
+		case "anthropic-req":
+			opts.URI = "/v1/messages"
+			opts.Direction = "request"
+		case "openai-req":
+			opts.URI = "/v1/chat/completions"
+			opts.Direction = "request"
+		case "anthropic-resp":
+			opts.URI = "/v1/messages"
+			opts.Direction = "response"
+		case "openai-resp", "openai-stream":
+			opts.URI = "/v1/chat/completions"
+			opts.Direction = "response"
+		}
 	result, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatalf("Convert error: %v", err)
@@ -744,6 +762,47 @@ func findShape(name string) *struct {
 		}
 	}
 	return nil
+}
+
+// TestDetectSource_CodexResponsesWithToolChoice guards a regression where a
+// Codex Responses request carrying "tool_choice":"auto" (a bare string) was
+// misclassified as OpenAI Chat: the tool_choice-string heuristic fired before
+// the definitive Responses markers (input/instructions) were checked. The
+// misroute parsed flat Responses tools through the Chat parser, dropping tool
+// names and producing "tools[0].function.name: empty string" downstream.
+func TestDetectSource_CodexResponsesWithToolChoice(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","instructions":"you are codex","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"tools":[{"type":"function","name":"exec_command","parameters":{"type":"object"}},{"type":"custom","name":"apply_patch"}],"tool_choice":"auto","parallel_tool_calls":true,"stream":true}`)
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectSource(raw); got != ProtocolOpenAIResponses {
+		t.Fatalf("detectSource: want responses, got %v", got)
+	}
+}
+
+// TestConvert_CodexResponsesToAnthropicKeepsToolNames is the end-to-end guard:
+// converting a Codex Responses request to Anthropic must preserve tool names.
+func TestConvert_CodexResponsesToAnthropicKeepsToolNames(t *testing.T) {
+	body := `{"model":"gpt-5.4","instructions":"you are codex","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"tools":[{"type":"function","name":"exec_command","parameters":{"type":"object"}},{"type":"custom","name":"apply_patch"}],"tool_choice":"auto","stream":true}`
+	mm := ModelMap{{SourcePrefix: "*", TargetModel: "deepseek-v4-flash", Protocol: "anthropic"}}
+	opts := &ConvertOptions{Model: "deepseek-v4-flash", MaxTokens: 8192, ModelMap: mm, URI: "/v1/responses", Direction: "request"}
+	out, err := Convert([]byte(body), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var anth AnthropicRequest
+	if err := json.Unmarshal(out, &anth); err != nil {
+		t.Fatalf("expected Anthropic request, err=%v\nbody=%s", err, out)
+	}
+	if len(anth.Tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(anth.Tools))
+	}
+	for i, tool := range anth.Tools {
+		if tool.Name == "" {
+			t.Errorf("tool[%d] has empty name after conversion", i)
+		}
+	}
 }
 
 // parseModelMap tests are in rewriter/server_test.go

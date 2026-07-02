@@ -7,27 +7,31 @@ import (
 	"sync"
 )
 
-// SessionStore holds per-session state with expiry. The rewriter server owns
-// this and passes it via ConvertOptions.
+// SessionStore holds per-session state with max-size FIFO eviction.
+// The rewriter server owns this and passes it via ConvertOptions.
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
+	order    []string
+	maxSize  int
 }
 
-// NewSessionStore creates a session store.
+// NewSessionStore creates a session store with the given max size.
 func NewSessionStore() *SessionStore {
 	return &SessionStore{
 		sessions: make(map[string]*Session),
+		order:    make([]string, 0, 1000),
+		maxSize:  1000,
 	}
 }
 
 // Session holds per-session streaming state.
 type Session struct {
-	ID              string
-	From            Protocol
-	To              Protocol
-	IsResponses     bool
-	StreamHandler   responsesStreamHandler
+	ID            string
+	From          Protocol
+	To            Protocol
+	IsResponses   bool
+	StreamHandler responsesStreamHandler
 }
 
 // Get returns the session by ID, or nil.
@@ -37,18 +41,46 @@ func (s *SessionStore) Get(sid string) *Session {
 	return s.sessions[sid]
 }
 
-// Set stores a session.
+// Set stores a session, replacing any existing entry. Session is treated as
+// write-once: pointer replacement (never in-place mutation) so a caller holding
+// a Get-returned pointer sees a stable snapshot — no race with a concurrent Set.
 func (s *SessionStore) Set(sid string, sess *Session) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, exists := s.sessions[sid]; !exists {
+		if len(s.sessions) >= s.maxSize {
+			s.evictLocked()
+		}
+		s.order = append(s.order, sid)
+	}
 	s.sessions[sid] = sess
 }
 
-// Delete removes a session.
+// Delete removes a session. It prunes the order slice too — otherwise long-running
+// streaming traffic (Set on start, Delete on end) grows order without bound: the map
+// stays small, eviction never fires, and order leaks one entry per stream.
 func (s *SessionStore) Delete(sid string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, sid)
+	for i, id := range s.order {
+		if id == sid {
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			break
+		}
+	}
+}
+
+func (s *SessionStore) evictLocked() {
+	for len(s.order) > 0 {
+		oldest := s.order[0]
+		s.order = s.order[1:]
+		if _, ok := s.sessions[oldest]; ok {
+			delete(s.sessions, oldest)
+			return
+		}
+		// Stale entry (already removed via Delete) — skip.
+	}
 }
 
 // PassthroughStreamHandler passes through events with optional model rewrite.

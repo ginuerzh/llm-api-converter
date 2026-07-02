@@ -130,7 +130,7 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 		return body, nil
 	}
 
-	// "[DONE]" → message_stop.
+	// "[DONE]" => message_stop.
 	if bytes.Equal(bytes.TrimSpace(body), []byte("data: [DONE]")) {
 		return []byte("event: message_stop\ndata: {\"type\":\"message_stop\"}"), nil
 	}
@@ -142,16 +142,12 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 
 	// Protocol passthrough: when model-map declares a downstream protocol that
 	// matches the data format, pass through with model rewrite instead of
-	// converting. This handles SSE events from old GOST sniffers that don't
-	// send sse_phase metadata. Stream lifecycle events (HandleSSEEvent) have
-	// their own passthrough path in StreamPhaseStart.
+	// converting. Uses body-primary detection with model map fallback for
+	// SSE event payloads (e.g. message_start has type:"message_start").
 	if opts.ModelMap != nil {
 		var raw map[string]any
 		if err := json.Unmarshal([]byte(evt.Data), &raw); err == nil {
-			from, _ := detectByBody(raw, opts)
-			// Body-based detection misses SSE payloads (e.g. message_start
-			// has type:"message_start" not type:"message"). Fall back to
-			// the model map when the data carries a known model name.
+			from := detectSource(raw)
 			if from == ProtocolUnknown {
 				model := extractModelFromData([]byte(evt.Data))
 				_, to := resolveModel(model, ProtocolUnknown, opts.ModelMap)
@@ -163,7 +159,6 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 				model, _ := raw["model"].(string)
 				targetModel, to := resolveModel(model, from, opts.ModelMap)
 				if from == to {
-					// Same protocol — rewrite model if needed.
 					if targetModel != "" && targetModel != model {
 						raw["model"] = targetModel
 						if newData, err := json.Marshal(raw); err == nil {
@@ -184,7 +179,7 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 		return convertOpenAIStreamChunkToAnthropic(evt)
 	}
 
-	// Default: convert data payload with Convert() (handles protocol detection internally).
+	// Default: convert data payload with Convert().
 	convertSSEEvent(evt, opts)
 	return reconstructSSEEvent(evt), nil
 }
@@ -304,9 +299,10 @@ func isOpenAIStreamChunk(data []byte) bool {
 // Convert — main entry point
 // ---------------------------------------------------------------------------
 
-// Convert detects the input format via GOST metadata (URI + direction) and
-// converts between protocols. Falls back to body-based detection when
-// metadata is unavailable (backward compatibility).
+// Convert detects the input format via body structure (primary) with URI
+// metadata as optional fallback, then converts between protocols.
+// On request: stores the detected source protocol in Session.From for the
+// response path. On response: reads Session.From as the client protocol.
 func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 	if opts == nil {
 		opts = &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192}
@@ -316,9 +312,9 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 		return body, nil
 	}
 
-	// SSE framing → ConvertSSE.
+	// SSE framing => ConvertSSE.
 	if isSSE(body) {
-		slog.Debug("SSE framing → ConvertSSE")
+		slog.Debug("SSE framing => ConvertSSE")
 		return ConvertSSE(body, opts)
 	}
 
@@ -343,119 +339,110 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 		}
 	}
 
-	// Detect protocol from metadata.
-	from, dir, ok := detectProtocol(opts.URI, opts.Direction)
-	if !ok {
-		// Fallback: body-based detection for backward compatibility.
-		from, dir = detectByBody(raw, opts)
+	// Body-primary protocol detection (authoritative).
+	source := detectSource(raw)
+	dir := DirectionRequest
+	if opts.Direction == "response" {
+		dir = DirectionResponse
 	}
 
-	if from == ProtocolUnknown {
+	// Optional URI fallback for minimal requests with no distinguishing features.
+	if source == ProtocolUnknown {
+		source = detectByURI(opts.URI, dir)
+	}
+
+	if source == ProtocolUnknown {
 		slog.Debug("unknown format, passing through")
 		return body, nil
 	}
 
-	slog.Debug("detected protocol", "protocol", from.String(), "direction", dir)
+	slog.Debug("detected protocol", "protocol", source.String(), "direction", opts.Direction)
 
-	// On the response path, the body format may differ from the
-	// URI-expected format when the downstream speaks a different
-	// protocol than the client. Track the client protocol so we
-	// can redirect conversion back to it.
-	var clientProto Protocol
-	if dir == DirectionResponse && ok {
-		if bodyFrom, bodyDir := detectByBody(raw, opts); bodyFrom != ProtocolUnknown && bodyFrom != from {
-			clientProto = from
-			from = bodyFrom
-			dir = bodyDir
-			slog.Debug("asymmetric response: body format differs from client",
-				"body", from.String(), "client", clientProto.String())
-		}
-	}
-
-	// Responses API session routing — check BEFORE protocol-specific handling.
-	// The body format of upstream responses doesn't match the session's protocol
-	// (e.g. Anthropic response body in a Responses session → needs conversion back).
+	// Responses API session routing — check before protocol-specific handling.
 	if opts.SessionStore != nil && opts.SID != "" {
 		if sess := opts.SessionStore.Get(opts.SID); sess != nil && sess.IsResponses {
-			slog.Debug("Responses session upstream response → converting back")
+			slog.Debug("Responses session upstream response => converting back")
 			return convertToResponsesResponse(body, opts)
 		}
 	}
 
-	// Responses API uses its own routing (model-map protocol decides Chat vs Anthropic).
-	if from == ProtocolOpenAIResponses {
+	// Responses API uses its own routing.
+	if source == ProtocolOpenAIResponses {
 		if dir == DirectionRequest {
-			slog.Debug("Responses request → converting")
+			slog.Debug("Responses request => converting")
 			if opts.SID != "" && opts.SessionStore != nil {
-				sess := &Session{ID: opts.SID, From: from, IsResponses: true}
+				sess := &Session{ID: opts.SID, From: source, IsResponses: true}
 				opts.SessionStore.Set(opts.SID, sess)
 			}
 			return convertResponsesRequest(body, opts)
 		}
-		// Responses response (not in a session) — passthrough.
 		return body, nil
 	}
 
 	// Resolve downstream protocol from model map.
 	model, _ := raw["model"].(string)
-	targetModel, to := resolveModel(model, from, opts.ModelMap)
+	targetModel, downstream := resolveModel(model, source, opts.ModelMap)
 	opts.ResolvedModel = targetModel
 
-	// Redirect asymmetric response: convert body format → client format.
-	if clientProto != ProtocolUnknown && from == to {
-		to = clientProto
-	}
+	if dir == DirectionRequest {
+		// Request path: store client protocol in session for response path.
+		if opts.SID != "" && opts.SessionStore != nil {
+			opts.SessionStore.Set(opts.SID, &Session{ID: opts.SID, From: source})
+		}
 
-	// Passthrough: same protocol → model rewrite only.
-	if from == to {
+		// Passthrough if source matches downstream protocol.
+		if source == downstream || downstream == ProtocolUnknown {
+			return passthrough(raw, targetModel, opts, body)
+		}
+
+		// Convert source => downstream protocol.
+		if convertFn, ok := conversions[ConversionKey{source, downstream}]; ok {
+			slog.Debug("converting request", "from", source.String(), "to", downstream.String(), "model", targetModel)
+			converted, err := convertFn(body, opts)
+			if err != nil {
+				return nil, fmt.Errorf("convert %s=>%s: %w", source.String(), downstream.String(), err)
+			}
+			return converted, nil
+		}
+
+		slog.Debug("no converter for request pair, passing through", "from", source.String(), "to", downstream.String())
 		return passthrough(raw, targetModel, opts, body)
 	}
 
-	// Conversion via registry.
-	if convertFn, ok := conversions[ConversionKey{from, to}]; ok {
-		slog.Debug("converting", "from", from.String(), "to", to.String(), "model", targetModel)
-		converted, err := convertFn(body, opts)
-		if err != nil {
-			return nil, fmt.Errorf("convert %s→%s: %w", from.String(), to.String(), err)
+	// Response path: source is the downstream protocol (detected from body).
+	// Determine client protocol from session or URI fallback.
+	client := ProtocolUnknown
+	if opts.SessionStore != nil && opts.SID != "" {
+		if sess := opts.SessionStore.Get(opts.SID); sess != nil {
+			client = sess.From
 		}
-		return converted, nil
+		// Non-streaming request/response pair is complete; free the entry.
+		// The next request on this SID (HTTP keep-alive) re-stores before use.
+		opts.SessionStore.Delete(opts.SID)
+	}
+	if client == ProtocolUnknown {
+		client = detectByURI(opts.URI, DirectionRequest)
 	}
 
-	// No converter registered — passthrough with model rewrite.
-	slog.Debug("no converter for pair, passing through", "from", from.String(), "to", to.String())
+	// Passthrough: body format matches client protocol.
+	if client != ProtocolUnknown && source == client {
+		return passthrough(raw, targetModel, opts, body)
+	}
+
+	// Convert if source differs from client.
+	if client != ProtocolUnknown {
+		if convertFn, ok := conversions[ConversionKey{source, client}]; ok {
+			slog.Debug("converting response", "from", source.String(), "to", client.String(), "model", targetModel)
+			converted, err := convertFn(body, opts)
+			if err != nil {
+				return nil, fmt.Errorf("convert %s=>%s: %w", source.String(), client.String(), err)
+			}
+			return converted, nil
+		}
+	}
+
+	// Fallback passthrough.
 	return passthrough(raw, targetModel, opts, body)
-}
-
-// detectByBody is the fallback body-based format detection.
-func detectByBody(raw map[string]any, opts *ConvertOptions) (Protocol, Direction) {
-	// Responses API request.
-	if isResponsesRequest(raw) {
-		return ProtocolOpenAIResponses, DirectionRequest
-	}
-	// Responses API response.
-	if isResponsesResponse(raw) {
-		return ProtocolOpenAIResponses, DirectionResponse
-	}
-	// Anthropic request (messages with typed content blocks, max_tokens).
-	if isAnthropicRequest(raw) {
-		return ProtocolAnthropic, DirectionRequest
-	}
-	// OpenAI response (choices array).
-	if isOpenAIResponse(raw) {
-		return ProtocolOpenAIChat, DirectionResponse
-	}
-	// Anthropic response (type:"message" + stop_reason/usage).
-	if isAnthropicResponse(raw) {
-		return ProtocolAnthropic, DirectionResponse
-	}
-	// OpenAI request (model or messages field).
-	if _, ok := raw["model"].(string); ok {
-		return ProtocolOpenAIChat, DirectionRequest
-	}
-	if _, ok := raw["messages"].([]any); ok {
-		return ProtocolOpenAIChat, DirectionRequest
-	}
-	return ProtocolUnknown, 0
 }
 
 // passthrough rewrites the model field and injects max_completion_tokens.
@@ -497,7 +484,6 @@ func passthrough(raw map[string]any, targetModel string, opts *ConvertOptions, o
 }
 
 var modelValueRe = regexp.MustCompile(`("model"\s*:\s*)"([^"\\]|\\.)*"`)
-
 
 // ---------------------------------------------------------------------------
 // SSE stream lifecycle
@@ -549,42 +535,56 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 
 	switch StreamPhase(phase) {
 	case StreamPhaseStart:
-		// Detect protocol from metadata.
-		from, _, _ := detectProtocol(opts.URI, opts.Direction)
-		if from == ProtocolUnknown {
-			// Fallback for old sniffer: detect from data payload.
-			payload := extractSSEPayload(data)
+		// Body-primary detection from the initial SSE data payload.
+		payload := extractSSEPayload(data)
+		from := ProtocolUnknown
+		if payload != nil {
 			var raw map[string]any
 			if err := json.Unmarshal(payload, &raw); err == nil {
-				from, _ = detectByBody(raw, opts)
+				from = detectSource(raw)
 			}
 		}
 
-		// Resolve downstream protocol.
-		payload := extractSSEPayload(data)
-		model := extractModelFromData(payload)
-		_, to := resolveModel(model, from, opts.ModelMap)
-
-		// When the sniffer doesn't send URI metadata and body-based
-		// detection can't classify the data (e.g. message_start events
-		// have type:"message_start" not type:"message"), fall back to
-		// the protocol resolved from the model map.
-		if from == ProtocolUnknown && to != ProtocolUnknown {
-			from = to
+		// URI fallback for minimal event payloads (e.g. message_start).
+		dir := DirectionRequest
+		if opts.Direction == "response" {
+			dir = DirectionResponse
+		}
+		if from == ProtocolUnknown {
+			from = detectByURI(opts.URI, dir)
 		}
 
-		// Passthrough: same protocol.
-		if from != ProtocolUnknown && from == to {
-			// Compute client-facing model for message_start rewrite.
+		// Target protocol = the client protocol. Prefer the value stored on the
+		// request path (authoritative — makes streaming symmetric with the non-
+		// streaming response path); fall back to model-map resolution when no
+		// request session exists (old sniffer, or stateless usage).
+		target := ProtocolUnknown
+		if store != nil {
+			if sess := store.Get(sid); sess != nil {
+				target = sess.From
+			}
+		}
+		model := extractModelFromData(payload)
+		if target == ProtocolUnknown {
+			_, target = resolveModel(model, from, opts.ModelMap)
+		}
+
+		// Model map fallback when body + URI can't classify the event.
+		if from == ProtocolUnknown && target != ProtocolUnknown {
+			from = target
+		}
+
+		// Passthrough: chunk format matches client protocol.
+		if from != ProtocolUnknown && from == target {
 			sourceModel := opts.RequestModel
 			if sourceModel == "" && model != "" && opts.ModelMap != nil {
 				if prefix := opts.ModelMap.SourcePrefix(model); prefix != "" {
 					sourceModel = prefix
 				}
 			}
-			handler := NewPassthroughStreamHandler(sourceModel, to)
+			handler := NewPassthroughStreamHandler(sourceModel, target)
 			if store != nil {
-				store.Set(sid, &Session{ID: sid, From: from, To: to, StreamHandler: handler})
+				store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: handler})
 			}
 			if len(data) > 0 {
 				return handler.HandleChunk(data)
@@ -592,10 +592,10 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			return nil, nil
 		}
 
-		// Create stream converter.
+		// Create stream converter (OpenAI deltas => Anthropic SSE).
 		sc := newStreamConverterFromData(data, opts)
 		if store != nil {
-			store.Set(sid, &Session{ID: sid, From: from, To: to, StreamHandler: sc})
+			store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: sc})
 		}
 
 		startData := sc.HandleStreamStart()
@@ -672,7 +672,7 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			slog.Warn("HandleSSEEvent: unknown stream for end phase", "sid", sid)
 			return nil, nil
 		}
-		// Passhthrough: no synthesized closing events needed.
+		// Passthrough: no synthesized closing events needed.
 		if _, ok := handler.(*PassthroughStreamHandler); ok {
 			return nil, nil
 		}
