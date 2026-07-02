@@ -1,5 +1,7 @@
 # llm-api-converter
 
+English | [简体中文](README.zh-CN.md)
+
 A GOST Rewriter HTTP plugin that converts bidirectionally between **OpenAI Chat Completions** and **Anthropic Messages API** formats. Designed for use with tools like Claude Code, Codex CLI, OpenCode, and other LLM clients that speak either protocol.
 
 ## Table of Contents
@@ -31,7 +33,7 @@ Anthropic SDK client → GOST → llm-api-converter → OpenAI-compatible API
                 Anthropic format               OpenAI format
 ```
 
-The converter auto-detects the input format — no manual routing needed.
+The converter auto-detects the input format using **positive structural markers** only — no negative exclusions, no hardcoded model prefixes. A `SessionStore` tracks client protocol across request/response pairs for correct bidirectional routing. A URI-based fallback handles minimal requests that lack distinguishing features.
 
 ## Quick start
 
@@ -67,7 +69,7 @@ services:
     restart: unless-stopped
 
   gost:
-    image: ginuerzh/gost:latest
+    image: gogost/gost:latest
     command: -C /etc/gost/gost.yaml
     volumes:
       - ./gost.yaml:/etc/gost/gost.yaml:ro
@@ -116,7 +118,7 @@ Claude Code → GOST (proxy) → llm-api-converter → opencode-go API → DeepS
 ./llm-api-converter \
   --addr :8000 \
   --model deepseek-v4-flash \
-  --model-map "claude-opus=deepseek-v4-pro,*=deepseek-v4-flash"
+  --model-map "claude-opus=deepseek-v4-pro:openai,*=deepseek-v4-flash:openai"
 ```
 
 **2. Configure GOST to intercept Anthropic API calls and forward them through the converter:**
@@ -173,10 +175,10 @@ All Anthropic traffic from Claude Code is intercepted by GOST, converted to Open
 
 **Model mapping notes:**
 
-- `claude-opus` → `deepseek-v4-pro`: Routes requests with model name starting with `claude-opus` to DeepSeek V4 Pro 
-- `*` → `deepseek-v4-flash`: Catch-all fallback for any unmatched model prefix
-- **Downstream protocol override**: Append `:openai` or `:anthropic` after the target to declare what format the backend speaks (`prefix=target:protocol`). When the incoming request/response already matches that protocol, conversion is skipped — **but the model name is still rewritten** to the target. Use this when routing to a backend that speaks the same protocol as the client and you only want model-name remapping. Example: `claude-opus=deepseek-v4-pro:openai` keeps OpenAI→OpenAI traffic in OpenAI form while renaming the model.
-- **Optional target**: Omit the target to rewrite nothing and only skip conversion, e.g. `claude-opus=:openai` passes same-protocol traffic through with the original model name unchanged.
+- `claude-opus=deepseek-v4-pro:openai`: Routes requests with model name starting with `claude-opus` to DeepSeek V4 Pro, converting Anthropic→OpenAI
+- `*=deepseek-v4-flash:openai`: Catch-all fallback for any unmatched model prefix, also converting to OpenAI
+- **Downstream protocol override**: Append `:openai` or `:anthropic` after the target to declare what format the backend speaks (`prefix=target:protocol`). **Without a protocol suffix, the default is passthrough** — the body passes through with only the model name rewritten, no format conversion. With `:openai`/`:anthropic`, conversion runs when the incoming protocol differs from the declared one; when they match, only the model is rewritten. The override applies on both request and response paths via per-session client protocol tracking. Example: `claude-opus=deepseek-v4-pro:openai` — incoming Anthropic differs from `:openai`, so Anthropic→OpenAI conversion runs; `claude-opus=deepseek-v4-pro:anthropic` — incoming Anthropic matches, so only the model is rewritten.
+- Note: `:responses` is not a valid override (only `openai`/`anthropic`); Responses API traffic is detected and routed via body markers and the session store, not the model map. Empty targets (e.g. `claude-opus=:openai`) are rejected at parse time.
 
 Update the `--model-map` to match your opencode-go deployment's available models.
 
@@ -264,8 +266,8 @@ Codex CLI sends Responses API requests to `/v1/responses`; GOST intercepts them,
 | Anthropic Request → OpenAI Request | For forwarding to OpenAI-compatible downstreams (DeepSeek, etc.) |
 | Anthropic Response → OpenAI Response | For returning OpenAI-format responses to clients |
 | Responses API Request → Chat Completions Request | For forwarding Codex CLI (Responses API) to OpenAI Chat Completions backends |
-| Responses API Response → Chat Completions Response | Converting a Chat Completions response back to Responses API format |
-| Chat Completions → Responses API | Reverse direction: any Chat Completions request/response to Responses API format |
+| Chat Completions Response → Responses API Response | Converting upstream Chat response back to Responses API format |
+| Chat Completions Request → Responses API Request | Converting any Chat request to Responses API format |
 
 ### Streaming
 
@@ -332,7 +334,11 @@ llm-api-converter/
 ├── cmd/root.go          # Cobra CLI
 ├── convert/             # Core conversion logic
 │   ├── types.go                              # Data types for OpenAI, Anthropic, Responses API, SSE
-│   ├── convert.go                            # Entry point: auto-detection + dispatch
+│   ├── convert.go                            # Entry point: Convert + ConvertSSE dispatch
+│   ├── detect.go                             # Body-primary protocol detection (positive markers)
+│   ├── protocol.go                           # Protocol type + URI fallback + resolveModel
+│   ├── registry.go                           # ConversionKey → converter function map
+│   ├── session.go                            # SessionStore (per-session state, FIFO eviction)
 │   ├── anthropic_to_openai.go                # Anthropic → OpenAI Chat Completions
 │   ├── openai_to_anthropic.go                # OpenAI Chat Completions → Anthropic
 │   ├── responses.go                          # Responses API ↔ Chat Completions
@@ -360,6 +366,7 @@ go test ./tests/e2e/ -v -timeout 5m
 
 - [deepseek-v4-opencode-claude-code-bridge](https://github.com/superheroYu/deepseek-v4-opencode-claude-code-bridge) — DeepSeek V4 adapter for OpenCode and Claude Code
 - [opencode-cc](https://github.com/Kiowx/opencode-cc) — OpenCode Claude Code bridge
+- [cc-switch](https://github.com/farion1231/cc-switch) — Claude Code provider/config switcher
 
 ## License
 

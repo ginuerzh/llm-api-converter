@@ -38,6 +38,29 @@ func TestModelMapApply_WithProtocol(t *testing.T) {
 	}
 }
 
+// TestModelMapApply_LongestPrefix asserts that the longest matching prefix wins
+// regardless of declaration order — a shorter prefix declared before a longer
+// one must not shadow it.
+func TestModelMapApply_LongestPrefix(t *testing.T) {
+	mm := ModelMap{
+		{SourcePrefix: "claude", TargetModel: "short"},
+		{SourcePrefix: "claude-sonnet", TargetModel: "longer"},
+		{SourcePrefix: "claude-sonnet-4", TargetModel: "longest"},
+	}
+
+	for model, want := range map[string]string{
+		"claude-opus-4":      "short",
+		"claude-sonnet-3":    "longer",
+		"claude-sonnet-4":    "longest",
+		"claude-sonnet-4-x":  "longest",
+	} {
+		target, _, ok := mm.Apply(model)
+		if !ok || target != want {
+			t.Fatalf("Apply(%q): want %s, got (%s, %v)", model, want, target, ok)
+		}
+	}
+}
+
 func TestConvert_ProtocolOpenAI_OpenAIReqPassthrough(t *testing.T) {
 	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`
 	opts := &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "*", TargetModel: "deepseek-chat", Protocol: "openai"}}, URI: "/v1/chat/completions", Direction: "request"}

@@ -351,20 +351,27 @@ type ModelMapEntry struct {
 // ModelMap is an ordered list of prefix-based model mapping rules, checked in order.
 type ModelMap []ModelMapEntry
 
-// Apply checks sourceModel against all entries and returns the target, protocol override,
-// and true on the first match. Specific prefixes are checked first in declaration order;
-// a catch-all entry ("*") is checked last only if no specific prefix matched.
+// Apply returns the target and protocol override of the longest matching prefix.
+// Among prefixes of equal length (i.e. duplicate prefixes), the earliest-declared
+// entry wins. A catch-all entry ("*") is checked last only if no specific prefix
+// matched.
 func (mm ModelMap) Apply(sourceModel string) (string, string, bool) {
 	sourceModel = strings.ToLower(sourceModel)
 	var catchAll ModelMapEntry
-	for _, entry := range mm {
+	best := -1
+	for i, entry := range mm {
 		if entry.SourcePrefix == "*" {
 			catchAll = entry
 			continue
 		}
 		if strings.HasPrefix(sourceModel, entry.SourcePrefix) {
-			return entry.TargetModel, entry.Protocol, true
+			if best == -1 || len(entry.SourcePrefix) > len(mm[best].SourcePrefix) {
+				best = i
+			}
 		}
+	}
+	if best >= 0 {
+		return mm[best].TargetModel, mm[best].Protocol, true
 	}
 	if catchAll.SourcePrefix != "" {
 		return catchAll.TargetModel, catchAll.Protocol, true
