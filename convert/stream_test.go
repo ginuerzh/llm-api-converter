@@ -291,7 +291,7 @@ func TestStream_AfterFinalized(t *testing.T) {
 
 func TestHandleSSEEvent_TextStream(t *testing.T) {
 	sid := "test_sid_001"
-	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192}
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, SessionStore: NewSessionStore()}
 
 	// Start phase.
 	startOut, err := HandleSSEEvent(sid, "start", 0, nil, opts)
@@ -333,7 +333,7 @@ func TestHandleSSEEvent_TextStream(t *testing.T) {
 }
 
 func TestHandleSSEEvent_UnknownSID(t *testing.T) {
-	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192}
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, SessionStore: NewSessionStore()}
 
 	// Event for unknown SID should auto-create the stream.
 	chunk := []byte(`{"choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}`)

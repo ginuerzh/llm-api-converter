@@ -216,7 +216,10 @@ func ConvertResponsesToChat(body []byte, opts *ConvertOptions) ([]byte, error) {
 		return nil, fmt.Errorf("unmarshal Responses request: %w", err)
 	}
 
-	model, _ := resolveModel(req.Model, opts.Model, opts.ModelMap)
+	model := opts.ResolvedModel; if model == "" { model = resolveModelTarget(req.Model, opts.ModelMap) }
+	if model == "" {
+		model = opts.Model
+	}
 	chat := OpenAIChatRequest{
 		Model: model,
 		Stream: &req.Stream,
@@ -301,7 +304,10 @@ func ConvertResponsesToAnthropic(body []byte, opts *ConvertOptions) ([]byte, err
 		return nil, fmt.Errorf("unmarshal Responses request: %w", err)
 	}
 
-	model, _ := resolveModel(req.Model, opts.Model, opts.ModelMap)
+	model := resolveModelTarget(req.Model, opts.ModelMap)
+	if model == "" {
+		model = opts.Model
+	}
 	maxTokens := 4096
 	if req.MaxOutputTokens != nil {
 		maxTokens = *req.MaxOutputTokens
@@ -1021,8 +1027,8 @@ func resolveResponseModel(upstreamModel string, opts *ConvertOptions) string {
 // upstream protocol (Chat or Anthropic) based on model-map resolution.
 func convertResponsesRequest(body []byte, opts *ConvertOptions) ([]byte, error) {
 	model := extractModelFromData(body)
-	_, proto := resolveModel(model, opts.Model, opts.ModelMap)
-	if proto == "anthropic" {
+	_, proto := resolveModel(model, ProtocolOpenAIResponses, opts.ModelMap)
+	if proto == ProtocolAnthropic {
 		return ConvertResponsesToAnthropic(body, opts)
 	}
 	return ConvertResponsesToChat(body, opts)

@@ -9,32 +9,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 // ---------------------------------------------------------------------------
-// Responses API session tracking
-// ---------------------------------------------------------------------------
-
-// responsesSessions tracks which SSE sessions are Responses API sessions.
-var responsesSessions sync.Map // sid → bool
-
-// responsesStreamStates tracks active Responses stream converters per session.
-var responsesStreamStates sync.Map // sid → *ResponsesStreamConverter
-
-func markResponsesSession(sid string)      { responsesSessions.Store(sid, true) }
-func IsResponsesSession(sid string) bool {
-	_, ok := responsesSessions.Load(sid)
-	return ok
-}
-
-func unmarkResponsesSession(sid string) {
-	responsesSessions.Delete(sid)
-	responsesStreamStates.Delete(sid)
-}
-
-// ---------------------------------------------------------------------------
-// SSE event handling
+// SSE event parsing
 // ---------------------------------------------------------------------------
 
 // isSSE reports whether body appears to be an SSE event by checking for
@@ -54,8 +32,7 @@ func isSSE(body []byte) bool {
 	return false
 }
 
-// parseSSEEvent parses raw SSE event bytes into fields. It handles
-// event:, data:, id:, retry: fields and ignores unknown lines.
+// parseSSEEvent parses raw SSE event bytes into fields.
 func parseSSEEvent(raw []byte) *SSEEvent {
 	evt := &SSEEvent{}
 	for _, line := range bytes.Split(raw, []byte("\n")) {
@@ -67,11 +44,9 @@ func parseSSEEvent(raw []byte) *SSEEvent {
 		if !found {
 			continue
 		}
-		// SSE convention: "field: value" — strip one leading space if present.
 		if len(value) > 0 && value[0] == ' ' {
 			value = value[1:]
 		}
-
 		switch string(key) {
 		case "event":
 			evt.Event = string(value)
@@ -92,8 +67,6 @@ func parseSSEEvent(raw []byte) *SSEEvent {
 }
 
 // reconstructSSEEvent builds SSE-formatted bytes from the event fields.
-// It does NOT include the trailing \n\n event delimiter — the caller
-// (sniffer_sse.go) appends \n\n after the rewritten bytes.
 func reconstructSSEEvent(evt *SSEEvent) []byte {
 	var buf bytes.Buffer
 	if evt.ID != "" {
@@ -116,7 +89,6 @@ func reconstructSSEEvent(evt *SSEEvent) []byte {
 		buf.WriteString(strconv.Itoa(evt.Retry))
 		buf.WriteByte('\n')
 	}
-	// Strip trailing newline — the GOST proxy appends \n\n as the event delimiter.
 	raw := buf.Bytes()
 	if len(raw) > 0 && raw[len(raw)-1] == '\n' {
 		raw = raw[:len(raw)-1]
@@ -125,7 +97,7 @@ func reconstructSSEEvent(evt *SSEEvent) []byte {
 }
 
 // convertSSEEvent converts the JSON data payload inside an SSE event
-// using the existing Convert function. Returns true if the data changed.
+// using Convert. Returns true if the data changed.
 func convertSSEEvent(evt *SSEEvent, opts *ConvertOptions) bool {
 	if evt.Data == "" {
 		return false
@@ -143,9 +115,12 @@ func convertSSEEvent(evt *SSEEvent, opts *ConvertOptions) bool {
 	return true
 }
 
+// ---------------------------------------------------------------------------
+// SSE conversion
+// ---------------------------------------------------------------------------
+
 // ConvertSSE parses SSE-formatted body, converts the JSON data payload,
-// and reconstructs the SSE framing. Non-SSE content that looks like SSE
-// (e.g. "[DONE]") passes through unchanged.
+// and reconstructs the SSE framing.
 func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 	if opts == nil {
 		opts = &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192}
@@ -154,41 +129,41 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 		return body, nil
 	}
 
-	// "[DONE]" is a common SSE data marker — convert to Anthropic message_stop.
+	// "[DONE]" → message_stop.
 	if bytes.Equal(bytes.TrimSpace(body), []byte("data: [DONE]")) {
 		return []byte("event: message_stop\ndata: {\"type\":\"message_stop\"}"), nil
 	}
 
 	evt := parseSSEEvent(body)
+	if evt.Data == "" {
+		return body, nil
+	}
 
-	// Protocol passthrough for SSE events: check if data payload already
-	// matches the downstream protocol and bypass conversion.
-	if opts.ModelMap != nil && evt.Data != "" {
+	// Protocol passthrough: when model-map declares a downstream protocol that
+	// matches the data format, pass through with model rewrite instead of
+	// converting. This handles SSE events from old GOST sniffers that don't
+	// send sse_phase metadata. Stream lifecycle events (HandleSSEEvent) have
+	// their own passthrough path in StreamPhaseStart.
+	if opts.ModelMap != nil {
 		var raw map[string]any
 		if err := json.Unmarshal([]byte(evt.Data), &raw); err == nil {
-			model := extractModelFromData([]byte(evt.Data))
-			targetModel, proto := resolveModel(model, opts.Model, opts.ModelMap)
-
-			// Reverse lookup: if the source prefix didn't match but the
-			// model appears as a target (e.g. response from downstream API),
-			// use the target's protocol.
-			if proto == "" && model != "" {
-				if lp := opts.ModelMap.LookupTarget(model); lp != "" {
-					proto = lp
+			from, _ := detectByBody(raw, opts)
+			// Body-based detection misses SSE payloads (e.g. message_start
+			// has type:"message_start" not type:"message"). Fall back to
+			// the model map when the data carries a known model name.
+			if from == ProtocolUnknown {
+				model := extractModelFromData([]byte(evt.Data))
+				_, to := resolveModel(model, ProtocolUnknown, opts.ModelMap)
+				if to != ProtocolUnknown {
+					from = to
 				}
 			}
-
-			passthrough := false
-			if proto == "openai" && (isOpenAIStreamChunk([]byte(evt.Data)) || isOpenAIResponse(raw)) {
-				passthrough = true
-			}
-			if proto == "anthropic" && isAnthropicResponse(raw) {
-				passthrough = true
-			}
-
-			if passthrough {
-				if targetModel != "" {
-					if origModel, ok := raw["model"].(string); ok && origModel != targetModel {
+			if from != ProtocolUnknown {
+				model, _ := raw["model"].(string)
+				targetModel, to := resolveModel(model, from, opts.ModelMap)
+				if from == to {
+					// Same protocol — rewrite model if needed.
+					if targetModel != "" && targetModel != model {
 						raw["model"] = targetModel
 						if newData, err := json.Marshal(raw); err == nil {
 							evt.Data = string(newData)
@@ -196,43 +171,39 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 							return reconstructSSEEvent(evt), nil
 						}
 					}
+					slog.Debug("sse: protocol passthrough")
+					return body, nil
 				}
-				slog.Debug("sse: protocol passthrough")
-				return body, nil
 			}
 		}
 	}
 
 	// Check for OpenAI streaming chunk: data payload with choices[].delta.
-	// This must be detected before the generic Convert() path since OpenAI
-	// streaming chunks have a different structure from non-streaming responses.
-	if evt.Data != "" && isOpenAIStreamChunk([]byte(evt.Data)) {
+	if isOpenAIStreamChunk([]byte(evt.Data)) {
 		return convertOpenAIStreamChunkToAnthropic(evt)
 	}
 
-	// Default: convert data payload with Convert() (handles Anthropic SSE → OpenAI data).
+	// Default: convert data payload with Convert() (handles protocol detection internally).
 	convertSSEEvent(evt, opts)
 	return reconstructSSEEvent(evt), nil
 }
 
 // convertOpenAIStreamChunkToAnthropic converts an OpenAI SSE streaming delta
-// to an Anthropic SSE content_block_delta / message_delta / message_stop event.
+// to an Anthropic SSE event.
 func convertOpenAIStreamChunkToAnthropic(evt *SSEEvent) ([]byte, error) {
 	var chunk struct {
 		Choices []struct {
-			Index        int              `json:"index"`
-			Delta        map[string]any   `json:"delta"`
-			FinishReason *string          `json:"finish_reason"`
+			Index        int             `json:"index"`
+			Delta        map[string]any  `json:"delta"`
+			FinishReason *string         `json:"finish_reason"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal([]byte(evt.Data), &chunk); err != nil || len(chunk.Choices) == 0 {
-		// Unrecognised format — pass through unchanged.
 		return reconstructSSEEvent(evt), nil
 	}
 
 	choice := chunk.Choices[0]
 
-	// Finish reason → message_delta (stream end).
 	if choice.FinishReason != nil && *choice.FinishReason != "" {
 		stopReason := mapOpenAIStreamFinish(*choice.FinishReason)
 		deltaJSON, _ := json.Marshal(map[string]any{
@@ -241,45 +212,32 @@ func convertOpenAIStreamChunkToAnthropic(evt *SSEEvent) ([]byte, error) {
 				"stop_reason":   stopReason,
 				"stop_sequence": nil,
 			},
-			"usage": map[string]any{
-				"output_tokens": 0,
-			},
+			"usage": map[string]any{"output_tokens": 0},
 		})
 		return []byte("event: message_delta\ndata: " + string(deltaJSON)), nil
 	}
 
-	// Content delta → text_delta.
 	if content, ok := choice.Delta["content"].(string); ok && content != "" {
 		deltaJSON, _ := json.Marshal(map[string]any{
-			"type": "content_block_delta",
+			"type":  "content_block_delta",
 			"index": 0,
-			"delta": map[string]any{
-				"type": "text_delta",
-				"text": content,
-			},
+			"delta": map[string]any{"type": "text_delta", "text": content},
 		})
 		return []byte("event: content_block_delta\ndata: " + string(deltaJSON)), nil
 	}
 
-	// Reasoning content → thinking_delta.
 	if reasoning, ok := choice.Delta["reasoning_content"].(string); ok && reasoning != "" {
 		deltaJSON, _ := json.Marshal(map[string]any{
-			"type": "content_block_delta",
+			"type":  "content_block_delta",
 			"index": 0,
-			"delta": map[string]any{
-				"type":     "thinking_delta",
-				"thinking": reasoning,
-			},
+			"delta": map[string]any{"type": "thinking_delta", "thinking": reasoning},
 		})
 		return []byte("event: content_block_delta\ndata: " + string(deltaJSON)), nil
 	}
 
-	// Empty delta (role announcement, e.g. delta:{"role":"assistant"}) — pass through as-is.
-	// The Claude SDK ignores unrecognised data: lines.
 	return reconstructSSEEvent(evt), nil
 }
 
-// mapOpenAIStreamFinish maps OpenAI finish_reason to Anthropic stop_reason.
 func mapOpenAIStreamFinish(reason string) string {
 	switch reason {
 	case "stop":
@@ -293,9 +251,11 @@ func mapOpenAIStreamFinish(reason string) string {
 	}
 }
 
-// StripProviderPrefix removes a leading "provider/" segment (e.g. "anthropic/")
-// from model names. Claude Code sends "anthropic/claude-opus-4-8" but mappings
-// and upstreams expect the bare model id.
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// StripProviderPrefix removes a leading "provider/" segment from model names.
 func StripProviderPrefix(model string) string {
 	if i := strings.IndexByte(model, '/'); i >= 0 {
 		return model[i+1:]
@@ -303,416 +263,25 @@ func StripProviderPrefix(model string) string {
 	return model
 }
 
-// resolveModel determines the output model ID and downstream protocol override.
-// Priority: downstream target lookup → mapping (prefix match or catch-all) → passthrough → fallback.
-func resolveModel(inputModel, fallback string, mapping ModelMap) (string, string) {
-	if inputModel != "" {
-		// Strip provider prefix before matching (Claude Code sends "anthropic/claude-opus-4-8").
-		bare := StripProviderPrefix(inputModel)
-
-		// Check if the model is a downstream target first (e.g. response from
-		// upstream API).  When it is, preserve the model name and use the
-		// target entry's protocol — don't let a catch-all entry rewrite the
-		// model to a different value.
-		if lp := mapping.LookupTarget(bare); lp != "" {
-			return inputModel, lp
-		}
-
-		if target, proto, ok := mapping.Apply(bare); ok {
-			return target, proto
-		}
-		// Also try matching with the original (includes prefix) for backwards compatibility.
-		if target, proto, ok := mapping.Apply(inputModel); ok {
-			return target, proto
-		}
-		return inputModel, ""
-	}
-	return fallback, ""
-}
-
-// extractModelFromData extracts the "model" field from raw JSON request data.
+// extractModelFromData extracts the "model" field from raw JSON data.
+// Handles nested model in "message" field (Anthropic message_start event).
 func extractModelFromData(data []byte) string {
 	var raw struct {
-		Model string `json:"model"`
+		Model   string `json:"model"`
+		Message struct {
+			Model string `json:"model"`
+		} `json:"message"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return ""
 	}
-	return raw.Model
-}
-
-// Convert detects the input body format and performs bidirectional
-// conversion between OpenAI Chat Completions and Anthropic Messages formats.
-func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
-	if opts == nil {
-		opts = &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192}
+	if raw.Model != "" {
+		return raw.Model
 	}
-
-	if len(body) == 0 {
-		return body, nil
-	}
-
-	// Auto-detect SSE framing: if the body starts with data:, event:,
-	// or id:, route through SSE-aware handling.
-	if isSSE(body) {
-		slog.Debug("detected SSE framing → converting via ConvertSSE")
-		return ConvertSSE(body, opts)
-	}
-
-	// Try parsing as a generic object to detect format.
-	var raw map[string]any
-	if err := json.Unmarshal(body, &raw); err != nil {
-		slog.Debug("not JSON, passing through", "err", err)
-		return body, nil
-	}
-
-	// Warn when the response contains an error field (OpenAI or Anthropic format).
-	if errVal, ok := raw["error"]; ok {
-		switch v := errVal.(type) {
-		case map[string]any:
-			if msg, _ := v["message"].(string); msg != "" {
-				slog.Warn("response contains error", "message", msg, "type", v["type"])
-			} else {
-				slog.Warn("response contains error", "error", errVal)
-			}
-		default:
-			slog.Warn("response contains error", "error", errVal)
-		}
-	}
-
-	// Detect: Responses API request (input field, no messages field).
-	// Must run BEFORE the protocol-passthrough block below: Responses requests
-	// have a "model" string field, which makes isOpenAIRequest return true,
-	// incorrectly triggering passthrough instead of full conversion to Chat/Anthropic.
-	if isResponsesRequest(raw) {
-		slog.Debug("detected Responses API Request → converting to Chat/Anthropic")
-		if opts.SID != "" {
-			markResponsesSession(opts.SID)
-		}
-		return convertResponsesRequest(body, opts)
-	}
-
-	// Detect: session is a Responses session — upstream response needs
-	// converting back to Responses API format.
-	if opts != nil && opts.SID != "" && IsResponsesSession(opts.SID) {
-		slog.Debug("Responses session upstream response → converting to Responses format")
-		return convertToResponsesResponse(body, opts)
-	}
-
-	// Resolve downstream protocol override from model mapping.
-	// If set and the input format matches, rewrite model name and pass through.
-	if opts.ModelMap != nil {
-		downstreamProtocol := ""
-		var targetModel string
-		if m, ok := raw["model"].(string); ok {
-			targetModel, downstreamProtocol = resolveModel(m, opts.Model, opts.ModelMap)
-
-			// When the model is a downstream target (response from
-			// upstream API), check whether the catch-all entry would
-			// rewrite it.  If the catch-all has a different target
-			// model, we are in an asymmetric setup (client !=
-			// downstream protocol) — skip passthrough so the
-			// response is converted back to the client format.
-			if opts.ModelMap.LookupTarget(m) != "" {
-				if catchTarget, ok := opts.ModelMap.catchAllTarget(); ok && catchTarget != "" && catchTarget != m {
-					slog.Debug("protocol override: skipping response passthrough (catch-all would rewrite downstream model)", "model", m, "catchAllTarget", catchTarget)
-					targetModel = ""
-					downstreamProtocol = ""
-				}
-			}
-		}
-
-		passthrough := false
-		if downstreamProtocol == "openai" && (isOpenAIRequest(raw) || isOpenAIResponse(raw)) {
-			passthrough = true
-		}
-		if downstreamProtocol == "anthropic" && (isAnthropicRequest(raw) || isAnthropicResponse(raw)) {
-			passthrough = true
-		}
-
-		if passthrough {
-			modelChanged := targetModel != "" && raw["model"] != targetModel
-			if modelChanged {
-				raw["model"] = targetModel
-			}
-
-			// Inject max_completion_tokens for requests missing it.
-			// Codex never sends max_tokens / max_completion_tokens, and
-			// upstream APIs default to very low limits (~100-200 tokens),
-			// causing the model to be cut off mid-turn.
-			// ponytail: only inject for request-like bodies, not responses.
-			tokensInjected := false
-			if opts.MaxTokens > 0 {
-				if _, hasMT := raw["max_tokens"]; !hasMT {
-					if _, hasMCT := raw["max_completion_tokens"]; !hasMCT {
-						if _, hasMsg := raw["messages"]; hasMsg {
-							raw["max_completion_tokens"] = opts.MaxTokens
-							tokensInjected = true
-						}
-					}
-				}
-			}
-
-			if modelChanged || tokensInjected {
-				modified, err := json.Marshal(raw)
-				if err == nil {
-					slog.Debug("protocol passthrough with model rewrite", "model", targetModel)
-					return modified, nil
-				}
-			}
-			slog.Debug("protocol passthrough")
-			return body, nil
-		}
-	}
-
-
-
-	// Detect: Anthropic Messages Request (messages + max_tokens or Anthropic content blocks).
-	if isAnthropicRequest(raw) {
-		slog.Debug("detected Anthropic Request → converting to OpenAI")
-		return convertAnthropicRequestToOpenAI(body, opts)
-	}
-
-	// Detect: OpenAI Chat Completions Response (choices array).
-	if isOpenAIResponse(raw) {
-		slog.Debug("detected OpenAI Response → converting to Anthropic")
-		return convertOpenAIResponseToAnthropic(body, opts)
-	}
-
-	// Detect: Anthropic Messages Response (type "message" and stop_reason/usage).
-	if isAnthropicResponse(raw) {
-		slog.Debug("detected Anthropic Response → converting to OpenAI")
-		return convertAnthropicResponseToOpenAI(body)
-	}
-
-	// Detect: OpenAI Chat Completions Request (model or messages field).
-	if hasStringField(raw, "model") || hasArrayField(raw, "messages") {
-		slog.Debug("detected OpenAI Chat Request → converting to Anthropic")
-		return convertOpenAIRequestToAnthropic(body, opts)
-	}
-
-	slog.Debug("unknown format, passing through")
-	return body, nil
-}
-
-// ---------------------------------------------------------------------------
-// Detection helpers
-// ---------------------------------------------------------------------------
-
-func hasStringField(m map[string]any, key string) bool {
-	_, ok := m[key].(string)
-	return ok
-}
-
-func hasArrayField(m map[string]any, key string) bool {
-	_, ok := m[key].([]any)
-	return ok
-}
-
-func isAnthropicResponse(m map[string]any) bool {
-	t, ok := m["type"].(string)
-	if !ok || t != "message" {
-		return false
-	}
-	// Look for the presence of either stop_reason or usage.
-	if _, ok := m["stop_reason"]; ok {
-		return true
-	}
-	if _, ok := m["usage"]; ok {
-		return true
-	}
-	return false
-}
-
-// isAnthropicRequest detects an Anthropic Messages API request body.
-// Key signals: messages content as typed-block arrays, max_tokens (required),
-// Anthropic-specific content block types (thinking, tool_use, tool_result, image).
-func isAnthropicRequest(m map[string]any) bool {
-	msgs, ok := m["messages"].([]any)
-	if !ok || len(msgs) == 0 {
-		return false
-	}
-
-	// Quick rejection: OpenAI-specific fields that Anthropic never uses.
-	if _, ok := m["frequency_penalty"]; ok {
-		return false
-	}
-	if _, ok := m["presence_penalty"]; ok {
-		return false
-	}
-	if _, ok := m["logit_bias"]; ok {
-		return false
-	}
-	if _, ok := m["response_format"]; ok {
-		return false
-	}
-	if _, ok := m["n"]; ok {
-		return false
-	}
-	if _, ok := m["seed"]; ok {
-		return false
-	}
-
-	// Quick rejection: OpenAI uses "stop" (string/array), Anthropic uses "stop_sequences" (array).
-	if _, ok := m["stop"]; ok {
-		return false
-	}
-
-	// OpenAI tool_choice can be a string (e.g. "auto", "required"); Anthropic is always an object.
-	if _, ok := m["tool_choice"].(string); ok {
-		return false
-	}
-
-	// Anthropic tools have flat name + input_schema at top level, no "function" wrapper.
-	if tools, ok := m["tools"].([]any); ok && len(tools) > 0 {
-		if firstTool, ok := tools[0].(map[string]any); ok {
-			_, hasFunction := firstTool["function"]
-			_, hasName := firstTool["name"]
-			_, hasInputSchema := firstTool["input_schema"]
-			if !hasFunction && hasName && hasInputSchema {
-				return true
-			}
-		}
-	}
-
-	// Check messages for OpenAI-only patterns (role: system/tool/function in array).
-	for _, msg := range msgs {
-		mmsg, ok := msg.(map[string]any)
-		if !ok {
-			continue
-		}
-		role, _ := mmsg["role"].(string)
-		if role == "system" || role == "tool" || role == "function" {
-			return false
-		}
-	}
-
-	// Check first few messages for Anthropic-specific content block types.
-	for i := 0; i < len(msgs) && i < 3; i++ {
-		msg, ok := msgs[i].(map[string]any)
-		if !ok {
-			continue
-		}
-		content, ok := msg["content"].([]any)
-		if !ok {
-			continue
-		}
-		for _, block := range content {
-			b, ok := block.(map[string]any)
-			if !ok {
-				continue
-			}
-			bt, _ := b["type"].(string)
-			switch bt {
-			case "thinking", "tool_use", "tool_result", "image":
-				// These types only exist in Anthropic content blocks.
-				return true
-			}
-		}
-	}
-
-	// Top-level system field is Anthropic-specific.
-	if _, ok := m["system"]; ok {
-		return true
-	}
-
-	// Anthropic's tool_choice uses "any" or "tool" (not "required" or "function").
-	if tc, ok := m["tool_choice"].(map[string]any); ok {
-		if t, _ := tc["type"].(string); t == "function" {
-			return false // OpenAI-style function-type tool_choice
-		}
-		if t, _ := tc["type"].(string); t == "any" || t == "tool" {
-			return true
-		}
-	}
-
-	// max_tokens is REQUIRED in Anthropic. If present AND the model doesn't
-	// look OpenAI-ish (gpt/o1/o3/deepseek/gemini), it's likely an Anthropic
-	// request. Accept both array content (current format) and string content
-	// (deprecated format still accepted by the API).
-	if _, ok := m["max_tokens"]; ok && !hasOpenAIStyleModel(m) {
-		for i := 0; i < len(msgs) && i < 2; i++ {
-			msg, ok := msgs[i].(map[string]any)
-			if !ok {
-				continue
-			}
-			switch c := msg["content"].(type) {
-			case []any, string:
-				return true
-			case nil:
-				continue
-			default:
-				_ = c
-			}
-		}
-	}
-
-	return false
-}
-
-// hasOpenAIStyleModel returns true if the model field value looks like an
-// OpenAI-compatible model ID rather than Anthropic. Used to prevent false
-// positives where an OpenAI request with max_tokens + array content would
-// otherwise be classified as an Anthropic request.
-func hasOpenAIStyleModel(m map[string]any) bool {
-	model, ok := m["model"].(string)
-	if !ok || model == "" {
-		return false
-	}
-	// Check for common OpenAI / downstream model prefixes.
-	openAIPrefixes := []string{
-		"gpt-", "o1", "o3", "deepseek", "gemini-", "glm-",
-	}
-	modelLower := strings.ToLower(model)
-	for _, p := range openAIPrefixes {
-		if strings.HasPrefix(modelLower, p) {
-			return true
-		}
-	}
-	return false
-}
-
-// isOpenAIResponse detects an OpenAI Chat Completions response body.
-// Key signals: choices array with message/finish_reason fields.
-func isOpenAIResponse(m map[string]any) bool {
-	choices, ok := m["choices"].([]any)
-	if !ok || len(choices) == 0 {
-		return false
-	}
-	if choice, ok := choices[0].(map[string]any); ok {
-		if _, ok := choice["finish_reason"]; ok {
-			return true
-		}
-		if _, ok := choice["message"]; ok {
-			return true
-		}
-		if _, ok := choice["delta"]; ok {
-			return true // streaming chunk
-		}
-	}
-	return false
-}
-
-// isOpenAIRequest detects an OpenAI Chat Completions request body.
-// It checks for model/messages fields while rejecting known non-request formats.
-func isOpenAIRequest(m map[string]any) bool {
-	if !hasStringField(m, "model") && !hasArrayField(m, "messages") {
-		return false
-	}
-	if isAnthropicRequest(m) {
-		return false
-	}
-	if isAnthropicResponse(m) {
-		return false
-	}
-	if isOpenAIResponse(m) {
-		return false
-	}
-	return true
+	return raw.Message.Model
 }
 
 // isOpenAIStreamChunk detects an OpenAI SSE streaming data payload.
-// Format: {"choices":[{"index":0,"delta":{...},"finish_reason":null}]}
 func isOpenAIStreamChunk(data []byte) bool {
 	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -731,32 +300,221 @@ func isOpenAIStreamChunk(data []byte) bool {
 }
 
 // ---------------------------------------------------------------------------
-// SSE stream lifecycle management
+// Convert — main entry point
 // ---------------------------------------------------------------------------
 
-// streamStates maps GOST session IDs to active StreamConverter instances.
-// Each stream's state is stored when a "start" phase event arrives and
-// deleted when the "end" phase event is processed.
-var streamStates sync.Map // sid (string) -> *StreamConverter
-
-// extractDeclaredTools returns declared tool names from ConvertOptions, or nil.
-func extractDeclaredTools(opts *ConvertOptions) []string {
-	if opts != nil && len(opts.DeclaredTools) > 0 {
-		return opts.DeclaredTools
+// Convert detects the input format via GOST metadata (URI + direction) and
+// converts between protocols. Falls back to body-based detection when
+// metadata is unavailable (backward compatibility).
+func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
+	if opts == nil {
+		opts = &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192}
 	}
-	return nil
+
+	if len(body) == 0 {
+		return body, nil
+	}
+
+	// SSE framing → ConvertSSE.
+	if isSSE(body) {
+		slog.Debug("SSE framing → ConvertSSE")
+		return ConvertSSE(body, opts)
+	}
+
+	// Parse as JSON.
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		slog.Debug("not JSON, passing through", "err", err)
+		return body, nil
+	}
+
+	// Log error fields.
+	if errVal, ok := raw["error"]; ok {
+		switch v := errVal.(type) {
+		case map[string]any:
+			if msg, _ := v["message"].(string); msg != "" {
+				slog.Warn("response contains error", "message", msg, "type", v["type"])
+			} else {
+				slog.Warn("response contains error", "error", errVal)
+			}
+		default:
+			slog.Warn("response contains error", "error", errVal)
+		}
+	}
+
+	// Detect protocol from metadata.
+	from, dir, ok := detectProtocol(opts.URI, opts.Direction)
+	if !ok {
+		// Fallback: body-based detection for backward compatibility.
+		from, dir = detectByBody(raw, opts)
+	}
+
+	if from == ProtocolUnknown {
+		slog.Debug("unknown format, passing through")
+		return body, nil
+	}
+
+	slog.Debug("detected protocol", "protocol", from.String(), "direction", dir)
+
+	// On the response path, the body format may differ from the
+	// URI-expected format when the downstream speaks a different
+	// protocol than the client. Track the client protocol so we
+	// can redirect conversion back to it.
+	var clientProto Protocol
+	if dir == DirectionResponse && ok {
+		if bodyFrom, bodyDir := detectByBody(raw, opts); bodyFrom != ProtocolUnknown && bodyFrom != from {
+			clientProto = from
+			from = bodyFrom
+			dir = bodyDir
+			slog.Debug("asymmetric response: body format differs from client",
+				"body", from.String(), "client", clientProto.String())
+		}
+	}
+
+	// Responses API session routing — check BEFORE protocol-specific handling.
+	// The body format of upstream responses doesn't match the session's protocol
+	// (e.g. Anthropic response body in a Responses session → needs conversion back).
+	if opts.SessionStore != nil && opts.SID != "" {
+		if sess := opts.SessionStore.Get(opts.SID); sess != nil && sess.IsResponses {
+			slog.Debug("Responses session upstream response → converting back")
+			return convertToResponsesResponse(body, opts)
+		}
+	}
+
+	// Responses API uses its own routing (model-map protocol decides Chat vs Anthropic).
+	if from == ProtocolOpenAIResponses {
+		if dir == DirectionRequest {
+			slog.Debug("Responses request → converting")
+			if opts.SID != "" && opts.SessionStore != nil {
+				sess := &Session{ID: opts.SID, From: from, IsResponses: true}
+				opts.SessionStore.Set(opts.SID, sess)
+			}
+			return convertResponsesRequest(body, opts)
+		}
+		// Responses response (not in a session) — passthrough.
+		return body, nil
+	}
+
+	// Resolve downstream protocol from model map.
+	model, _ := raw["model"].(string)
+	targetModel, to := resolveModel(model, from, opts.ModelMap)
+	opts.ResolvedModel = targetModel
+
+	// Redirect asymmetric response: convert body format → client format.
+	if clientProto != ProtocolUnknown && from == to {
+		to = clientProto
+	}
+
+	// Passthrough: same protocol → model rewrite only.
+	if from == to {
+		return passthrough(raw, targetModel, opts, body)
+	}
+
+	// Conversion via registry.
+	if convertFn, ok := conversions[ConversionKey{from, to}]; ok {
+		slog.Debug("converting", "from", from.String(), "to", to.String(), "model", targetModel)
+		converted, err := convertFn(body, opts)
+		if err != nil {
+			return nil, fmt.Errorf("convert %s→%s: %w", from.String(), to.String(), err)
+		}
+		return converted, nil
+	}
+
+	// No converter registered — passthrough with model rewrite.
+	slog.Debug("no converter for pair, passing through", "from", from.String(), "to", to.String())
+	return passthrough(raw, targetModel, opts, body)
 }
 
-// newStreamConverterFromData resolves the model from raw data bytes, does a
-// reverse model-map lookup for the safety classifier, and returns a configured
-// StreamConverter.
+// detectByBody is the fallback body-based format detection.
+func detectByBody(raw map[string]any, opts *ConvertOptions) (Protocol, Direction) {
+	// Responses API request.
+	if isResponsesRequest(raw) {
+		return ProtocolOpenAIResponses, DirectionRequest
+	}
+	// Responses API response.
+	if isResponsesResponse(raw) {
+		return ProtocolOpenAIResponses, DirectionResponse
+	}
+	// Anthropic request (messages with typed content blocks, max_tokens).
+	if isAnthropicRequest(raw) {
+		return ProtocolAnthropic, DirectionRequest
+	}
+	// OpenAI response (choices array).
+	if isOpenAIResponse(raw) {
+		return ProtocolOpenAIChat, DirectionResponse
+	}
+	// Anthropic response (type:"message" + stop_reason/usage).
+	if isAnthropicResponse(raw) {
+		return ProtocolAnthropic, DirectionResponse
+	}
+	// OpenAI request (model or messages field).
+	if _, ok := raw["model"].(string); ok {
+		return ProtocolOpenAIChat, DirectionRequest
+	}
+	if _, ok := raw["messages"].([]any); ok {
+		return ProtocolOpenAIChat, DirectionRequest
+	}
+	return ProtocolUnknown, 0
+}
+
+// passthrough rewrites the model field and injects max_completion_tokens.
+// Returns the original body unchanged when nothing is modified.
+func passthrough(raw map[string]any, targetModel string, opts *ConvertOptions, originalBody []byte) ([]byte, error) {
+	modelChanged := false
+	if targetModel != "" && raw["model"] != targetModel {
+		raw["model"] = targetModel
+		modelChanged = true
+	}
+
+	tokensInjected := false
+	if opts.MaxTokens > 0 {
+		if _, hasMT := raw["max_tokens"]; !hasMT {
+			if _, hasMCT := raw["max_completion_tokens"]; !hasMCT {
+				if _, hasMsg := raw["messages"]; hasMsg {
+					raw["max_completion_tokens"] = opts.MaxTokens
+					tokensInjected = true
+				}
+			}
+		}
+	}
+
+	if modelChanged || tokensInjected {
+		if modified, err := json.Marshal(raw); err == nil {
+			slog.Debug("passthrough with rewrite", "model", targetModel)
+			return modified, nil
+		}
+	}
+	slog.Debug("passthrough unchanged")
+	return originalBody, nil
+}
+
+
+// ---------------------------------------------------------------------------
+// SSE stream lifecycle
+// ---------------------------------------------------------------------------
+
+// extractSSEPayload parses SSE event text and returns just the data payload.
+func extractSSEPayload(data []byte) []byte {
+	evt := parseSSEEvent(data)
+	if evt.Data == "[DONE]" {
+		return nil
+	}
+	if evt.Data != "" {
+		return []byte(evt.Data)
+	}
+	return data
+}
+
+// newStreamConverterFromData resolves the model from data and returns a StreamConverter.
 func newStreamConverterFromData(data []byte, opts *ConvertOptions) *StreamConverter {
 	streamModel := opts.Model
-	downstreamProtocol := ""
-	// Strip SSE framing so we can parse the model from the chunk payload.
-	payload := extractSSEPayload(data)
-	if model := extractModelFromData(payload); model != "" {
-		streamModel, downstreamProtocol = resolveModel(model, opts.Model, opts.ModelMap)
+	if model := extractModelFromData(data); model != "" {
+		streamModel = model
+		if opts.ModelMap != nil {
+			if target, _ := resolveModel(model, ProtocolOpenAIChat, opts.ModelMap); target != "" {
+				streamModel = target
+			}
+		}
 	}
 	if opts.RequestModel != "" {
 		streamModel = opts.RequestModel
@@ -765,26 +523,65 @@ func newStreamConverterFromData(data []byte, opts *ConvertOptions) *StreamConver
 			streamModel = sourcePrefix
 		}
 	}
-	sc := NewStreamConverter(streamModel, opts.ReasoningCache, extractDeclaredTools(opts))
-	sc.downstreamProtocol = downstreamProtocol
-	return sc
+	return NewStreamConverter(streamModel, opts.ReasoningCache, opts.DeclaredTools)
 }
 
 // HandleSSEEvent processes an SSE stream lifecycle event.
-// It routes to the appropriate StreamConverter method based on the phase.
 func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *ConvertOptions) ([]byte, error) {
-	// Route Responses API sessions to ResponsesStreamConverter.
-	if IsResponsesSession(sid) {
-		return handleResponsesSSEEvent(sid, phase, eventIndex, data, opts)
+	store := opts.SessionStore
+
+	// Responses API sessions use their own stream handlers.
+	if store != nil {
+		if sess := store.Get(sid); sess != nil && sess.IsResponses {
+			return handleResponsesSSEEvent(sid, phase, eventIndex, data, opts)
+		}
 	}
 
 	switch StreamPhase(phase) {
 	case StreamPhaseStart:
+		// Detect protocol from metadata.
+		from, _, _ := detectProtocol(opts.URI, opts.Direction)
+		if from == ProtocolUnknown {
+			// Fallback for old sniffer: detect from data payload.
+			payload := extractSSEPayload(data)
+			var raw map[string]any
+			if err := json.Unmarshal(payload, &raw); err == nil {
+				from, _ = detectByBody(raw, opts)
+			}
+		}
+
+		// Resolve downstream protocol.
+		payload := extractSSEPayload(data)
+		model := extractModelFromData(payload)
+		_, to := resolveModel(model, from, opts.ModelMap)
+
+		// When the sniffer doesn't send URI metadata and body-based
+		// detection can't classify the data (e.g. message_start events
+		// have type:"message_start" not type:"message"), fall back to
+		// the protocol resolved from the model map.
+		if from == ProtocolUnknown && to != ProtocolUnknown {
+			from = to
+		}
+
+		// Passthrough: same protocol.
+		if from != ProtocolUnknown && from == to {
+			handler := NewPassthroughStreamHandler(opts.RequestModel, to)
+			if store != nil {
+				store.Set(sid, &Session{ID: sid, From: from, To: to, StreamHandler: handler})
+			}
+			if len(data) > 0 {
+				return handler.HandleChunk(data)
+			}
+			return nil, nil
+		}
+
+		// Create stream converter.
 		sc := newStreamConverterFromData(data, opts)
-		streamStates.Store(sid, sc)
+		if store != nil {
+			store.Set(sid, &Session{ID: sid, From: from, To: to, StreamHandler: sc})
+		}
+
 		startData := sc.HandleStreamStart()
-		// First event data is now attached to the start phase signal
-		// (sniffer sends the first real SSE event with sse_phase:"start").
 		if len(data) > 0 {
 			payload := extractSSEPayload(data)
 			if payload != nil {
@@ -805,11 +602,20 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			return []byte{}, nil // [DONE] marker, swallow.
 		}
 
-		v, ok := streamStates.Load(sid)
-		if !ok {
-			slog.Warn("HandleSSEEvent: unknown stream, starting new", "sid", sid)
+		var handler responsesStreamHandler
+		if store != nil {
+			if sess := store.Get(sid); sess != nil {
+				handler = sess.StreamHandler
+			}
+		}
+
+		if handler == nil {
+			slog.Warn("HandleSSEEvent: unknown stream, creating from data", "sid", sid)
 			sc := newStreamConverterFromData(payload, opts)
-			streamStates.Store(sid, sc)
+			if store != nil {
+				store.Set(sid, &Session{ID: sid, StreamHandler: sc})
+			}
+			handler = sc
 			startData := sc.HandleStreamStart()
 			chunkData, err := sc.HandleChunk(payload)
 			if err != nil {
@@ -820,89 +626,84 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			}
 			return startData, nil
 		}
-		sc := v.(*StreamConverter)
 
-		// Protocol passthrough: if the payload format matches the downstream
-		// protocol, rewrite model in chunk and pass through.
-		if sc.downstreamProtocol == "openai" && isOpenAIStreamChunk(payload) {
-			if sc.model != "" {
-				var chunkRaw map[string]any
-				if err := json.Unmarshal(payload, &chunkRaw); err == nil {
-					if old, ok := chunkRaw["model"].(string); ok && old != sc.model {
-						chunkRaw["model"] = sc.model
-						if newPayload, err := json.Marshal(chunkRaw); err == nil {
-							evt := parseSSEEvent(data)
-							evt.Data = string(newPayload)
-							slog.Debug("stream: protocol=openai passthrough with model rewrite", "model", sc.model)
-							return reconstructSSEEvent(evt), nil
-						}
-					}
-				}
-			}
-			slog.Debug("stream: protocol=openai, OpenAI chunk -> passthrough")
-			return data, nil
-		}
-
-		out, err := sc.HandleChunk(payload)
+		out, err := handler.HandleChunk(payload)
 		if err != nil {
 			return nil, err
 		}
 		if out == nil {
-			return []byte{}, nil // consumed, swallow original
+			return []byte{}, nil
 		}
 		return out, nil
 
 	case StreamPhaseEnd:
-		v, ok := streamStates.Load(sid)
-		if !ok {
+		var handler responsesStreamHandler
+		if store != nil {
+			if sess := store.Get(sid); sess != nil {
+				handler = sess.StreamHandler
+			}
+			store.Delete(sid)
+		}
+		if handler == nil {
 			slog.Warn("HandleSSEEvent: unknown stream for end phase", "sid", sid)
 			return nil, nil
 		}
-		sc := v.(*StreamConverter)
-		streamStates.Delete(sid)
-		return sc.HandleStreamEnd(), nil
+		// Passhthrough: no synthesized closing events needed.
+		if _, ok := handler.(*PassthroughStreamHandler); ok {
+			return nil, nil
+		}
+		return handler.HandleStreamEnd(), nil
+
+	case StreamPhaseError:
+		var handler responsesStreamHandler
+		if store != nil {
+			if sess := store.Get(sid); sess != nil {
+				handler = sess.StreamHandler
+			}
+			store.Delete(sid)
+		}
+		msg := "stream error"
+		if opts.ErrorMsg != "" {
+			msg = opts.ErrorMsg
+		}
+		if handler != nil {
+			return handler.EmitError(msg), nil
+		}
+		return nil, nil
 	}
 
 	return nil, fmt.Errorf("unknown sse_phase: %s", phase)
 }
 
-// extractSSEPayload parses SSE event text and returns just the data payload.
-// The GOST sniffer sends raw SSE event text (e.g., "data: {...}") to the
-// plugin, but HandleChunk needs just the JSON payload without SSE framing.
-// "[DONE]" markers are consumed silently (return nil, no error).
-func extractSSEPayload(data []byte) []byte {
-	evt := parseSSEEvent(data)
-	if evt.Data == "[DONE]" {
-		return nil
-	}
-	if evt.Data != "" {
-		return []byte(evt.Data)
-	}
-	return data
-}
-
 // handleResponsesSSEEvent routes SSE lifecycle events for Responses API sessions.
 func handleResponsesSSEEvent(sid, phase string, _ int, data []byte, opts *ConvertOptions) ([]byte, error) {
+	store := opts.SessionStore
+
 	switch StreamPhase(phase) {
 	case StreamPhaseStart:
-		model := opts.Model
 		payload := extractSSEPayload(data)
-			if opts.RequestModel != "" {
-				model = opts.RequestModel
-			} else if m := extractModelFromData(payload); m != "" {
-		} else if m := extractModelFromData(payload); m != "" {
-			model, _ = resolveModel(m, opts.Model, opts.ModelMap)
+		model := opts.RequestModel
+		if model == "" {
+			if m := extractModelFromData(payload); m != "" {
+				model, _ = resolveModel(m, ProtocolOpenAIResponses, opts.ModelMap)
+			}
 		}
+		if model == "" {
+			model = opts.Model
+		}
+
 		var handler responsesStreamHandler
 		if isAnthropicStreamEvent(payload) {
 			handler = NewAnthropicStreamConverter(model)
 		} else {
 			handler = NewResponsesStreamConverter(model)
-			if opts != nil && opts.CodexToolContext != nil {
+			if opts.CodexToolContext != nil {
 				handler.(*ResponsesStreamConverter).SetToolSpecs(opts.CodexToolContext.byChatName)
 			}
 		}
-		responsesStreamStates.Store(sid, handler)
+		if store != nil {
+			store.Set(sid, &Session{ID: sid, IsResponses: true, StreamHandler: handler})
+		}
 		out := handler.HandleStreamStart()
 		if payload != nil {
 			chunk, err := handler.HandleChunk(payload)
@@ -918,28 +719,36 @@ func handleResponsesSSEEvent(sid, phase string, _ int, data []byte, opts *Conver
 	case StreamPhaseEvent:
 		payload := extractSSEPayload(data)
 		if payload == nil {
-			return []byte{}, nil // [DONE] marker, swallow.
+			return []byte{}, nil
 		}
-		v, ok := responsesStreamStates.Load(sid)
-		if !ok {
-			// Lazy-create converter from first event.
-			model := opts.Model
-			if opts.RequestModel != "" {
-				model = opts.RequestModel
-			} else if m := extractModelFromData(payload); m != "" {
-			} else if m := extractModelFromData(payload); m != "" {
-				model, _ = resolveModel(m, opts.Model, opts.ModelMap)
+		var handler responsesStreamHandler
+		if store != nil {
+			if sess := store.Get(sid); sess != nil {
+				handler = sess.StreamHandler
 			}
-			var handler responsesStreamHandler
+		}
+		if handler == nil {
+			slog.Warn("HandleSSEEvent: unknown Responses stream, creating from data", "sid", sid)
+			model := opts.RequestModel
+			if model == "" {
+				if m := extractModelFromData(payload); m != "" {
+					model, _ = resolveModel(m, ProtocolOpenAIResponses, opts.ModelMap)
+				}
+			}
+			if model == "" {
+				model = opts.Model
+			}
 			if isAnthropicStreamEvent(payload) {
 				handler = NewAnthropicStreamConverter(model)
 			} else {
 				handler = NewResponsesStreamConverter(model)
-				if opts != nil && opts.CodexToolContext != nil {
+				if opts.CodexToolContext != nil {
 					handler.(*ResponsesStreamConverter).SetToolSpecs(opts.CodexToolContext.byChatName)
 				}
 			}
-			responsesStreamStates.Store(sid, handler)
+			if store != nil {
+				store.Set(sid, &Session{ID: sid, IsResponses: true, StreamHandler: handler})
+			}
 			startData := handler.HandleStreamStart()
 			chunk, err := handler.HandleChunk(payload)
 			if err != nil {
@@ -950,50 +759,52 @@ func handleResponsesSSEEvent(sid, phase string, _ int, data []byte, opts *Conver
 			}
 			return startData, nil
 		}
-		out, err := v.(responsesStreamHandler).HandleChunk(payload)
+		out, err := handler.HandleChunk(payload)
 		if err != nil {
 			return nil, err
 		}
 		if out == nil {
-			return []byte{}, nil // consumed, swallow original
+			return []byte{}, nil
 		}
 		return out, nil
 
 	case StreamPhaseEnd:
-		v, ok := responsesStreamStates.Load(sid)
-		if !ok {
-			unmarkResponsesSession(sid)
+		var handler responsesStreamHandler
+		if store != nil {
+			if sess := store.Get(sid); sess != nil {
+				handler = sess.StreamHandler
+			}
+			store.Delete(sid)
+		}
+		if handler == nil {
 			return nil, nil
 		}
-		handler := v.(responsesStreamHandler)
-		responsesStreamStates.Delete(sid)
-		unmarkResponsesSession(sid)
 		return handler.HandleStreamEnd(), nil
 
 	case StreamPhaseError:
-		v, ok := responsesStreamStates.Load(sid)
-		if !ok {
-			unmarkResponsesSession(sid)
-			return nil, nil
+		var handler responsesStreamHandler
+		if store != nil {
+			if sess := store.Get(sid); sess != nil {
+				handler = sess.StreamHandler
+			}
+			store.Delete(sid)
 		}
-		handler := v.(responsesStreamHandler)
-		responsesStreamStates.Delete(sid)
-		unmarkResponsesSession(sid)
 		msg := "stream error"
-		if opts != nil && opts.StreamErrorMsg != "" {
-			msg = opts.StreamErrorMsg
+		if opts.ErrorMsg != "" {
+			msg = opts.ErrorMsg
 		}
-		return handler.EmitError(msg), nil
+		if handler != nil {
+			return handler.EmitError(msg), nil
+		}
+		return nil, nil
 	}
 	return nil, nil
 }
 
 // ---------------------------------------------------------------------------
-// Utility helpers (canonical JSON, tool sorting, ID normalization)
+// Utilities
 // ---------------------------------------------------------------------------
 
-// ensureObjectSchema guarantees the schema is a JSON object with "type":"object".
-// OpenAI spec requires {"type":"object", ...} but some schemas omit it.
 func ensureObjectSchema(raw any) any {
 	m, ok := raw.(map[string]any)
 	if !ok || m == nil {
@@ -1017,8 +828,6 @@ func sortAnthropicTools(tools []AnthropicTool) {
 	})
 }
 
-// ensureToolID normalises a tool call ID to Anthropic's "toolu_" prefix.
-// OpenAI IDs like "call_xxx" are not recognised by the Anthropic SDK.
 func ensureToolID(id string) string {
 	if strings.HasPrefix(id, "toolu_") {
 		return id
@@ -1026,7 +835,6 @@ func ensureToolID(id string) string {
 	return "toolu_" + randHex(24)
 }
 
-// randHex returns n crypto-random hex characters.
 func randHex(n int) string {
 	b := make([]byte, (n+1)/2)
 	if _, err := rand.Read(b); err != nil {

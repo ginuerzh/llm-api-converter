@@ -15,9 +15,6 @@ import (
 type StreamConverter struct {
 	model string
 
-	// Downstream protocol override from model-map resolution.
-	downstreamProtocol string // "" = auto-detect, "openai", "anthropic"
-
 	// Content block state.
 	curBlockType   string // "text", "thinking", "tool_use", or "" (none)
 	curBlockIndex  int
@@ -259,16 +256,14 @@ func (sc *StreamConverter) SetInterrupted() {
 	sc.streamInterrupted = true
 }
 
-// EmitError returns an Anthropic-formatted error SSE event. It should be used
-// when the upstream stream encounters an error mid-stream to signal the
-// failure to the client in Anthropic wire format.
-func (sc *StreamConverter) EmitError(errType, message string) []byte {
+// EmitError returns an Anthropic-formatted error SSE event.
+func (sc *StreamConverter) EmitError(message string) []byte {
 	if sc.finalized {
 		return nil
 	}
 	return []byte(fmt.Sprintf(
-		`event: error`+"\n"+`data: {"type":"error","error":{"type":"%s","message":"%s"}}`,
-		errType, message,
+		`event: error`+"\n"+`data: {"type":"error","error":{"type":"stream_error","message":"%s"}}`,
+		message,
 	))
 }
 

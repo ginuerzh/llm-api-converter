@@ -1996,7 +1996,7 @@ func anthropicOpts() *ConvertOptions {
 func TestConvert_DeepSeekToolChoice_AnyStripped(t *testing.T) {
 	// DeepSeek models strip forced tool_choice and inject a system instruction.
 	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"use a tool"}]}],"tools":[{"name":"f","input_schema":{"type":"object"}}],"tool_choice":{"type":"any"}}`
-	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat"}}}
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat", Protocol: "openai"}}}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -2016,7 +2016,7 @@ func TestConvert_DeepSeekToolChoice_AnyStripped(t *testing.T) {
 
 func TestConvert_DeepSeekToolChoice_ToolStripped(t *testing.T) {
 	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"use a tool"}]}],"tools":[{"name":"f","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"f"}}`
-	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat"}}}
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat", Protocol: "openai"}}}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -2035,7 +2035,7 @@ func TestConvert_DeepSeekToolChoice_ToolStripped(t *testing.T) {
 
 func TestConvert_DeepSeekThinkingAndEffort(t *testing.T) {
 	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"think"}]}],"thinking":{"type":"enabled","budget_tokens":4096},"output_config":{"effort":"max"}}`
-	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat"}}}
+	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat", Protocol: "openai"}}}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)

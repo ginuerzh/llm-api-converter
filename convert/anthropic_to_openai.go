@@ -162,7 +162,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	}
 
 	// Resolve output model: mapping → passthrough → fallback.
-	outputModel, _ := resolveModel(req.Model, opts.Model, opts.ModelMap)
+	outputModel := opts.ResolvedModel; if outputModel == "" { outputModel = resolveModelTarget(req.Model, opts.ModelMap) }
 	profile := classifyModel(outputModel)
 
 	oai := OpenAIChatRequest{

@@ -387,28 +387,21 @@ func (mm ModelMap) SourcePrefix(targetModel string) string {
 	return ""
 }
 
-// LookupTarget does a case-insensitive reverse lookup: returns the protocol
-// of the entry whose TargetModel matches the given model name. Used when a
-// request or response model is already the mapped target (e.g. downstream
-// API response) and the source-prefix path did not match.
-func (mm ModelMap) LookupTarget(targetModel string) string {
+// lookupTargetProtocol returns the protocol of a non-catch-all entry whose
+// TargetModel matches the given model. Non-catch-all entries encode explicit
+// direction (client protocol → downstream protocol); the catch-all doesn't
+// carry client protocol information so it's excluded.
+func (mm ModelMap) lookupTargetProtocol(targetModel string) string {
 	targetModel = strings.ToLower(targetModel)
 	for _, entry := range mm {
+		if entry.SourcePrefix == "*" {
+			continue
+		}
 		if strings.ToLower(entry.TargetModel) == targetModel && entry.Protocol != "" {
 			return entry.Protocol
 		}
 	}
 	return ""
-}
-
-// catchAllTarget returns the target model of the catch-all ("*") entry, if any.
-func (mm ModelMap) catchAllTarget() (string, bool) {
-	for _, entry := range mm {
-		if entry.SourcePrefix == "*" {
-			return entry.TargetModel, true
-		}
-	}
-	return "", false
 }
 
 // -------- ConvertOptions --------
@@ -438,17 +431,25 @@ type ConvertOptions struct {
 	// When non-nil, tool_use blocks not in this list are filtered from the response
 	// to prevent upstream tool hallucination.
 	DeclaredTools []string
-	// StreamErrorMsg, when non-empty, causes HandleSSEEvent to emit an error event
-	// instead of normal stream conversion.
-	StreamErrorMsg string
 	// RequestModel is the original (unmapped) model name from the client request.
 	// When set, Convert uses it for the model field in Anthropic responses so
 	// that Claude Code's safety classifier sees the expected model name.
-	// ponytail: safety classifier requires original model name in responses
 	RequestModel string
 	// CodexToolContext holds the tool context built during Responses→Chat
 	// conversion, used by Chat→Responses to emit correct output item types.
 	CodexToolContext *codexToolContext
+	// URI is the HTTP request path from GOST metadata (e.g. "/v1/messages").
+	URI string
+	// ResolvedModel is the target model after model-map resolution, set by
+	// Convert() so conversion functions don't re-resolve (which can trigger
+	// catch-all hijack).
+	ResolvedModel string
+	// Direction is "request" or "response" from GOST metadata.
+	Direction string
+	// SessionStore holds per-session streaming state. Nil for stateless usage.
+	SessionStore *SessionStore
+	// ErrorMsg, when non-empty, causes HandleSSEEvent to emit an error event.
+	ErrorMsg string
 }
 
 // -------- OpenAI Streaming Types --------

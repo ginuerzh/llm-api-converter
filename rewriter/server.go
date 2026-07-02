@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"sync/atomic"
 
 	"llm-api-converter/convert"
@@ -49,7 +48,12 @@ func ListenAndServe(addr string, opts *Options) error {
 func newServer(opts *Options) http.Handler {
 	mux := http.NewServeMux()
 	rc := newReasoningCache(opts.Cache, 1000)
-	mux.Handle("/rewrite", &rewriteHandler{opts: opts, reasoningCache: rc, modelMap: parseModelMap(opts.ModelMap)})
+	mux.Handle("/rewrite", &rewriteHandler{
+		opts:           opts,
+		reasoningCache: rc,
+		modelMap:       parseModelMap(opts.ModelMap),
+		sessionStore:   convert.NewSessionStore(),
+	})
 	return mux
 }
 
@@ -57,7 +61,7 @@ type rewriteHandler struct {
 	opts           *Options
 	reasoningCache *convert.ReasoningCache
 	modelMap       convert.ModelMap
-	requestModels  sync.Map // targetModel (string) → originalModel (string)
+	sessionStore   *convert.SessionStore
 }
 
 func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -88,53 +92,47 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		MaxTokens:      h.opts.MaxTokens,
 		ModelMap:       h.modelMap,
 		ReasoningCache: h.reasoningCache,
+		SessionStore:   h.sessionStore,
 	}
 
-	// Cache the original model keyed by target so response/SSE phases can
-	// recover it. The safety classifier needs the model the client asked for.
-	if originalModel := extractModelFromPayload(req.Data); originalModel != "" {
-		bare := convert.StripProviderPrefix(originalModel)
-		if target, _, ok := h.modelMap.Apply(bare); ok && target != "" {
-			h.requestModels.Store(target, bare)
-		}
-	}
-
-	// Probe the model from data (handles both raw JSON and SSE "data:" prefix).
-	if dataModel := extractModelField(req.Data); dataModel != "" {
-		if cached, ok := h.requestModels.Load(dataModel); ok {
-			opts.RequestModel = cached.(string)
-		}
-	}
+	// Resolve original model name from model map (safety classifier needs it).
+	opts.RequestModel = resolveRequestModel(req.Data, h.modelMap)
 
 	// Extract declared tool names from Anthropic requests for tool restriction.
 	if names := extractAnthropicToolNames(req.Data); len(names) > 0 {
 		opts.DeclaredTools = names
 	}
 
-	// SSE lifecycle phases are metadata-only signals with nil body.
-	// Check BEFORE the empty-data guard so start/end phases reach HandleSSEEvent.
+	// Parse metadata: SSE lifecycle phases, URI, direction.
+	var meta struct {
+		SID        string `json:"sid,omitempty"`
+		EventIndex int    `json:"event_index,omitempty"`
+		SSEPhase   string `json:"sse_phase,omitempty"`
+		Direction  string `json:"direction,omitempty"`
+		URI        string `json:"uri,omitempty"`
+	}
 	if len(req.Metadata) > 0 {
-		var meta struct {
-			Sid        string `json:"sid,omitempty"`
-			EventIndex int    `json:"event_index,omitempty"`
-			SSEPhase   string `json:"sse_phase,omitempty"`
-		}
 		if err := json.Unmarshal(req.Metadata, &meta); err == nil {
-			opts.SID = meta.Sid
+			opts.SID = meta.SID
 			opts.EventIndex = meta.EventIndex
 			opts.SSEPhase = meta.SSEPhase
+			opts.Direction = meta.Direction
+			opts.URI = meta.URI
 		}
-		if meta.SSEPhase != "" {
-			out, err := convert.HandleSSEEvent(meta.Sid, meta.SSEPhase, meta.EventIndex, req.Data, opts)
-			if err != nil {
-				slog.Error("stream event", "req_id", reqID, "phase", meta.SSEPhase, "err", err)
-				writeJSON(w, rewriteResponse{OK: false})
-				return
-			}
-			slog.Debug("stream response", "req_id", reqID, "phase", meta.SSEPhase, "received", truncate(req.Data), "data", string(out))
-			writeJSON(w, rewriteResponse{OK: true, Data: out})
+	}
+
+	// SSE lifecycle events (start/event/end phases).
+	if meta.SSEPhase != "" {
+		out, err := convert.HandleSSEEvent(meta.SID, meta.SSEPhase, meta.EventIndex, req.Data, opts)
+		if err != nil {
+			slog.Error("stream event", "req_id", reqID, "phase", meta.SSEPhase, "err", err)
+			writeJSON(w, rewriteResponse{OK: false})
 			return
 		}
+		slog.Debug("stream response", "req_id", reqID, "phase", meta.SSEPhase,
+			"received", truncate(req.Data), "data", string(out))
+		writeJSON(w, rewriteResponse{OK: true, Data: out})
+		return
 	}
 
 	if len(req.Data) == 0 {
@@ -143,26 +141,26 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Session-aware dispatch: when a Responses API session's SSE event
-	// arrives without SSEPhase metadata, route streaming chunks through
-	// HandleSSEEvent. Non-streaming (complete JSON) responses fall through
-	// to Convert() which handles Responses→Chat round-trip conversion.
-	if opts.SID != "" && convert.IsResponsesSession(opts.SID) {
-		if isSSEFramed(req.Data) {
-			out, err := convert.HandleSSEEvent(opts.SID, string(convert.StreamPhaseEvent), 0, req.Data, opts)
-			if err != nil {
-				slog.Warn("responses session event", "req_id", reqID, "err", err)
-			}
-			if out != nil {
-				slog.Debug("responses session event output", "req_id", reqID, "received", truncate(req.Data), "data", string(out))
-				writeJSON(w, rewriteResponse{OK: true, Data: out})
+	// Session-aware dispatch: when an active session's SSE event arrives
+	// without SSEPhase metadata, route through HandleSSEEvent.
+	if opts.SID != "" {
+		if sess := h.sessionStore.Get(opts.SID); sess != nil && sess.StreamHandler != nil {
+			if isSSEFramed(req.Data) {
+				out, err := convert.HandleSSEEvent(opts.SID, string(convert.StreamPhaseEvent), 0, req.Data, opts)
+				if err != nil {
+					slog.Warn("session event", "req_id", reqID, "err", err)
+				}
+				if out != nil {
+					slog.Debug("session event output", "req_id", reqID,
+						"received", truncate(req.Data), "data", string(out))
+					writeJSON(w, rewriteResponse{OK: true, Data: out})
+					return
+				}
+				writeJSON(w, rewriteResponse{OK: true, Data: []byte{}})
 				return
 			}
-			// Swallow: consumed by stream handler with no output to emit.
-			writeJSON(w, rewriteResponse{OK: true, Data: []byte{}})
-			return
+			slog.Debug("active session non-SSE data → falling through to Convert()", "req_id", reqID)
 		}
-		slog.Debug("responses session non-SSE data → falling through to Convert()", "req_id", reqID)
 	}
 
 	// Non-streaming conversion.
@@ -177,13 +175,21 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, rewriteResponse{OK: true, Data: out})
 }
 
+// resolveRequestModel returns the original client-facing model name from the
+// request body, for mapping into the safety classifier on the response path.
+func resolveRequestModel(data []byte, mm convert.ModelMap) string {
+	if model := extractModelFromPayload(data); model != "" {
+		return convert.StripProviderPrefix(model)
+	}
+	return ""
+}
+
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(v)
 }
 
-// truncate shortens long byte slices for debug logging.
 func truncate(b []byte) string {
 	if len(b) > 1024*1024 {
 		return string(b[:200]) + "..."
@@ -191,16 +197,13 @@ func truncate(b []byte) string {
 	return string(b)
 }
 
-// isSSEFramed returns true if data starts with an SSE prefix (data:, event:, id:).
 func isSSEFramed(data []byte) bool {
-	return bytes.HasPrefix(data, []byte("data:")) || bytes.HasPrefix(data, []byte("event:")) || bytes.HasPrefix(data, []byte("id:"))
+	return bytes.HasPrefix(data, []byte("data:")) ||
+		bytes.HasPrefix(data, []byte("event:")) ||
+		bytes.HasPrefix(data, []byte("id:"))
 }
 
-// extractModelFromPayload returns the model name from an Anthropic request body.
-// It differentiates Anthropic requests (model + max_tokens + messages, no choices)
-// from OpenAI responses (choices array) to avoid false-positive caching.
 func extractModelFromPayload(data []byte) string {
-	// Anthropic request: model + max_tokens + messages, no choices.
 	var probe struct {
 		Model     string          `json:"model"`
 		MaxTokens int             `json:"max_tokens"`
@@ -214,7 +217,6 @@ func extractModelFromPayload(data []byte) string {
 		len(probe.Messages) > 0 && len(probe.Choices) == 0 {
 		return probe.Model
 	}
-	// Responses API request: model + input, no messages/choices/max_tokens.
 	var respProbe struct {
 		Model string          `json:"model"`
 		Input json.RawMessage `json:"input"`
@@ -226,25 +228,6 @@ func extractModelFromPayload(data []byte) string {
 	return ""
 }
 
-// extractModelField returns the "model" field from data, handling both raw JSON
-// and SSE-framed data ("data: {...}" prefix).
-func extractModelField(data []byte) string {
-	var probe struct{ Model string `json:"model"` }
-	if json.Unmarshal(data, &probe) == nil && probe.Model != "" {
-		return probe.Model
-	}
-	// Strip SSE "data:" prefix for stream chunk data.
-	if stripped, ok := strings.CutPrefix(string(data), "data:"); ok {
-		payload := []byte(strings.TrimLeft(stripped, " \t"))
-		if json.Unmarshal(payload, &probe) == nil {
-			return probe.Model
-		}
-	}
-	return ""
-}
-
-// extractAnthropicToolNames parses the request body as an Anthropic request and
-// returns the declared tool names. Returns nil if parsing fails or no tools.
 func extractAnthropicToolNames(data []byte) []string {
 	var probe struct {
 		Tools []struct {
@@ -263,8 +246,6 @@ func extractAnthropicToolNames(data []byte) []string {
 	return names
 }
 
-// newReasoningCache creates a ReasoningCache based on the cache spec string.
-// Format: "memory" (default) or "file:<path>".
 func newReasoningCache(spec string, maxSize int) *convert.ReasoningCache {
 	typ, option, _ := strings.Cut(spec, ":")
 	switch strings.ToLower(strings.TrimSpace(typ)) {
@@ -282,9 +263,6 @@ func newReasoningCache(spec string, maxSize int) *convert.ReasoningCache {
 	}
 }
 
-// parseModelMap parses a comma-separated model map string into a ModelMap.
-// Format: "prefix1=target1[:protocol1],prefix2=target2[:protocol2],..." — * prefix is catch-all.
-// Protocol is optional (openai|anthropic); when unset, auto-detect is used.
 func parseModelMap(s string) convert.ModelMap {
 	if s == "" {
 		return nil
@@ -307,7 +285,6 @@ func parseModelMap(s string) convert.ModelMap {
 			slog.Warn("model-map: skipping entry with empty target", "entry", pair)
 			continue
 		}
-		// Validate protocol values: only "" (unset), "openai", or "anthropic".
 		if protocol != "" && protocol != "openai" && protocol != "anthropic" {
 			slog.Warn("model-map: unknown protocol, ignoring", "protocol", protocol, "entry", pair)
 			protocol = ""

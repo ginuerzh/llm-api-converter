@@ -10,32 +10,6 @@ import (
 // Protocol override tests
 // ---------------------------------------------------------------------------
 
-func TestModelMapLookupTarget(t *testing.T) {
-	mm := ModelMap{
-		{SourcePrefix: "claude-opus", TargetModel: "minimax-m3", Protocol: "anthropic"},
-		{SourcePrefix: "gpt-4", TargetModel: "deepseek-chat", Protocol: "openai"},
-	}
-
-	if p := mm.LookupTarget("minimax-m3"); p != "anthropic" {
-		t.Fatalf("LookupTarget(minimax-m3): want anthropic, got %q", p)
-	}
-	if p := mm.LookupTarget("DEEPSEEK-chat"); p != "openai" {
-		t.Fatalf("LookupTarget(DEEPSEEK-chat): want openai (case insensitive), got %q", p)
-	}
-	if p := mm.LookupTarget("unknown"); p != "" {
-		t.Fatalf("LookupTarget(unknown): want empty, got %q", p)
-	}
-}
-
-func TestModelMapLookupTargetNoMatch(t *testing.T) {
-	mm := ModelMap{
-		{SourcePrefix: "claude-opus", TargetModel: "minimax-m3", Protocol: "anthropic"},
-	}
-	if p := mm.LookupTarget("other-model"); p != "" {
-		t.Fatalf("LookupTarget(other-model): want empty, got %q", p)
-	}
-}
-
 func TestModelMapApply_WithProtocol(t *testing.T) {
 	mm := ModelMap{
 		{SourcePrefix: "claude-opus", TargetModel: "deepseek-v4-pro", Protocol: "openai"},
@@ -230,12 +204,19 @@ func TestConvert_ProtocolOpenAI_AsymmetricRespConverted(t *testing.T) {
 		{SourcePrefix: "gpt-5.5", TargetModel: "deepseek-v4-pro", Protocol: "openai"},
 		{SourcePrefix: "*", TargetModel: "deepseek-v4-flash", Protocol: "openai"},
 	}
-	opts := &ConvertOptions{Model: "deepseek-chat", MaxTokens: 8192, ModelMap: mm}
+	opts := &ConvertOptions{
+		Model:     "deepseek-chat",
+		MaxTokens: 8192,
+		ModelMap:  mm,
+		URI:       "/v1/messages", // Anthropic endpoint → client is Anthropic
+		Direction: "response",     // This is a response from downstream
+	}
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Should be converted to Anthropic format (not passed through as OpenAI).
+	// Asymmetric: OpenAI-format response from downstream should be converted
+	// to Anthropic for the Anthropic client (URI = /v1/messages).
 	var anth AnthropicResponse
 	if err := json.Unmarshal(b, &anth); err != nil {
 		t.Fatalf("should produce Anthropic response, err=%v\nbody=%s", err, b)
@@ -288,30 +269,91 @@ func TestConvert_ProtocolOpenAI_SymmetricRespPassthrough(t *testing.T) {
 	}
 }
 
-// Test that resolveModel preserves the model name when it matches a downstream
-// target (not a source prefix), and uses the target entry's protocol.
-func TestResolveModel_LookupTargetPreservesModel(t *testing.T) {
+func TestResolveModel_UnsetProtocolDefaultsToInput(t *testing.T) {
+	mm := ModelMap{
+		{SourcePrefix: "claude-opus", TargetModel: "deepseek-v4-pro", Protocol: "openai"},
+		{SourcePrefix: "claude-sonnet", TargetModel: "deepseek-v4-flash"}, // no protocol → passthrough
+	}
+
+	// Entry with explicit protocol.
+	target, proto := resolveModel("claude-opus-4-8", ProtocolAnthropic, mm)
+	if target != "deepseek-v4-pro" {
+		t.Fatalf("want target deepseek-v4-pro, got %q", target)
+	}
+	if proto != ProtocolOpenAIChat {
+		t.Fatalf("want proto openai, got %v", proto)
+	}
+
+	// Entry without protocol → returns inputProtocol (passthrough).
+	target, proto = resolveModel("claude-sonnet-4", ProtocolAnthropic, mm)
+	if target != "deepseek-v4-flash" {
+		t.Fatalf("want target deepseek-v4-flash, got %q", target)
+	}
+	if proto != ProtocolAnthropic {
+		t.Fatalf("unset proto: want inputProtocol (anthropic), got %v", proto)
+	}
+
+	// No mapping → convert to opposite protocol.
+	target, proto = resolveModel("unknown-model", ProtocolOpenAIChat, mm)
+	if target != "unknown-model" {
+		t.Fatalf("no mapping: want model preserved, got %q", target)
+	}
+	if proto != ProtocolAnthropic {
+		t.Fatalf("no mapping: want oppositeProtocol (anthropic), got %v", proto)
+	}
+}
+
+// Test that resolveModel preserves the model name and uses the entry protocol.
+func TestResolveModel_PreservesModel(t *testing.T) {
 	mm := ModelMap{
 		{SourcePrefix: "claude-opus", TargetModel: "deepseek-v4-pro", Protocol: "openai"},
 		{SourcePrefix: "*", TargetModel: "deepseek-v4-flash", Protocol: "openai"},
 	}
 
 	// Request direction: model="claude-opus-4-8" → maps via source prefix.
-	target, proto := resolveModel("claude-opus-4-8", "fallback", mm)
+	target, proto := resolveModel("claude-opus-4-8", ProtocolAnthropic, mm)
 	if target != "deepseek-v4-pro" {
 		t.Fatalf("request: want target deepseek-v4-pro, got %q", target)
 	}
-	if proto != "openai" {
-		t.Fatalf("request: want proto openai, got %q", proto)
+	if proto != ProtocolOpenAIChat {
+		t.Fatalf("request: want proto openai, got %v", proto)
 	}
 
-	// Response direction: model="deepseek-v4-pro" → is a downstream target, preserve it.
-	target, proto = resolveModel("deepseek-v4-pro", "fallback", mm)
-	if target != "deepseek-v4-pro" {
-		t.Fatalf("response: want model preserved as deepseek-v4-pro, got %q", target)
+	// Unknown model → passthrough (catch-all would match, but Apply returns it).
+	target, proto = resolveModel("gpt-5", ProtocolOpenAIChat, mm)
+	if target != "deepseek-v4-flash" {
+		t.Fatalf("catch-all: want target deepseek-v4-flash, got %q", target)
 	}
-	if proto != "openai" {
-		t.Fatalf("response: want proto openai, got %q", proto)
+	if proto != ProtocolOpenAIChat {
+		t.Fatalf("catch-all: want proto openai, got %v", proto)
+	}
+}
+
+// Test that resolveModel strips provider prefix.
+func TestResolveModel_StripsProviderPrefix(t *testing.T) {
+	mm := ModelMap{
+		{SourcePrefix: "claude-opus", TargetModel: "deepseek-v4-pro", Protocol: "openai"},
+	}
+	target, proto := resolveModel("anthropic/claude-opus-4-8", ProtocolAnthropic, mm)
+	if target != "deepseek-v4-pro" {
+		t.Fatalf("want target deepseek-v4-pro, got %q", target)
+	}
+	if proto != ProtocolOpenAIChat {
+		t.Fatalf("want proto openai, got %v", proto)
+	}
+}
+
+// Test that empty model returns the fallback model name but input protocol.
+func TestResolveModel_EmptyModel(t *testing.T) {
+	mm := ModelMap{
+		{SourcePrefix: "*", TargetModel: "deepseek-chat", Protocol: "openai"},
+	}
+	target, proto := resolveModel("", ProtocolOpenAIChat, mm)
+	if target != "" {
+		t.Fatalf("empty model: want empty target, got %q", target)
+	}
+	if proto != ProtocolAnthropic {
+		t.Fatalf("empty model: want oppositeProtocol (anthropic), got %v", proto)
 	}
 }
 
@@ -499,7 +541,7 @@ func FuzzResolveModel_Matrix(f *testing.F) {
 		if cfg == nil {
 			return // fuzzer-generated config name — skip
 		}
-		target, proto := resolveModel(model, "fallback", cfg.mm)
+		target, proto := resolveModel(model, ProtocolUnknown, cfg.mm)
 
 		// Invariant: if the model is a known downstream target of an
 		// entry WITH protocol override, it must not be rewritten by
@@ -515,7 +557,7 @@ func FuzzResolveModel_Matrix(f *testing.F) {
 					t.Errorf("config=%s: downstream target %q (protocol=%s) was rewritten to %q by catch-all",
 						cfgName, model, entry.Protocol, target)
 				}
-				if proto != entry.Protocol {
+				if proto.String() != entry.Protocol {
 					t.Errorf("config=%s: downstream target %q lost protocol: got %q, want %q",
 						cfgName, model, proto, entry.Protocol)
 				}
@@ -524,7 +566,7 @@ func FuzzResolveModel_Matrix(f *testing.F) {
 		}
 
 		// Invariant: if proto is set, target must be non-empty.
-		if proto != "" && target == "" {
+		if proto != ProtocolUnknown && target == "" {
 			t.Errorf("config=%s: proto=%q but target is empty for model %q", cfgName, proto, model)
 		}
 	})
@@ -573,9 +615,14 @@ func fuzzMatrixConvert(t *testing.T, mm ModelMap, shapeName, model string) {
 		}
 	}
 	// Also collect the catch-all target.
-	catchTarget, hasCatchAll := mm.catchAllTarget()
-	if hasCatchAll {
-		catchTarget = strings.ToLower(catchTarget)
+	var catchTarget string
+	hasCatchAll := false
+	for _, entry := range mm {
+		if entry.SourcePrefix == "*" {
+			catchTarget = strings.ToLower(entry.TargetModel)
+			hasCatchAll = true
+			break
+		}
 	}
 
 	// ---- Invariant 1: output is parseable JSON or valid SSE ----

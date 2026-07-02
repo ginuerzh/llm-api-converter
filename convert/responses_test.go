@@ -648,6 +648,7 @@ func TestConvertAnthropicToResponses_MaxTokens(t *testing.T) {
 func TestConvert_ResponsesToChatRoundTrip(t *testing.T) {
 	sid := "test-roundtrip-chat"
 	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, SID: sid}
+	opts.SessionStore = NewSessionStore()
 	body := `{"model":"gpt-4o","input":"hello world","max_output_tokens":100}`
 	b, err := Convert([]byte(body), opts)
 	if err != nil {
@@ -666,7 +667,7 @@ func TestConvert_ResponsesToChatRoundTrip(t *testing.T) {
 	if extractTextContent(chat.Messages[0].Content) != "hello world" {
 		t.Fatalf("content: want 'hello world', got %q", extractTextContent(chat.Messages[0].Content))
 	}
-	unmarkResponsesSession(sid)
+	
 }
 
 func TestConvert_ResponsesRequestWithMessagesInput(t *testing.T) {
@@ -728,10 +729,10 @@ func TestConvert_ResponsesToAnthropicViaModelMap(t *testing.T) {
 
 func TestConvert_ChatResponseToResponsesWithSession(t *testing.T) {
 	sid := "test-session-chat-resp"
-	markResponsesSession(sid)
-	defer unmarkResponsesSession(sid)
 
 	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, SID: sid}
+	opts.SessionStore = NewSessionStore()
+	opts.SessionStore.Set(sid, &Session{ID: sid, IsResponses: true})
 	body := `{
 		"id":"chatcmpl-abc",
 		"object":"chat.completion",
@@ -764,10 +765,10 @@ func TestConvert_ChatResponseToResponsesWithSession(t *testing.T) {
 
 func TestConvert_AnthropicResponseToResponsesWithSession(t *testing.T) {
 	sid := "test-session-anth-resp"
-	markResponsesSession(sid)
-	defer unmarkResponsesSession(sid)
 
 	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, SID: sid}
+	opts.SessionStore = NewSessionStore()
+	opts.SessionStore.Set(sid, &Session{ID: sid, IsResponses: true})
 	body := `{
 		"id":"msg_xyz",
 		"type":"message",
@@ -798,10 +799,10 @@ func TestConvert_AnthropicResponseToResponsesWithSession(t *testing.T) {
 
 func TestConvert_PassthroughResponsesResponse(t *testing.T) {
 	sid := "test-session-ps"
-	markResponsesSession(sid)
-	defer unmarkResponsesSession(sid)
 
 	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192, SID: sid}
+	opts.SessionStore = NewSessionStore()
+	opts.SessionStore.Set(sid, &Session{ID: sid, IsResponses: true})
 	body := `{"object":"response","output":[{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"already responses"}]}]}`
 	b, err := Convert([]byte(body), opts)
 	if err != nil {

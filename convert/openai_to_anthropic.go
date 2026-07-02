@@ -184,7 +184,7 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 		return body, nil
 	}
 
-	model, _ := resolveModel(req.Model, opts.Model, opts.ModelMap)
+	model := opts.ResolvedModel; if model == "" { model = resolveModelTarget(req.Model, opts.ModelMap) }
 	// Respect the request's max_tokens / max_completion_tokens if set,
 	// otherwise fall back to the CLI --max-tokens flag (default 8192).
 	// ponytail: upstream APIs often default to unreasonably low limits.
