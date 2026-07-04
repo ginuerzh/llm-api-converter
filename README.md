@@ -9,6 +9,7 @@ A GOST Rewriter HTTP plugin that converts bidirectionally between **OpenAI Chat 
 - [How it works](#how-it-works)
 - [Quick start](#quick-start)
   - [With Docker Compose](#with-docker-compose)
+  - [LLM Router (body routing)](#llm-router-body-routing)
   - [Claude Code → DeepSeek (via opencode-go)](#claude-code--deepseek-via-opencode-go)
   - [Codex CLI → DeepSeek (via opencode-go)](#codex-cli--deepseek-via-opencode-go)
 - [Capabilities](#capabilities)
@@ -181,6 +182,10 @@ All Anthropic traffic from Claude Code is intercepted by GOST, converted to Open
 - Note: `:responses` is not a valid override (only `openai`/`anthropic`); Responses API traffic is detected and routed via body markers and the session store, not the model map. Empty targets (e.g. `claude-opus=:openai`) are rejected at parse time.
 
 Update the `--model-map` to match your opencode-go deployment's available models.
+
+### LLM Router (body routing)
+
+A complete multi-vendor LLM router setup using GOST + llm-api-converter — routes requests to different providers based on prompt content, with automatic protocol conversion. See the [LLM Router blog post](https://latest.gost.run/blog/2026/llm-router/) for the full guide.
 
 ### Codex CLI → DeepSeek (via opencode-go)
 

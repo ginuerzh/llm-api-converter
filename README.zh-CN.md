@@ -9,6 +9,7 @@
 - [工作原理](#工作原理)
 - [快速开始](#快速开始)
   - [使用 Docker Compose](#使用-docker-compose)
+  - [LLM 路由器（请求体路由）](#llm-路由器请求体路由)
   - [Claude Code → DeepSeek（经 opencode-go）](#claude-code--deepseek经-opencode-go)
   - [Codex CLI → DeepSeek（经 opencode-go）](#codex-cli--deepseek经-opencode-go)
 - [功能特性](#功能特性)
@@ -181,6 +182,10 @@ claude
 - 注意：`:responses` 不是合法的覆盖值（只支持 `openai`/`anthropic`）；Responses API 流量通过报文标记和会话存储检测并路由，不走 model map。空 target（如 `claude-opus=:openai`）会在解析阶段被拒绝。
 
 请根据你的 opencode-go 部署可用的模型，相应调整 `--model-map`。
+
+### LLM 路由器（请求体路由）
+
+基于 GOST + llm-api-converter 的多供应商 LLM 路由方案——根据提示内容将请求路由到不同供应商，并自动进行协议转换。详细指南请参见 [LLM 路由器博客文章](https://latest.gost.run/blog/2026/llm-router/)。
 
 ### Codex CLI → DeepSeek（经 opencode-go）
 
