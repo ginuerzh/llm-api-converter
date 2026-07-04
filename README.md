@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-A GOST Rewriter HTTP plugin that converts bidirectionally between **OpenAI Chat Completions** and **Anthropic Messages API** formats. Designed for use with tools like Claude Code, Codex CLI, OpenCode, and other LLM clients that speak either protocol.
+A GOST Rewriter HTTP plugin that converts bidirectionally between **OpenAI Chat Completions**, **Anthropic Messages**, and **Google Gemini generateContent** API formats. Designed for use with tools like Claude Code, Codex CLI, OpenCode, and other LLM clients that speak any of these protocols.
 
 ## Table of Contents
 
@@ -178,8 +178,8 @@ All Anthropic traffic from Claude Code is intercepted by GOST, converted to Open
 
 - `claude-opus=deepseek-v4-pro:openai`: Routes requests with model name starting with `claude-opus` to DeepSeek V4 Pro, converting Anthropic→OpenAI
 - `*=deepseek-v4-flash:openai`: Catch-all fallback for any unmatched model prefix, also converting to OpenAI
-- **Downstream protocol override**: Append `:openai` or `:anthropic` after the target to declare what format the backend speaks (`prefix=target:protocol`). **Without a protocol suffix, the default is passthrough** — the body passes through with only the model name rewritten, no format conversion. With `:openai`/`:anthropic`, conversion runs when the incoming protocol differs from the declared one; when they match, only the model is rewritten. The override applies on both request and response paths via per-session client protocol tracking. Example: `claude-opus=deepseek-v4-pro:openai` — incoming Anthropic differs from `:openai`, so Anthropic→OpenAI conversion runs; `claude-opus=deepseek-v4-pro:anthropic` — incoming Anthropic matches, so only the model is rewritten.
-- Note: `:responses` is not a valid override (only `openai`/`anthropic`); Responses API traffic is detected and routed via body markers and the session store, not the model map. Empty targets (e.g. `claude-opus=:openai`) are rejected at parse time.
+- **Downstream protocol override**: Append `:openai`, `:anthropic`, or `:gemini` after the target to declare what format the backend speaks (`prefix=target:protocol`). **Without a protocol suffix, the default is passthrough** — the body passes through with only the model name rewritten, no format conversion. With `:openai`/`:anthropic`/`:gemini`, conversion runs when the incoming protocol differs from the declared one; when they match, only the model is rewritten. The override applies on both request and response paths via per-session client protocol tracking. Example: `claude-opus=deepseek-v4-pro:openai` — incoming Anthropic differs from `:openai`, so Anthropic→OpenAI conversion runs; `claude-opus=deepseek-v4-pro:anthropic` — incoming Anthropic matches, so only the model is rewritten.
+- Note: `:responses` is not a valid override (only `openai`/`anthropic`/`gemini`); Responses API traffic is detected and routed via body markers and the session store, not the model map. Empty targets (e.g. `claude-opus=:openai`) are rejected at parse time.
 
 Update the `--model-map` to match your opencode-go deployment's available models.
 
@@ -267,9 +267,17 @@ Codex CLI sends Responses API requests to `/v1/responses`; GOST intercepts them,
 | Direction | Description |
 |-----------|-------------|
 | OpenAI Request → Anthropic Request | For forwarding to Anthropic API |
+| OpenAI Request → Gemini Request | For forwarding to Google Gemini API |
 | OpenAI Response → Anthropic Response | For returning Anthropic-format responses to clients |
+| OpenAI Response → Gemini Response | For returning Gemini-format responses to clients |
 | Anthropic Request → OpenAI Request | For forwarding to OpenAI-compatible downstreams (DeepSeek, etc.) |
+| Anthropic Request → Gemini Request | For forwarding to Google Gemini API from Anthropic SDK clients |
 | Anthropic Response → OpenAI Response | For returning OpenAI-format responses to clients |
+| Anthropic Response → Gemini Response | For returning Gemini-format responses to clients |
+| Gemini Request → OpenAI Request | Reverse: Gemini format → OpenAI Chat format |
+| Gemini Request → Anthropic Request | Reverse: Gemini format → Anthropic format |
+| Gemini Response → OpenAI Response | Reverse: Gemini response → OpenAI Chat response |
+| Gemini Response → Anthropic Response | Reverse: Gemini response → Anthropic response |
 | Responses API Request → Chat Completions Request | For forwarding Codex CLI (Responses API) to OpenAI Chat Completions backends |
 | Responses API Request → Anthropic Request | When the model-map routes a Responses request to an Anthropic downstream |
 | Chat Completions Response → Responses API Response | Converting upstream Chat response back to Responses API format |
@@ -284,6 +292,10 @@ message_start → ping → content_block_start → content_block_delta* → cont
 ```
 
 Supports text, thinking (reasoning), and tool call deltas with proper content block transitions, signature_delta for thinking blocks, and tool name restriction to prevent tool hallucination.
+
+**Gemini SSE → OpenAI** — Converts Gemini `streamGenerateContent` SSE chunks (complete `GeminiChatResponse` JSON per chunk) into OpenAI delta chunks with `finish_reason` + `[DONE]` markers.
+
+**Gemini SSE → Anthropic** — Converts Gemini SSE chunks into the Anthropic SSE event sequence, tracking content block transitions (text ↔ tool_use).
 
 **Responses API SSE** — Converts Chat Completions streaming deltas into the Responses API SSE event sequence:
 
@@ -319,6 +331,9 @@ The cache backend is pluggable via the `ReasoningStore` interface (`Get`, `Set`,
 - Tool use / tool result blocks
 - Extended thinking / reasoning content
 - System messages
+- Gemini function call / function response parts
+- Gemini inline data (base64 media)
+- Gemini executable code / code execution result
 
 ## CLI flags
 
@@ -327,7 +342,7 @@ The cache backend is pluggable via the `ReasoningStore` interface (`Get`, `Set`,
 | `--addr` | `:8000` | Listening address |
 | `--model` | `deepseek-chat` | Default fallback model ID |
 | `--max-tokens` | `8192` | Default max_tokens |
-| `--model-map` | `` | Model mapping: `prefix=target[:protocol],...` (* for catch-all, protocol: openai\|anthropic) |
+| `--model-map` | `` | Model mapping: `prefix=target[:protocol],...` (* for catch-all, protocol: openai\|anthropic\|gemini) |
 | `--cache` | `memory` | Reasoning cache backend: `memory` or `file:<path>` |
 | `--log.level` | `info` | Log level |
 | `--log.format` | `json` | Log format (text or json) |
@@ -339,7 +354,7 @@ llm-api-converter/
 ├── main.go              # Entry point
 ├── cmd/root.go          # Cobra CLI
 ├── convert/             # Core conversion logic
-│   ├── types.go                              # Data types for OpenAI, Anthropic, Responses API, SSE
+│   ├── types.go                              # Data types for OpenAI, Anthropic, Gemini, Responses API, SSE
 │   ├── convert.go                            # Entry point: Convert + ConvertSSE dispatch
 │   ├── detect.go                             # Body-primary protocol detection (positive markers)
 │   ├── protocol.go                           # Protocol type + URI fallback + resolveModel
@@ -351,8 +366,12 @@ llm-api-converter/
 │   ├── stream.go                             # SSE stream utilities
 │   ├── stream_anthropic.go                   # Anthropic SSE state machine (OpenAI → Anthropic streaming)
 │   ├── stream_responses.go                   # Responses API SSE state machine
+│   ├── stream_gemini.go                      # Gemini SSE → OpenAI/Anthropic streaming converters
+│   ├── gemini_types.go                       # Gemini generateContent protocol types
+│   ├── openai_to_gemini.go                   # OpenAI Chat ↔ Gemini (request + response)
+│   ├── anthropic_to_gemini.go                # Anthropic ↔ Gemini (request + response)
 │   ├── reasoning_cache.go                    # 3-tier reasoning cache + ReasoningStore interface
-│   └── *_test.go                             # Tests
+│   └── gemini_test.go (and *_test.go)        # Tests
 ├── rewriter/
 │   ├── server.go                             # HTTP plugin server
 │   └── server_test.go

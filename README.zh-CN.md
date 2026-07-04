@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-一个 GOST Rewriter HTTP 插件，在 **OpenAI Chat Completions** 与 **Anthropic Messages API** 两种格式之间双向转换。专为 Claude Code、Codex CLI、OpenCode 以及其他使用这两种协议的 LLM 客户端设计。
+一个 GOST Rewriter HTTP 插件，在 **OpenAI Chat Completions**、**Anthropic Messages** 与 **Google Gemini generateContent** 三种格式之间双向转换。专为 Claude Code、Codex CLI、OpenCode 以及其他使用这些协议的 LLM 客户端设计。
 
 ## 目录
 
@@ -178,8 +178,8 @@ claude
 
 - `claude-opus=deepseek-v4-pro:openai`：将模型名以 `claude-opus` 开头的请求路由到 DeepSeek V4 Pro，并执行 Anthropic→OpenAI 转换
 - `*=deepseek-v4-flash:openai`：兜底项，匹配任何未命中的模型前缀，同样转换为 OpenAI
-- **下游协议覆盖**：在 target 后追加 `:openai` 或 `:anthropic` 来声明后端使用的协议格式（`prefix=target:protocol`）。**不带协议后缀时，默认是透传**——报文仅重写模型名后原样通过，不做格式转换。带 `:openai`/`:anthropic` 时，若传入协议与声明的协议不同则执行转换；若相同则仅重写模型名。该覆盖在请求和响应两个方向都生效（通过按会话跟踪客户端协议实现）。示例：`claude-opus=deepseek-v4-pro:openai`——传入 Anthropic 与 `:openai` 不同，执行 Anthropic→OpenAI 转换；`claude-opus=deepseek-v4-pro:anthropic`——传入 Anthropic 与之匹配，仅重写模型名。
-- 注意：`:responses` 不是合法的覆盖值（只支持 `openai`/`anthropic`）；Responses API 流量通过报文标记和会话存储检测并路由，不走 model map。空 target（如 `claude-opus=:openai`）会在解析阶段被拒绝。
+- **下游协议覆盖**：在 target 后追加 `:openai`、`:anthropic` 或 `:gemini` 来声明后端使用的协议格式（`prefix=target:protocol`）。**不带协议后缀时，默认是透传**——报文仅重写模型名后原样通过，不做格式转换。带 `:openai`/`:anthropic`/`:gemini` 时，若传入协议与声明的协议不同则执行转换；若相同则仅重写模型名。该覆盖在请求和响应两个方向都生效（通过按会话跟踪客户端协议实现）。示例：`claude-opus=deepseek-v4-pro:openai`——传入 Anthropic 与 `:openai` 不同，执行 Anthropic→OpenAI 转换；`claude-opus=deepseek-v4-pro:anthropic`——传入 Anthropic 与之匹配，仅重写模型名。
+- 注意：`:responses` 不是合法的覆盖值（只支持 `openai`/`anthropic`/`gemini`）；Responses API 流量通过报文标记和会话存储检测并路由，不走 model map。空 target（如 `claude-opus=:openai`）会在解析阶段被拒绝。
 
 请根据你的 opencode-go 部署可用的模型，相应调整 `--model-map`。
 
@@ -267,9 +267,17 @@ Codex CLI 将 Responses API 请求发送到 `/v1/responses`；GOST 拦截后，�
 | 方向 | 说明 |
 |------|------|
 | OpenAI Request → Anthropic Request | 用于转发到 Anthropic API |
+| OpenAI Request → Gemini Request | 用于转发到 Google Gemini API |
 | OpenAI Response → Anthropic Response | 用于向客户端返回 Anthropic 格式的响应 |
+| OpenAI Response → Gemini Response | 用于向客户端返回 Gemini 格式的响应 |
 | Anthropic Request → OpenAI Request | 用于转发到 OpenAI 兼容的下游（DeepSeek 等） |
+| Anthropic Request → Gemini Request | 用于从 Anthropic SDK 客户端转发到 Google Gemini API |
 | Anthropic Response → OpenAI Response | 用于向客户端返回 OpenAI 格式的响应 |
+| Anthropic Response → Gemini Response | 用于向客户端返回 Gemini 格式的响应 |
+| Gemini Request → OpenAI Request | 反向：Gemini 格式 → OpenAI Chat 格式 |
+| Gemini Request → Anthropic Request | 反向：Gemini 格式 → Anthropic 格式 |
+| Gemini Response → OpenAI Response | 反向：Gemini 响应 → OpenAI Chat 响应 |
+| Gemini Response → Anthropic Response | 反向：Gemini 响应 → Anthropic 响应 |
 | Responses API Request → Chat Completions Request | 用于将 Codex CLI（Responses API）转发到 OpenAI Chat Completions 后端 |
 | Responses API Request → Anthropic Request | 当 model-map 将 Responses 请求路由到 Anthropic 下游时 |
 | Chat Completions Response → Responses API Response | 将上游 Chat 响应转换回 Responses API 格式 |
@@ -284,6 +292,10 @@ message_start → ping → content_block_start → content_block_delta* → cont
 ```
 
 支持文本、思考（reasoning）和工具调用 delta，正确处理内容块切换、思考块的 signature_delta，并限制工具名以防止工具幻觉。
+
+**Gemini SSE → OpenAI** —— 将 Gemini `streamGenerateContent` SSE 分块（每块包含完整 `GeminiChatResponse` JSON）转换为 OpenAI delta 分块，含 `finish_reason` + `[DONE]` 标记。
+
+**Gemini SSE → Anthropic** —— 将 Gemini SSE 分块转换为 Anthropic SSE 事件序列，跟踪内容块类型切换（text ↔ tool_use）。
 
 **Responses API SSE** —— 将 Chat Completions 流式 delta 转换为 Responses API SSE 事件序列：
 
@@ -319,6 +331,9 @@ response.created → response.in_progress → output_item.added → content_part
 - tool use / tool result 块
 - 扩展思考 / 推理内容
 - 系统消息
+- Gemini function call / function response 部分
+- Gemini inline data（base64 媒体）
+- Gemini executable code / code execution result
 
 ## 命令行参数
 
@@ -327,7 +342,7 @@ response.created → response.in_progress → output_item.added → content_part
 | `--addr` | `:8000` | 监听地址 |
 | `--model` | `deepseek-chat` | 默认兜底模型 ID |
 | `--max-tokens` | `8192` | 默认 max_tokens |
-| `--model-map` | `` | 模型映射：`prefix=target[:protocol],...`（`*` 为兜底，protocol: openai\|anthropic） |
+| `--model-map` | `` | 模型映射：`prefix=target[:protocol],...`（`*` 为兜底，protocol: openai\|anthropic\|gemini） |
 | `--cache` | `memory` | 推理缓存后端：`memory` 或 `file:<path>` |
 | `--log.level` | `info` | 日志级别 |
 | `--log.format` | `json` | 日志格式（text 或 json） |
@@ -339,7 +354,7 @@ llm-api-converter/
 ├── main.go              # 入口
 ├── cmd/root.go          # Cobra CLI
 ├── convert/             # 核心转换逻辑
-│   ├── types.go                              # OpenAI、Anthropic、Responses API、SSE 数据类型
+│   ├── types.go                              # OpenAI、Anthropic、Gemini、Responses API、SSE 数据类型
 │   ├── convert.go                            # 入口：Convert + ConvertSSE 分发
 │   ├── detect.go                             # 基于报文的协议检测（正向标记）
 │   ├── protocol.go                           # Protocol 类型 + URI 回退 + resolveModel
@@ -351,8 +366,12 @@ llm-api-converter/
 │   ├── stream.go                             # SSE 流工具
 │   ├── stream_anthropic.go                   # Anthropic SSE 状态机（OpenAI → Anthropic 流式）
 │   ├── stream_responses.go                   # Responses API SSE 状态机
+│   ├── stream_gemini.go                      # Gemini SSE → OpenAI/Anthropic 流式转换器
+│   ├── gemini_types.go                       # Gemini generateContent 协议类型
+│   ├── openai_to_gemini.go                   # OpenAI Chat ↔ Gemini（请求 + 响应）
+│   ├── anthropic_to_gemini.go                # Anthropic ↔ Gemini（请求 + 响应）
 │   ├── reasoning_cache.go                    # 3 层推理缓存 + ReasoningStore 接口
-│   └── *_test.go                             # 测试
+│   └── gemini_test.go (and *_test.go)        # 测试
 ├── rewriter/
 │   ├── server.go                             # HTTP 插件服务
 │   └── server_test.go
