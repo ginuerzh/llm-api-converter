@@ -1,6 +1,7 @@
 package convert
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -586,133 +587,204 @@ func TestGemini_BlockedResponse_ToAnthropic(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// SSE streaming via HandleSSEEvent
+// SSE streaming via HandleSSEEvent — Gemini → OpenAI delta chunks
 // ---------------------------------------------------------------------------
 
 func TestGemini_SSEStream_ToOpenAI(t *testing.T) {
 	store := NewSessionStore()
-	// Pre-register a request session: client speaks OpenAI, downstream is Gemini.
 	store.Set("test-sid", &Session{
-		ID: "test-sid",
-		From: ProtocolOpenAIChat,
+		ID: "test-sid", From: ProtocolOpenAIChat,
 	})
 
 	opts := &ConvertOptions{
-		Model:         "gemini-2.5-flash",
-		MaxTokens:     8192,
-		SessionStore:  store,
-		Direction:     "response",
+		Model:        "gemini-2.5-flash",
+		MaxTokens:    8192,
+		SessionStore: store,
+		Direction:    "response",
 	}
 
-	// Simulate an SSE start phase with a Gemini response chunk.
-	startData := "data: " + `{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"finishReason":"STOP"}]}` + "\n"
-	out, err := HandleSSEEvent("test-sid", "start", 0, []byte(startData), opts)
+	// Chunk 1: text delta.
+	chunk1 := `data: {"candidates":[{"content":{"parts":[{"text":"Hello"}],"role":"model"},"index":0}]}` + "\n"
+	out, err := HandleSSEEvent("test-sid", "start", 0, []byte(chunk1), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(out) == 0 {
 		t.Fatal("expected non-empty output from start phase")
 	}
-	// The output should be SSE-framed with data: prefix.
+	// Should be an OpenAI delta: data: {"id":"chatcmpl-gemini-...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hello"}}]}
 	if string(out[:5]) != "data:" {
 		t.Fatalf("expected data: prefix, got %q", string(out[:5]))
 	}
-
-	// Verify the session stored a GeminiStreamHandler.
-	sess := store.Get("test-sid")
-	if sess == nil {
-		t.Fatal("session should exist")
-	}
-	if _, ok := sess.StreamHandler.(*GeminiStreamHandler); !ok {
-		t.Fatalf("expected GeminiStreamHandler, got %T", sess.StreamHandler)
+	if !bytes.Contains(out, []byte(`"delta":{"content":"Hello"}`)) {
+		t.Fatalf("expected content delta Hello, got %s", out)
 	}
 
-	// Simulate end phase.
+	// Chunk 2: more text with finish reason.
+	chunk2 := `data: {"candidates":[{"content":{"parts":[{"text":" world"}],"role":"model"},"finishReason":"STOP","index":0}]}` + "\n"
+	out, err = HandleSSEEvent("test-sid", "event", 1, []byte(chunk2), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) == 0 {
+		t.Fatal("expected output from event phase")
+	}
+	if !bytes.Contains(out, []byte(`"content":" world"`)) {
+		t.Fatalf("expected content delta ' world', got %s", out)
+	}
+
+	// End phase: finish chunk + [DONE].
 	out, err = HandleSSEEvent("test-sid", "end", 0, []byte{}, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Gemini end phase returns nil.
-	if out != nil {
-		t.Fatalf("expected nil output from end phase, got %q", out)
+	if out == nil {
+		t.Fatal("expected output from end phase")
 	}
-	// Session should be cleaned up.
+	if !bytes.Contains(out, []byte(`"finish_reason":"stop"`)) {
+		t.Fatalf("expected finish_reason in end phase, got %s", out)
+	}
+	if !bytes.Contains(out, []byte("data: [DONE]")) {
+		t.Fatalf("expected [DONE] in end phase, got %s", out)
+	}
+	// Session cleaned up.
 	if store.Get("test-sid") != nil {
 		t.Fatal("session should be deleted after end phase")
 	}
 }
 
-func TestGemini_SSEStream_ToAnthropic(t *testing.T) {
+func TestGemini_SSEStream_ToOpenAI_WithFinishReason(t *testing.T) {
 	store := NewSessionStore()
 	store.Set("test-sid", &Session{
-		ID: "test-sid",
-		From: ProtocolAnthropic,
+		ID: "test-sid", From: ProtocolOpenAIChat,
 	})
 
 	opts := &ConvertOptions{
-		Model:         "gemini-2.5-flash",
-		MaxTokens:     8192,
-		SessionStore:  store,
-		Direction:     "response",
+		Model:        "gemini-2.5-flash",
+		MaxTokens:    8192,
+		SessionStore: store,
+		Direction:    "response",
 	}
 
-	startData := "data: " + `{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"finishReason":"STOP"}]}` + "\n"
-	out, err := HandleSSEEvent("test-sid", "start", 0, []byte(startData), opts)
+	// Single chunk with text and finish reason.
+	data := `data: {"candidates":[{"content":{"parts":[{"text":"done"}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":10,"totalTokenCount":15}}` + "\n"
+	out, err := HandleSSEEvent("test-sid", "start", 0, []byte(data), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte(`"delta":{"content":"done"}`)) {
+		t.Fatalf("expected content delta, got %s", out)
+	}
+
+	// End phase should emit finish_reason + usage.
+	out, err = HandleSSEEvent("test-sid", "end", 0, []byte{}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte(`"finish_reason":"stop"`)) {
+		t.Fatalf("expected finish_reason stop, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"prompt_tokens":5`)) {
+		t.Fatalf("expected prompt_tokens, got %s", out)
+	}
+	if !bytes.Contains(out, []byte("data: [DONE]")) {
+		t.Fatalf("expected [DONE], got %s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SSE streaming — Gemini → Anthropic event sequence
+// ---------------------------------------------------------------------------
+
+func TestGemini_SSEStream_ToAnthropic(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("test-sid", &Session{
+		ID: "test-sid", From: ProtocolAnthropic,
+	})
+
+	opts := &ConvertOptions{
+		Model:        "claude-sonnet",
+		MaxTokens:    8192,
+		SessionStore: store,
+		Direction:    "response",
+	}
+
+	// Start phase: first chunk → message_start + ping + content_block_start + text delta.
+	chunk1 := `data: {"candidates":[{"content":{"parts":[{"text":"Hello"}],"role":"model"},"index":0}]}` + "\n"
+	out, err := HandleSSEEvent("test-sid", "start", 0, []byte(chunk1), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(out) == 0 {
-		t.Fatal("expected non-empty output from start phase")
+		t.Fatal("expected output from start phase")
 	}
-	if string(out[:5]) != "data:" {
-		t.Fatalf("expected data: prefix, got %q", string(out[:5]))
+	// Should start with message_start.
+	if !bytes.Contains(out, []byte(`event: message_start`)) {
+		t.Fatalf("expected message_start event, got %s", out)
+	}
+	// Should have content_block_start for text.
+	if !bytes.Contains(out, []byte(`event: content_block_start`)) {
+		t.Fatalf("expected content_block_start, got %s", out)
+	}
+	// Should have text delta.
+	if !bytes.Contains(out, []byte(`text_delta`)) {
+		t.Fatalf("expected text_delta, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"text":"Hello"`)) {
+		t.Fatalf("expected text Hello, got %s", out)
 	}
 
 	sess := store.Get("test-sid")
 	if sess == nil {
 		t.Fatal("session should exist")
 	}
-	if _, ok := sess.StreamHandler.(*GeminiStreamHandler); !ok {
-		t.Fatalf("expected GeminiStreamHandler, got %T", sess.StreamHandler)
-	}
-}
-
-func TestGemini_SSEStream_EventPhase(t *testing.T) {
-	store := NewSessionStore()
-	handler := NewGeminiStreamHandler(convertGeminiBodyToOpenAI, &ConvertOptions{})
-	store.Set("test-sid", &Session{
-		ID: "test-sid",
-		From: ProtocolOpenAIChat,
-		To: ProtocolGemini,
-		StreamHandler: handler,
-	})
-
-	opts := &ConvertOptions{
-		SessionStore: store,
-		Direction:    "response",
+	if _, ok := sess.StreamHandler.(*GeminiToAnthropicStreamConverter); !ok {
+		t.Fatalf("expected GeminiToAnthropicStreamConverter, got %T", sess.StreamHandler)
 	}
 
-	// Simulate an event phase with a Gemini response chunk.
-	eventData := "data: " + `{"candidates":[{"content":{"parts":[{"text":"world"}],"role":"model"},"finishReason":"STOP"}]}` + "\n"
-	out, err := HandleSSEEvent("test-sid", "event", 1, []byte(eventData), opts)
+	// Event phase: more text → content_block_delta.
+	chunk2 := `data: {"candidates":[{"content":{"parts":[{"text":" world"}],"role":"model"},"index":0}]}` + "\n"
+	out, err = HandleSSEEvent("test-sid", "event", 1, []byte(chunk2), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) == 0 {
-		t.Fatal("expected non-empty output")
+	if !bytes.Contains(out, []byte(`event: content_block_delta`)) {
+		t.Fatalf("expected content_block_delta, got %s", out)
 	}
-	if string(out[:5]) != "data:" {
-		t.Fatalf("expected data: prefix, got %q", string(out[:5]))
+	if !bytes.Contains(out, []byte(`"text":" world"`)) {
+		t.Fatalf("expected text ' world', got %s", out)
+	}
+
+	// End phase: content_block_stop + message_delta + message_stop.
+	out, err = HandleSSEEvent("test-sid", "end", 0, []byte{}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == nil {
+		t.Fatal("expected output from end phase")
+	}
+	if !bytes.Contains(out, []byte(`event: content_block_stop`)) {
+		t.Fatalf("expected content_block_stop, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`event: message_delta`)) {
+		t.Fatalf("expected message_delta, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"stop_reason":"end_turn"`)) {
+		t.Fatalf("expected end_turn, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`event: message_stop`)) {
+		t.Fatalf("expected message_stop, got %s", out)
+	}
+	if store.Get("test-sid") != nil {
+		t.Fatal("session should be deleted after end phase")
 	}
 }
 
-func TestGemini_SSEStream_ErrorPhase(t *testing.T) {
+func TestGemini_SSEStream_ToOpenAI_ErrorHandler(t *testing.T) {
 	store := NewSessionStore()
-	handler := NewGeminiStreamHandler(convertGeminiBodyToOpenAI, &ConvertOptions{})
+	handler := NewGeminiToOpenAIStreamConverter("gemini-2.5-flash")
 	store.Set("test-sid", &Session{
-		ID: "test-sid",
-		From: ProtocolOpenAIChat,
-		To: ProtocolGemini,
+		ID: "test-sid", From: ProtocolOpenAIChat, To: ProtocolGemini,
 		StreamHandler: handler,
 	})
 
@@ -729,7 +801,269 @@ func TestGemini_SSEStream_ErrorPhase(t *testing.T) {
 	if len(out) == 0 {
 		t.Fatal("expected error event output")
 	}
-	if string(out[:5]) != "event" {
-		t.Fatalf("expected event: prefix, got %q", string(out[:5]))
+	if string(out[:5]) != "data:" {
+		t.Fatalf("expected data: prefix for OpenAI error, got %q", string(out[:5]))
+	}
+}
+
+func TestGemini_SSEStream_ToAnthropic_ErrorHandler(t *testing.T) {
+	store := NewSessionStore()
+	handler := NewGeminiToAnthropicStreamConverter("claude-sonnet")
+	store.Set("test-sid", &Session{
+		ID: "test-sid", From: ProtocolAnthropic, To: ProtocolGemini,
+		StreamHandler: handler,
+	})
+
+	opts := &ConvertOptions{
+		SessionStore: store,
+		Direction:    "response",
+		ErrorMsg:     "test error",
+	}
+
+	out, err := HandleSSEEvent("test-sid", "error", 0, []byte{}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) == 0 {
+		t.Fatal("expected error event output")
+	}
+	if !bytes.Contains(out, []byte("event: error")) {
+		t.Fatalf("expected event: error, got %q", out)
+	}
+}
+
+func TestGemini_SSEStream_ToAnthropic_Blocked(t *testing.T) {
+	store := NewSessionStore()
+	handler := NewGeminiToAnthropicStreamConverter("claude-sonnet")
+	store.Set("test-sid", &Session{
+		ID: "test-sid", From: ProtocolAnthropic, To: ProtocolGemini,
+		StreamHandler: handler,
+	})
+
+	// Process blocked response through the stream converter directly.
+	blocked := `{"candidates":[],"promptFeedback":{"blockReason":"SAFETY"}}`
+	out, err := handler.HandleChunk([]byte(blocked))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == nil {
+		t.Fatal("expected error output for blocked response")
+	}
+	if !bytes.Contains(out, []byte("event: error")) {
+		t.Fatalf("expected event: error, got %q", out)
+	}
+}
+
+func TestGemini_SSEStream_ToOpenAI_Blocked(t *testing.T) {
+	handler := NewGeminiToOpenAIStreamConverter("gemini-2.5-flash")
+	blocked := `{"candidates":[],"promptFeedback":{"blockReason":"SAFETY"}}`
+	out, err := handler.HandleChunk([]byte(blocked))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == nil {
+		t.Fatal("expected error output for blocked response")
+	}
+	if !bytes.Contains(out, []byte("content_filter")) {
+		t.Fatalf("expected content_filter error, got %q", out)
+	}
+}
+
+func TestGemini_SSEStream_ToOpenAI_FunctionCall(t *testing.T) {
+	handler := NewGeminiToOpenAIStreamConverter("gemini-2.5-flash")
+
+	// Gemini chunk with function call.
+	chunk := `{"candidates":[{"content":{"parts":[{"text":"Checking weather"},{"functionCall":{"name":"get_weather","args":{"loc":"NYC"}}}],"role":"model"},"finishReason":"STOP","index":0}]}`
+	out, err := handler.HandleChunk([]byte(chunk))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == nil {
+		t.Fatal("expected output for function call chunk")
+	}
+	// Should have text delta.
+	if !bytes.Contains(out, []byte(`"content":"Checking weather"`)) {
+		t.Fatalf("expected content delta, got %s", out)
+	}
+	// Should have tool call delta.
+	if !bytes.Contains(out, []byte(`"tool_calls"`)) {
+		t.Fatalf("expected tool_calls delta, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"name":"get_weather"`)) {
+		t.Fatalf("expected get_weather, got %s", out)
+	}
+}
+
+func TestGemini_SSEStream_ToAnthropic_FunctionCall(t *testing.T) {
+	handler := NewGeminiToAnthropicStreamConverter("claude-sonnet")
+
+	// message_start needed before chunks.
+	_ = handler.HandleStreamStart()
+
+	// Gemini chunk with function call.
+	chunk := `{"candidates":[{"content":{"parts":[{"text":"Checking weather"},{"functionCall":{"name":"get_weather","args":{"loc":"NYC"}}}],"role":"model"},"finishReason":"STOP","index":0}]}`
+	out, err := handler.HandleChunk([]byte(chunk))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == nil {
+		t.Fatal("expected output for function call chunk")
+	}
+	// Should have text block.
+	if !bytes.Contains(out, []byte(`text_delta`)) {
+		t.Fatalf("expected text_delta, got %s", out)
+	}
+	// Should have tool_use block.
+	if !bytes.Contains(out, []byte(`content_block_start`)) {
+		t.Fatalf("expected content_block_start for tool_use, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"name":"get_weather"`)) {
+		t.Fatalf("expected get_weather, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`input_json_delta`)) {
+		t.Fatalf("expected input_json_delta, got %s", out)
+	}
+
+	// End: should close both blocks.
+	out = handler.HandleStreamEnd()
+	if !bytes.Contains(out, []byte(`content_block_stop`)) {
+		t.Fatalf("expected content_block_stop, got %s", out)
+	}
+}
+
+
+// ---------------------------------------------------------------------------
+// Multi-chunk streaming via HandleSSEEvent
+// ---------------------------------------------------------------------------
+
+func TestGemini_SSEStream_ToOpenAI_MultiChunk(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("test-sid", &Session{ID: "test-sid", From: ProtocolOpenAIChat})
+
+	opts := &ConvertOptions{
+		Model:        "gemini-2.5-flash",
+		MaxTokens:    8192,
+		SessionStore: store,
+		Direction:    "response",
+	}
+
+	// Chunk 1: partial text.
+	chunk1 := `data: {"candidates":[{"content":{"parts":[{"text":"The"}],"role":"model"},"index":0}]}` + "\n"
+	out, err := HandleSSEEvent("test-sid", "start", 0, []byte(chunk1), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte(`"content":"The"`)) {
+		t.Fatalf("expected 'The', got %s", out)
+	}
+
+	// Chunk 2: continuation.
+	chunk2 := `data: {"candidates":[{"content":{"parts":[{"text":" quick"}],"role":"model"},"index":0}]}` + "\n"
+	out, err = HandleSSEEvent("test-sid", "event", 1, []byte(chunk2), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte(`"content":" quick"`)) {
+		t.Fatalf("expected ' quick', got %s", out)
+	}
+
+	// Chunk 3: final text with finish reason.
+	chunk3 := `data: {"candidates":[{"content":{"parts":[{"text":" brown fox"}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":15,"totalTokenCount":20}}` + "\n"
+	out, err = HandleSSEEvent("test-sid", "event", 2, []byte(chunk3), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte(`"content":" brown fox"`)) {
+		t.Fatalf("expected ' brown fox', got %s", out)
+	}
+
+	// End: final chunk with finish_reason + usage, then [DONE].
+	out, err = HandleSSEEvent("test-sid", "end", 0, []byte{}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte(`"finish_reason":"stop"`)) {
+		t.Fatalf("expected finish_reason, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"prompt_tokens":5`)) {
+		t.Fatalf("expected prompt_tokens, got %s", out)
+	}
+	if !bytes.Contains(out, []byte("data: [DONE]")) {
+		t.Fatalf("expected [DONE], got %s", out)
+	}
+}
+
+func TestGemini_SSEStream_ToAnthropic_MultiChunk(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("test-sid", &Session{ID: "test-sid", From: ProtocolAnthropic})
+
+	opts := &ConvertOptions{
+		Model:        "claude-sonnet",
+		MaxTokens:    8192,
+		SessionStore: store,
+		Direction:    "response",
+	}
+
+	// Chunk 1: first text.
+	chunk1 := `data: {"candidates":[{"content":{"parts":[{"text":"Hello"}],"role":"model"},"index":0}]}` + "\n"
+	out, err := HandleSSEEvent("test-sid", "start", 0, []byte(chunk1), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte(`event: message_start`)) {
+		t.Fatalf("expected message_start, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"text":"Hello"`)) {
+		t.Fatalf("expected 'Hello', got %s", out)
+	}
+
+	// Chunk 2: continuation.
+	chunk2 := `data: {"candidates":[{"content":{"parts":[{"text":" world"}],"role":"model"},"index":0}]}` + "\n"
+	out, err = HandleSSEEvent("test-sid", "event", 1, []byte(chunk2), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte(`event: content_block_delta`)) {
+		t.Fatalf("expected content_block_delta, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"text":" world"`)) {
+		t.Fatalf("expected ' world', got %s", out)
+	}
+
+	// Chunk 3: final text with finish reason.
+	chunk3 := `data: {"candidates":[{"content":{"parts":[{"text":"!"}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":12,"totalTokenCount":17}}` + "\n"
+	out, err = HandleSSEEvent("test-sid", "event", 2, []byte(chunk3), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte(`"text":"!"`)) {
+		t.Fatalf("expected '!', got %s", out)
+	}
+
+	// End: content_block_stop + message_delta + message_stop.
+	out, err = HandleSSEEvent("test-sid", "end", 0, []byte{}, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(out, []byte(`event: content_block_stop`)) {
+		t.Fatalf("expected content_block_stop, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`event: message_delta`)) {
+		t.Fatalf("expected message_delta, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"stop_reason":"end_turn"`)) {
+		t.Fatalf("expected end_turn, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`event: message_stop`)) {
+		t.Fatalf("expected message_stop, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"input_tokens":5`)) {
+		t.Fatalf("expected input_tokens 5, got %s", out)
+	}
+	if !bytes.Contains(out, []byte(`"output_tokens":12`)) {
+		t.Fatalf("expected output_tokens 12, got %s", out)
+	}
+	if store.Get("test-sid") != nil {
+		t.Fatal("session should be deleted after end phase")
 	}
 }

@@ -593,25 +593,41 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			}
 
 			// Gemini streaming: each SSE chunk is a complete GeminiChatResponse,
-			// independently convertible to the target protocol.
+			// independently convertible to the target protocol via a streaming
+			// state machine that emits the correct event/delta format per chunk.
 			if from == ProtocolGemini && target != ProtocolUnknown && from != target {
-				convertFn, ok := conversions[ConversionKey{from, target}]
-				if ok {
-					handler := NewGeminiStreamHandler(convertFn, opts)
+				var handler responsesStreamHandler
+				model := opts.RequestModel
+				if model == "" {
+					model = opts.ResolvedModel
+				}
+				switch target {
+				case ProtocolOpenAIChat:
+					handler = NewGeminiToOpenAIStreamConverter(model)
+				case ProtocolAnthropic:
+					handler = NewGeminiToAnthropicStreamConverter(model)
+				}
+				if handler != nil {
 					if store != nil {
 						store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: handler})
 					}
+					startData := handler.HandleStreamStart()
 					if len(data) > 0 {
 						payload := extractSSEPayload(data)
 						if payload != nil {
-							out, err := handler.HandleChunk(payload)
+							chunkData, err := handler.HandleChunk(payload)
 							if err != nil {
-								return nil, err
+								return startData, err
 							}
-							return out, nil
+							if len(chunkData) > 0 {
+								if len(startData) > 0 {
+									return append(startData, append([]byte("\n\n"), chunkData...)...), nil
+								}
+								return chunkData, nil
+							}
 						}
 					}
-					return nil, nil
+					return startData, nil
 				}
 			}
 
