@@ -392,6 +392,7 @@ go test ./tests/e2e/ -v -timeout 5m
 - [deepseek-v4-opencode-claude-code-bridge](https://github.com/superheroYu/deepseek-v4-opencode-claude-code-bridge) —— OpenCode 和 Claude Code 的 DeepSeek V4 适配器
 - [opencode-cc](https://github.com/Kiowx/opencode-cc) —— OpenCode Claude Code 桥接
 - [cc-switch](https://github.com/farion1231/cc-switch) —— Claude Code 供应商/配置切换工具
+- [one-api](https://github.com/songquanpeng/one-api) —— 多供应商 LLM API 管理平台，支持模型路由和密钥管理
 
 ## 许可证
 

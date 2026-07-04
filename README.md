@@ -392,6 +392,7 @@ go test ./tests/e2e/ -v -timeout 5m
 - [deepseek-v4-opencode-claude-code-bridge](https://github.com/superheroYu/deepseek-v4-opencode-claude-code-bridge) — DeepSeek V4 adapter for OpenCode and Claude Code
 - [opencode-cc](https://github.com/Kiowx/opencode-cc) — OpenCode Claude Code bridge
 - [cc-switch](https://github.com/farion1231/cc-switch) — Claude Code provider/config switcher
+- [one-api](https://github.com/songquanpeng/one-api) — Multi-vendor LLM API management platform with model routing and key management
 
 ## License
 
