@@ -11,6 +11,17 @@ func detectSource(raw map[string]any) Protocol {
 		return ProtocolOpenAIChat
 	}
 
+	// Gemini Response: candidates array with content.parts structure.
+	if cands, ok := raw["candidates"].([]any); ok && len(cands) > 0 {
+		if first, ok := cands[0].(map[string]any); ok {
+			if content, ok := first["content"].(map[string]any); ok {
+				if _, ok := content["parts"]; ok {
+					return ProtocolGemini
+				}
+			}
+		}
+	}
+
 	// Anthropic Response: type:"message" + stop_reason or usage.
 	if t, ok := raw["type"].(string); ok && t == "message" {
 		if _, ok := raw["stop_reason"]; ok {
@@ -52,6 +63,15 @@ func detectSource(raw map[string]any) Protocol {
 	}
 	if _, ok := raw["instructions"]; ok {
 		return ProtocolOpenAIResponses
+	}
+
+	// Gemini Request: contents array with parts.
+	if contents, ok := raw["contents"].([]any); ok && len(contents) > 0 {
+		if first, ok := contents[0].(map[string]any); ok {
+			if _, ok := first["parts"]; ok {
+				return ProtocolGemini
+			}
+		}
 	}
 
 	// Anthropic: tools[].input_schema (flat name + input_schema, no function wrapper).

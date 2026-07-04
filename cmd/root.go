@@ -71,7 +71,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&addr, "addr", ":8000", "listening address")
 	rootCmd.PersistentFlags().StringVar(&model, "model", "deepseek-chat", "default fallback model ID")
 	rootCmd.PersistentFlags().IntVar(&maxTokens, "max-tokens", 8192, "default max_tokens")
-	rootCmd.PersistentFlags().StringVar(&modelMap, "model-map", "", "model mapping: prefix=target[:protocol],... (* for catch-all, protocol: openai|anthropic)")
+	rootCmd.PersistentFlags().StringVar(&modelMap, "model-map", "", "model mapping: prefix=target[:protocol],... (* for catch-all, protocol: openai|anthropic|gemini)")
 	rootCmd.PersistentFlags().StringVar(&cacheBackend, "cache", "memory", "reasoning cache backend: memory (default) or file:<path>")
 
 	rootCmd.SilenceErrors = true

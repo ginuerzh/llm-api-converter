@@ -10,6 +10,7 @@ const (
 	ProtocolAnthropic               // Anthropic Messages API
 	ProtocolOpenAIChat              // OpenAI Chat Completions API
 	ProtocolOpenAIResponses         // OpenAI Responses API
+	ProtocolGemini                  // Google Gemini generateContent API
 )
 
 func (p Protocol) String() string {
@@ -20,6 +21,8 @@ func (p Protocol) String() string {
 		return "openai"
 	case ProtocolOpenAIResponses:
 		return "responses"
+	case ProtocolGemini:
+		return "gemini"
 	default:
 		return "unknown"
 	}
@@ -40,13 +43,15 @@ var uriTable = map[string]struct{ Req, Resp Protocol }{
 	"/v1/messages":         {ProtocolAnthropic, ProtocolAnthropic},
 	"/v1/chat/completions": {ProtocolOpenAIChat, ProtocolOpenAIChat},
 	"/v1/responses":        {ProtocolOpenAIResponses, ProtocolOpenAIResponses},
+	"generatecontent":      {ProtocolGemini, ProtocolGemini},
 }
 
 // detectByURI resolves the protocol from the GOST URI metadata.
 // Used as an optional fallback when detectSource returns Unknown.
 func detectByURI(uri string, dir Direction) Protocol {
+	uriLower := strings.ToLower(uri)
 	for pattern, entry := range uriTable {
-		if !strings.Contains(uri, pattern) {
+		if !strings.Contains(uriLower, pattern) {
 			continue
 		}
 		if dir == DirectionRequest {
@@ -82,6 +87,8 @@ func parseProtocol(s string) Protocol {
 		return ProtocolOpenAIChat
 	case "responses":
 		return ProtocolOpenAIResponses
+	case "gemini":
+		return ProtocolGemini
 	default:
 		return ProtocolUnknown
 	}

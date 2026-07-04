@@ -115,6 +115,46 @@ func (p *PassthroughStreamHandler) EmitError(message string) []byte {
 	))
 }
 
+// ---------------------------------------------------------------------------
+// GeminiStreamHandler — converts Gemini SSE chunks to the target protocol.
+// Gemini SSE responses deliver complete GeminiChatResponse objects per chunk,
+// so each chunk is independently convertible — no state machine needed.
+// ---------------------------------------------------------------------------
+
+type GeminiStreamHandler struct {
+	convertFn func([]byte, *ConvertOptions) ([]byte, error)
+	opts      *ConvertOptions
+}
+
+func NewGeminiStreamHandler(convertFn func([]byte, *ConvertOptions) ([]byte, error), opts *ConvertOptions) *GeminiStreamHandler {
+	return &GeminiStreamHandler{convertFn: convertFn, opts: opts}
+}
+
+func (h *GeminiStreamHandler) HandleStreamStart() []byte { return nil }
+
+func (h *GeminiStreamHandler) HandleChunk(data []byte) ([]byte, error) {
+	out, err := h.convertFn(data, h.opts)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return nil, nil
+	}
+	// Wrap in SSE data: framing — Gemini SSE delivers complete JSON objects
+	// per chunk, so the converted result is also a complete response.
+	return append([]byte("data: "), append(out, '\n')...), nil
+}
+
+func (h *GeminiStreamHandler) HandleStreamEnd() []byte { return nil }
+
+func (h *GeminiStreamHandler) EmitError(message string) []byte {
+	b, _ := json.Marshal(map[string]any{
+		"type": "error",
+		"error": map[string]any{"message": message},
+	})
+	return append([]byte("event: error\ndata: "), append(b, '\n')...)
+}
+
 // anthropicPassthrough rewrites model in message_start events only.
 func (p *PassthroughStreamHandler) anthropicPassthrough(data []byte) []byte {
 	evt := parseSSEEvent(data)

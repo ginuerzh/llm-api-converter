@@ -286,7 +286,7 @@ func parseModelMap(s string) convert.ModelMap {
 			slog.Warn("model-map: skipping entry with empty target", "entry", pair)
 			continue
 		}
-		if protocol != "" && protocol != "openai" && protocol != "anthropic" {
+		if protocol != "" && protocol != "openai" && protocol != "anthropic" && protocol != "gemini" {
 			slog.Warn("model-map: unknown protocol, ignoring", "protocol", protocol, "entry", pair)
 			protocol = ""
 		}

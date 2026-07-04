@@ -574,24 +574,48 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			from = target
 		}
 
-		// Passthrough: chunk format matches client protocol.
-		if from != ProtocolUnknown && from == target {
-			sourceModel := opts.RequestModel
-			if sourceModel == "" && model != "" && opts.ModelMap != nil {
-				if prefix := opts.ModelMap.SourcePrefix(model); prefix != "" {
-					sourceModel = prefix
+			// Passthrough: chunk format matches client protocol.
+			if from != ProtocolUnknown && from == target {
+				sourceModel := opts.RequestModel
+				if sourceModel == "" && model != "" && opts.ModelMap != nil {
+					if prefix := opts.ModelMap.SourcePrefix(model); prefix != "" {
+						sourceModel = prefix
+					}
+				}
+				handler := NewPassthroughStreamHandler(sourceModel, target)
+				if store != nil {
+					store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: handler})
+				}
+				if len(data) > 0 {
+					return handler.HandleChunk(data)
+				}
+				return nil, nil
+			}
+
+			// Gemini streaming: each SSE chunk is a complete GeminiChatResponse,
+			// independently convertible to the target protocol.
+			if from == ProtocolGemini && target != ProtocolUnknown && from != target {
+				convertFn, ok := conversions[ConversionKey{from, target}]
+				if ok {
+					handler := NewGeminiStreamHandler(convertFn, opts)
+					if store != nil {
+						store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: handler})
+					}
+					if len(data) > 0 {
+						payload := extractSSEPayload(data)
+						if payload != nil {
+							out, err := handler.HandleChunk(payload)
+							if err != nil {
+								return nil, err
+							}
+							return out, nil
+						}
+					}
+					return nil, nil
 				}
 			}
-			handler := NewPassthroughStreamHandler(sourceModel, target)
-			if store != nil {
-				store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: handler})
-			}
-			if len(data) > 0 {
-				return handler.HandleChunk(data)
-			}
-			return nil, nil
-		}
 
+			// Create stream converter (OpenAI deltas => Anthropic SSE).
 		// Create stream converter (OpenAI deltas => Anthropic SSE).
 		sc := newStreamConverterFromData(data, opts)
 		if store != nil {
