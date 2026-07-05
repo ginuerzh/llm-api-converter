@@ -1067,3 +1067,149 @@ func TestGemini_SSEStream_ToAnthropic_MultiChunk(t *testing.T) {
 		t.Fatal("session should be deleted after end phase")
 	}
 }
+
+func TestSanitizeGeminiSchema(t *testing.T) {
+	input := map[string]any{
+		"type":                 "object",
+		"$schema":              "http://json-schema.org/draft-07/schema#",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"name": map[string]any{
+				"type":          "string",
+				"const":         "hello",
+				"propertyNames": map[string]any{"type": "string"},
+			},
+			"count": map[string]any{
+				"type":             "integer",
+				"exclusiveMinimum": float64(0),
+				"any_of":           []any{map[string]any{"type": "string"}},
+			},
+			"nested": map[string]any{
+				"type":    "object",
+				"$schema": "wontfix",
+				"properties": map[string]any{
+					"deep": map[string]any{
+						"type":                 "string",
+						"additionalProperties": true,
+					},
+				},
+			},
+		},
+	}
+	out := sanitizeGeminiSchema(input).(map[string]any)
+	if _, ok := out["$schema"]; ok {
+		t.Fatal("$schema not stripped at root")
+	}
+	if _, ok := out["additionalProperties"]; ok {
+		t.Fatal("additionalProperties not stripped at root")
+	}
+	props := out["properties"].(map[string]any)
+	name := props["name"].(map[string]any)
+	if _, ok := name["const"]; ok {
+		t.Fatal("const not stripped")
+	}
+	if _, ok := name["propertyNames"]; ok {
+		t.Fatal("propertyNames not stripped")
+	}
+	count := props["count"].(map[string]any)
+	if _, ok := count["exclusiveMinimum"]; ok {
+		t.Fatal("numeric exclusiveMinimum not stripped")
+	}
+	if _, ok := count["any_of"]; ok {
+		t.Fatal("any_of not stripped")
+	}
+	nested := props["nested"].(map[string]any)
+	if _, ok := nested["$schema"]; ok {
+		t.Fatal("$schema not stripped in nested")
+	}
+	deep := nested["properties"].(map[string]any)["deep"].(map[string]any)
+	if _, ok := deep["additionalProperties"]; ok {
+		t.Fatal("additionalProperties not stripped in deep")
+	}
+}
+
+func TestConvertGeminiNDJSONArray_429Error_ToAnthropic(t *testing.T) {
+	body := `[{"error":{"code":429,"message":"Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests","status":"RESOURCE_EXHAUSTED"}}]`
+	store := NewSessionStore()
+	store.Set("test-sid", &Session{ID: "test-sid", From: ProtocolAnthropic})
+	opts := &ConvertOptions{
+		SessionStore: store,
+		SID:          "test-sid",
+	}
+	out, err := Convert([]byte(body), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(out, &raw); err != nil {
+		t.Fatalf("unmarshal error: %v\nbody: %s", err, out)
+	}
+	if raw["type"] != "error" {
+		t.Fatalf("want type: error, got %q", raw["type"])
+	}
+	errObj, _ := raw["error"].(map[string]any)
+	if errObj["type"] != "api_error" {
+		t.Fatalf("want error.type api_error, got %v", errObj["type"])
+	}
+}
+
+func TestConvertGeminiNDJSONArray_429Error_ToOpenAI(t *testing.T) {
+	body := `[{"error":{"code":429,"message":"Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests","status":"RESOURCE_EXHAUSTED"}}]`
+	store := NewSessionStore()
+	store.Set("test-sid", &Session{ID: "test-sid", From: ProtocolOpenAIChat})
+	opts := &ConvertOptions{
+		SessionStore: store,
+		SID:          "test-sid",
+	}
+	out, err := Convert([]byte(body), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(out, &raw); err != nil {
+		t.Fatalf("unmarshal error: %v\nbody: %s", err, out)
+	}
+	if raw["error"] == nil {
+		t.Fatal("want error response")
+	}
+	errObj, _ := raw["error"].(map[string]any)
+	if errObj["type"] != "server_error" {
+		t.Fatalf("want error.type server_error, got %v", errObj["type"])
+	}
+	if _, ok := errObj["code"].(float64); !ok {
+		t.Fatal("want numeric error code")
+	}
+}
+
+func TestConvertGeminiNDJSONArray_NormalResponse_PlainJSON(t *testing.T) {
+	body := `[{"candidates":[{"content":{"parts":[{"text":"hello"}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}]`
+	store := NewSessionStore()
+	store.Set("test-sid", &Session{ID: "test-sid", From: ProtocolAnthropic})
+	opts := &ConvertOptions{
+		SessionStore: store,
+		SID:          "test-sid",
+	}
+	out, err := Convert([]byte(body), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Non-streaming path returns plain JSON, not SSE.
+	if bytes.HasPrefix(out, []byte("event:")) {
+		t.Fatalf("expected plain JSON response (no SSE wrapping), got SSE: %s", out[:100])
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(out, &raw); err != nil {
+		t.Fatalf("expected valid JSON Anthropic response: %v\nbody: %s", err, out[:200])
+	}
+	if raw["type"] != "message" {
+		t.Fatalf("want type: message, got %q", raw["type"])
+	}
+	content, _ := raw["content"].([]any)
+	if len(content) == 0 {
+		t.Fatal("expected content blocks")
+	}
+	block, _ := content[0].(map[string]any)
+	if block["text"] != "hello" {
+		t.Fatalf("want text: hello, got %q", block["text"])
+	}
+}

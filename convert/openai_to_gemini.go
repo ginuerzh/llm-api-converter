@@ -1,6 +1,7 @@
 package convert
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -115,7 +116,7 @@ func convertOpenAIRequestToGemini(body []byte, opts *ConvertOptions) ([]byte, er
 			fds = append(fds, GeminiFunctionDeclaration{
 				Name:        t.Function.Name,
 				Description: t.Function.Description,
-				Parameters:  t.Function.Parameters,
+				Parameters:  sanitizeGeminiSchema(t.Function.Parameters),
 			})
 		}
 		gemini.Tools = []GeminiTool{{FunctionDeclarations: fds}}
@@ -240,7 +241,7 @@ func convertOpenAIMsgToGeminiContent(msg OpenAIMessage, toolCallIDToName map[str
 		parts = append(parts, GeminiPart{
 			FunctionResponse: &GeminiFunctionResponse{
 				Name:     name,
-				Response: extractTextContent(msg.Content),
+				Response: normalizeToolResponse(extractTextContent(msg.Content)),
 			},
 		})
 	}
@@ -283,7 +284,7 @@ func convertGeminiResponseToOpenAI(body []byte, opts *ConvertOptions) ([]byte, e
 		return body, nil
 	}
 
-	// Empty candidates with block reason → error response.
+	// Empty candidates → error response (either blocked by safety or API error).
 	if len(resp.Candidates) == 0 {
 		if resp.PromptFeedback != nil && resp.PromptFeedback.BlockReason != "" {
 			slog.Warn("Gemini response blocked", "blockReason", resp.PromptFeedback.BlockReason)
@@ -294,6 +295,22 @@ func convertGeminiResponseToOpenAI(body []byte, opts *ConvertOptions) ([]byte, e
 				},
 			})
 			return b, nil
+		}
+		// No block reason — likely a Gemini API error (e.g. 429 quota).
+		var raw map[string]any
+		if json.Unmarshal(body, &raw) == nil {
+			if errVal, ok := raw["error"]; ok {
+				msg, code := extractGeminiError(errVal)
+				slog.Warn("Gemini API error in response", "msg", msg, "code", code)
+				b, _ := json.Marshal(map[string]any{
+					"error": map[string]any{
+						"message": fmt.Sprintf("Gemini API error (HTTP %d): %s", code, msg),
+						"type":    "server_error",
+						"code":    code,
+					},
+				})
+				return b, nil
+			}
 		}
 	}
 
@@ -605,4 +622,250 @@ func defaultGeminiSafety() []GeminiSafetySetting {
 
 func nowUnix() int64 {
 	return 1749000000 // ponytail: static timestamp, replace with time.Now() if ordering matters
+}
+
+// ---------------------------------------------------------------------------
+// Gemini NDJSON-array response (streamGenerateContent without alt=sse)
+// ---------------------------------------------------------------------------
+
+// parseJSONArray tries to parse body as a top-level JSON array of objects.
+func parseJSONArray(body []byte) ([]map[string]any, bool) {
+	var raw []map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, false
+	}
+	return raw, len(raw) > 0
+}
+
+// parseNDJSONChunks splits body into newline-separated JSON objects and
+// returns them if they look like Gemini streaming chunks (first object has
+// "candidates"). Returns nil for single-JSON bodies (handled by normal
+// path) or non-Gemini content.
+func parseNDJSONChunks(body []byte) []map[string]any {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return nil
+	}
+	lines := bytes.Split(body, []byte("\n"))
+	var chunks []map[string]any
+	for _, line := range lines {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var obj map[string]any
+		if err := json.Unmarshal(line, &obj); err != nil {
+			return nil
+		}
+		chunks = append(chunks, obj)
+	}
+	if len(chunks) < 2 {
+		return nil
+	}
+	if _, ok := chunks[0]["candidates"]; !ok {
+		return nil
+	}
+	return chunks
+}
+
+// convertGeminiNDJSONArray converts a JSON array of Gemini response chunks
+// into the target client protocol response. Since Gemini streaming chunks
+// are cumulative snapshots, we merge all parts and build a single response
+// from the last chunk (which has the most complete state including
+// finishReason). The merged text/functionCall parts are extracted from
+// the first candidate of each chunk.
+func convertGeminiNDJSONArray(chunks []map[string]any, opts *ConvertOptions) ([]byte, error) {
+	if len(chunks) == 0 {
+		return []byte(`{"candidates":[],"usageMetadata":{}}`), nil
+	}
+	// Determine target client protocol from session or model map.
+	target := ProtocolOpenAIChat
+	if opts != nil && opts.SessionStore != nil && opts.SID != "" {
+		if sess := opts.SessionStore.Get(opts.SID); sess != nil {
+			target = sess.From
+		}
+	}
+	if target == ProtocolUnknown && opts != nil && opts.ModelMap != nil {
+		_, target = resolveModel("", ProtocolGemini, opts.ModelMap)
+		if target == ProtocolUnknown {
+			target = ProtocolOpenAIChat
+		}
+	}
+
+	// Check for Gemini API error (e.g. 429 quota exceeded) before processing chunks.
+	for _, raw := range chunks {
+		if errVal, ok := raw["error"]; ok {
+			msg, code := extractGeminiError(errVal)
+			slog.Warn("Gemini API error in response", "msg", msg, "code", code)
+			return formatProviderError(target, code, msg)
+		}
+	}
+
+	// Merge parts from each chunk into a single GeminiChatResponse.
+	// Each chunk is cumulative, so we collect all unique text + functionCall
+	// parts from the first candidate, taking the last chunk's finishReason.
+	merged := GeminiChatResponse{}
+	var seenTexts []string
+	seenFns := make(map[string]bool)
+	for _, raw := range chunks {
+		var resp GeminiChatResponse
+		b, _ := json.Marshal(raw)
+		if err := json.Unmarshal(b, &resp); err != nil {
+			continue
+		}
+		if len(resp.Candidates) == 0 {
+			continue
+		}
+		c := resp.Candidates[0]
+		for _, p := range c.Content.Parts {
+			if p.Text != "" && p.FunctionCall == nil {
+				seenTexts = append(seenTexts, p.Text)
+			}
+			if p.FunctionCall != nil && !seenFns[p.FunctionCall.Name] {
+				seenFns[p.FunctionCall.Name] = true
+				merged.Candidates = []GeminiCandidate{{Content: GeminiContent{Role: "model"}}}
+				merged.Candidates[0].Content.Parts = append(merged.Candidates[0].Content.Parts, p)
+			}
+		}
+		merged.UsageMetadata = resp.UsageMetadata
+		if c.FinishReason != "" {
+			merged.Candidates = []GeminiCandidate{{
+				Content:      GeminiContent{Role: "model"},
+				FinishReason: c.FinishReason,
+				Index:        c.Index,
+			}}
+		}
+	}
+	// Assemble text parts into merged response.
+	if len(merged.Candidates) == 0 {
+		merged.Candidates = []GeminiCandidate{{Content: GeminiContent{Role: "model"}}}
+	}
+	// Concatenate text fragments from all chunks (Gemini stream chunks are
+	// not cumulative — each chunk's text is a fragment that builds the response).
+	var fullText string
+	for _, t := range seenTexts {
+		fullText += t
+	}
+	if fullText != "" {
+		merged.Candidates[0].Content.Parts = append(
+			[]GeminiPart{{Text: fullText}},
+			merged.Candidates[0].Content.Parts...,
+		)
+	}
+	if len(merged.Candidates[0].Content.Parts) == 0 && merged.Candidates[0].FinishReason == "" {
+		// ponytail: empty response, return minimal structure
+		merged.Candidates[0].Content.Parts = []GeminiPart{{Text: " "}}
+	}
+
+	b, err := json.Marshal(merged)
+	if err != nil {
+		return nil, err
+	}
+
+	// Return plain JSON for non-streaming response (Client didn't send stream:true).
+	// SSE wrapping (anthropicResponseToSSE) only belongs in the streaming path.
+	switch target {
+	case ProtocolAnthropic:
+		return convertGeminiResponseToAnthropic(b, opts)
+	default:
+		return convertGeminiResponseToOpenAI(b, opts)
+	}
+}
+
+// sanitizeGeminiSchema recursively strips JSON Schema keywords that Gemini's
+// functionDeclarations.parameters rejects: $schema, additionalProperties,
+// propertyNames, const, exclusiveMinimum (numeric), and any_of (not supported).
+// normalizeToolResponse ensures the tool result response is a JSON Object.
+// Gemini rejects plain strings / arrays in function_response.response
+// (type.googleapis.com/google.protobuf.Struct); wrap them in an object.
+func normalizeToolResponse(v any) any {
+	switch x := v.(type) {
+	case string:
+		return map[string]any{"output": x}
+	case []any:
+		return map[string]any{"output": x}
+	default:
+		return v
+	}
+}
+
+// Gemini's schema model is an OpenAPI 3.0 subset; anything outside it fails.
+func sanitizeGeminiSchema(v any) any {
+	switch m := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(m))
+		for k, val := range m {
+			switch k {
+			case "$schema", "additionalProperties", "propertyNames", "const":
+				continue
+			case "exclusiveMinimum":
+				if _, ok := val.(float64); ok {
+					continue // Gemini rejects numeric exclusiveMinimum
+				}
+				out[k] = sanitizeGeminiSchema(val)
+			case "any_of":
+				continue // Gemini doesn't support any_of
+			default:
+				out[k] = sanitizeGeminiSchema(val)
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(m))
+		for i, val := range m {
+			out[i] = sanitizeGeminiSchema(val)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+// extractGeminiError extracts error message and code from a Gemini API error value.
+// The error value is typically a map with "code", "message", and "status" keys.
+func extractGeminiError(errVal any) (msg string, code int) {
+	code = 500 // default
+	switch m := errVal.(type) {
+	case map[string]any:
+		if c, ok := m["code"].(float64); ok {
+			code = int(c)
+		}
+		if s, ok := m["message"].(string); ok {
+			msg = s
+		}
+		if msg == "" {
+			if s, ok := m["status"].(string); ok {
+				msg = s
+			}
+		}
+	default:
+		msg = fmt.Sprintf("%v", errVal)
+	}
+	return
+}
+
+// formatProviderError formats an error as the target provider's error response format.
+// Anthropic: {"type":"error","error":{"type":"api_error","message":"..."}}
+// OpenAI: {"error":{"message":"...","type":"server_error","code":429}}
+func formatProviderError(target Protocol, code int, msg string) ([]byte, error) {
+	switch target {
+	case ProtocolAnthropic:
+		b, err := json.Marshal(map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type":    "api_error",
+				"message": fmt.Sprintf("Gemini API error (HTTP %d): %s", code, msg),
+			},
+		})
+		return b, err
+	default: // OpenAI
+		b, err := json.Marshal(map[string]any{
+			"error": map[string]any{
+				"message": fmt.Sprintf("Gemini API error (HTTP %d): %s", code, msg),
+				"type":    "server_error",
+				"code":    code,
+			},
+		})
+		return b, err
+	}
 }

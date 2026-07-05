@@ -14,6 +14,10 @@ type SessionStore struct {
 	sessions map[string]*Session
 	order    []string
 	maxSize  int
+
+	// ThoughtSignatures persists functionCall → thoughtSignature mappings across
+	// session lifecycles (Delete/Set clears the Session but signatures must survive).
+	ThoughtSignatures map[string]map[string]string // sid → funcName → thoughtSig
 }
 
 // NewSessionStore creates a session store with the given max size.
@@ -69,6 +73,29 @@ func (s *SessionStore) Delete(sid string) {
 			break
 		}
 	}
+}
+
+// GetThoughtSig returns the stored thought signature for a (sid, funcName) pair.
+func (s *SessionStore) GetThoughtSig(sid, funcName string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.ThoughtSignatures == nil {
+		return ""
+	}
+	return s.ThoughtSignatures[sid][funcName]
+}
+
+// SetThoughtSig stores a thought signature for a (sid, funcName) pair.
+func (s *SessionStore) SetThoughtSig(sid, funcName, sig string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ThoughtSignatures == nil {
+		s.ThoughtSignatures = make(map[string]map[string]string)
+	}
+	if s.ThoughtSignatures[sid] == nil {
+		s.ThoughtSignatures[sid] = make(map[string]string)
+	}
+	s.ThoughtSignatures[sid][funcName] = sig
 }
 
 func (s *SessionStore) evictLocked() {

@@ -179,6 +179,11 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 		return convertOpenAIStreamChunkToAnthropic(evt)
 	}
 
+
+		if isGeminiStreamChunk([]byte(evt.Data)) {
+			return convertGeminiStreamChunk(evt, opts)
+		}
+
 	// Default: convert data payload with Convert().
 	convertSSEEvent(evt, opts)
 	return reconstructSSEEvent(evt), nil
@@ -318,9 +323,20 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 		return ConvertSSE(body, opts)
 	}
 
-	// Parse as JSON.
+	// Parse as JSON. NDJSON arrays of Gemini streaming chunks arrive
+	// as a top-level JSON array; unwrap and convert each element.
+	if len(body) > 0 && body[0] == '[' {
+		if arr, ok := parseJSONArray(body); ok && len(arr) > 0 {
+			return convertGeminiNDJSONArray(arr, opts)
+		}
+	}
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
+		// NDJSON: newline-separated JSON objects (Gemini streaming response
+		// without SSE framing, common with streamGenerateContent).
+		if chunks := parseNDJSONChunks(body); len(chunks) > 0 {
+			return convertGeminiNDJSONArray(chunks, opts)
+		}
 		slog.Debug("not JSON, passing through", "err", err)
 		return body, nil
 	}
@@ -554,6 +570,19 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			from = detectByURI(opts.URI, dir)
 		}
 
+		// NDJSON: newline-separated Gemini streaming chunks without proper SSE
+		// framing (no data: prefix, no \n\n delimiter). Common when Gemini's
+		// streamGenerateContent endpoint returns multiple JSON objects separated
+		// by newlines wrapped in a text/event-stream Content-Type header, which
+		// causes the sniffer's SSE splitter to treat the whole body as one event.
+		var ndjsonChunks []map[string]any
+		if from == ProtocolUnknown && payload != nil {
+			ndjsonChunks = parseNDJSONChunks(payload)
+			if len(ndjsonChunks) > 0 {
+				from = ProtocolGemini
+			}
+		}
+
 		// Target protocol = the client protocol. Prefer the value stored on the
 		// request path (authoritative — makes streaming symmetric with the non-
 		// streaming response path); fall back to model-map resolution when no
@@ -612,6 +641,31 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 						store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: handler})
 					}
 					startData := handler.HandleStreamStart()
+
+					if len(ndjsonChunks) > 0 {
+						// NDJSON: process all chunks through the stream
+						// converter and emit end events in one shot.
+						var parts [][]byte
+						if len(startData) > 0 {
+							parts = append(parts, startData)
+						}
+						for _, chunk := range ndjsonChunks {
+							b, _ := json.Marshal(chunk)
+							out, err := handler.HandleChunk(b)
+							if err != nil {
+								return bytes.Join(parts, []byte("\n\n")), err
+							}
+							if len(out) > 0 {
+								parts = append(parts, out)
+							}
+						}
+						endData := handler.HandleStreamEnd()
+						if len(endData) > 0 {
+							parts = append(parts, endData)
+						}
+						return bytes.Join(parts, []byte("\n\n")), nil
+					}
+
 					if len(data) > 0 {
 						payload := extractSSEPayload(data)
 						if payload != nil {
@@ -684,7 +738,29 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			return startData, nil
 		}
 
-		// Passthrough handlers expect SSE-framed input from the start
+		// Capture thoughtSignature from Gemini functionCall parts for next request.
+	if payload != nil {
+		var probe struct {
+			Candidates []struct {
+				Content struct {
+					Parts []GeminiPart `json:"parts"`
+				} `json:"content"`
+			} `json:"candidates"`
+		}
+		if json.Unmarshal(payload, &probe) == nil {
+			for _, cand := range probe.Candidates {
+				for _, part := range cand.Content.Parts {
+					if part.FunctionCall != nil && part.ThoughtSignature != "" {
+						if store != nil {
+							store.SetThoughtSig(sid, part.FunctionCall.Name, part.ThoughtSignature)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Passthrough handlers expect SSE-framed input from the start
 		// phase, but extractSSEPayload strips framing. Pass the raw
 		// SSE event to preserve proper formatting for the client.
 		chunkInput := payload

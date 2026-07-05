@@ -25,6 +25,7 @@ type GeminiPart struct {
 	FileData            *GeminiFileData           `json:"fileData,omitempty"`
 	ExecutableCode      *GeminiExecutableCode     `json:"executableCode,omitempty"`
 	CodeExecutionResult *GeminiCodeExecutionResult `json:"codeExecutionResult,omitempty"`
+	ThoughtSignature    string                    `json:"thoughtSignature,omitempty"`
 }
 
 // GeminiFunctionCall represents a function call part (like tool_use).
