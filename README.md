@@ -6,23 +6,26 @@ A GOST Rewriter HTTP plugin that converts bidirectionally between **OpenAI Chat 
 
 ## Table of Contents
 
-- [How it works](#how-it-works)
-- [Quick start](#quick-start)
-  - [With Docker Compose](#with-docker-compose)
-  - [LLM Router (body routing)](#llm-router-body-routing)
-  - [Claude Code → DeepSeek (via opencode-go)](#claude-code--deepseek-via-opencode-go)
-  - [Codex CLI → DeepSeek (via opencode-go)](#codex-cli--deepseek-via-opencode-go)
-- [Capabilities](#capabilities)
-  - [Protocol conversion](#protocol-conversion)
-  - [Streaming](#streaming)
-  - [Multi-tier reasoning cache (DeepSeek V4)](#multi-tier-reasoning-cache-deepseek-v4)
-  - [Message sequence sanitization](#message-sequence-sanitization)
-  - [Content support](#content-support)
-- [CLI flags](#cli-flags)
-- [Project structure](#project-structure)
-- [Tests](#tests)
-- [Related projects](#related-projects)
-- [License](#license)
+- [llm-api-converter](#llm-api-converter)
+  - [Table of Contents](#table-of-contents)
+  - [How it works](#how-it-works)
+  - [Quick start](#quick-start)
+    - [With Docker Compose](#with-docker-compose)
+    - [Claude Code → DeepSeek (via opencode-go)](#claude-code--deepseek-via-opencode-go)
+    - [LLM Router (body routing)](#llm-router-body-routing)
+    - [Codex CLI → DeepSeek (via opencode-go)](#codex-cli--deepseek-via-opencode-go)
+    - [Claude Code → Gemini](#claude-code--gemini)
+  - [Capabilities](#capabilities)
+    - [Protocol conversion](#protocol-conversion)
+    - [Streaming](#streaming)
+    - [Multi-tier reasoning cache (DeepSeek V4)](#multi-tier-reasoning-cache-deepseek-v4)
+    - [Message sequence sanitization](#message-sequence-sanitization)
+    - [Content support](#content-support)
+  - [CLI flags](#cli-flags)
+  - [Project structure](#project-structure)
+  - [Tests](#tests)
+  - [Related projects](#related-projects)
+  - [License](#license)
 
 ## How it works
 
@@ -259,6 +262,83 @@ codex
 ```
 
 Codex CLI sends Responses API requests to `/v1/responses`; GOST intercepts them, the converter rewrites the body to Chat Completions format (with model name remapping), and the request is forwarded to opencode-go with the URL rewritten to `/zen/go/v1/chat/completions`. Upstream Chat Completions responses are converted back to Responses API format transparently.
+
+### Claude Code → Gemini
+
+This setup routes Claude Code (Anthropic protocol) directly to the Google Gemini API through GOST + llm-api-converter, with direct Anthropic↔Gemini protocol conversion:
+
+```
+Claude Code → GOST (proxy) → llm-api-converter → Google Gemini API
+```
+
+**1. Start the converter with `:gemini` protocol override:**
+
+```bash
+./llm-api-converter \
+  --addr :8000 \
+  --model-map "*=gemini-3.1-flash-lite:gemini"
+```
+
+The `:gemini` protocol tells the converter the downstream speaks Gemini generateContent — since Claude Code sends Anthropic format, the converter runs Anthropic→Gemini on the request and Gemini→Anthropic on the response.
+
+**2. Configure GOST to point directly at the Gemini API:**
+
+```yaml
+# gost.yaml
+services:
+- name: claude-code-proxy
+  addr: :8787
+  handler:
+    type: tcp
+    metadata:
+      sniffing: true
+  listener:
+    type: tcp
+  forwarder:
+    hop: hop-0
+
+hops:
+- name: hop-0
+  nodes:
+  - name: gemini
+    addr: generativelanguage.googleapis.com:443
+    tls:
+      secure: true
+      serverName: generativelanguage.googleapis.com
+    http:
+      host: generativelanguage.googleapis.com
+      rewriteURL:
+      - match: /v1/messages
+        replacement: /v1beta/models/gemini-3.1-flash-lite:streamGenerateContent?alt=sse
+      requestHeader:
+        X-goog-api-key: "your-gemini-api-key"
+        Authorization: ""
+      rewriteRequestBody:
+      - rewriter: gemini-converter
+      rewriteResponseBody:
+      - rewriter: llm-converter
+
+rewriters:
+- name: gemini-converter
+  plugin:
+    type: http
+    addr: http://127.0.0.1:8000/rewrite
+```
+
+Key details:
+- `rewriteURL` maps Anthropic `/v1/messages` to Gemini's `streamGenerateContent` with SSE output
+- `X-goog-api-key` is the Gemini API auth method (not `Authorization: Bearer`)
+- `Authorization: ""` — empty value strips the Anthropic Bearer token so it doesn't reach Google
+- `:gemini` protocol in the model-map triggers Anthropic↔Gemini body conversion in both directions
+
+**3. Point Claude Code at the proxy:**
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+claude
+```
+
+Claude Code sends Anthropic `POST /v1/messages` to the proxy. GOST intercepts it, the converter rewrites the body to Gemini `generateContent` format, and the request is forwarded directly to the Google Gemini API. Streaming responses come back as Gemini SSE chunks and are converted to Anthropic SSE events transparently.
 
 ## Capabilities
 

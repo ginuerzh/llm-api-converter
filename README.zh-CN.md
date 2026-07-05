@@ -12,6 +12,7 @@
   - [LLM 路由器（请求体路由）](#llm-路由器请求体路由)
   - [Claude Code → DeepSeek（经 opencode-go）](#claude-code--deepseek经-opencode-go)
   - [Codex CLI → DeepSeek（经 opencode-go）](#codex-cli--deepseek经-opencode-go)
+  - [Claude Code → Gemini](#claude-code--gemini)
 - [功能特性](#功能特性)
   - [协议转换](#协议转换)
   - [流式处理](#流式处理)
@@ -259,6 +260,83 @@ codex
 ```
 
 Codex CLI 将 Responses API 请求发送到 `/v1/responses`；GOST 拦截后，转换器把报文重写为 Chat Completions 格式（并重映射模型名），请求被转发到 opencode-go，URL 重写为 `/zen/go/v1/chat/completions`。上游的 Chat Completions 响应在返回时被透明地转换回 Responses API 格式。
+
+### Claude Code → Gemini
+
+此方案将 Claude Code（Anthropic 协议）通过 GOST + llm-api-converter 直接路由到 Google Gemini API，进行 Anthropic↔Gemini 原生转换：
+
+```
+Claude Code → GOST（代理）→ llm-api-converter → Google Gemini API
+```
+
+**1. 启动转换器并指定 `:gemini` 协议覆盖：**
+
+```bash
+./llm-api-converter \
+  --addr :8000 \
+  --model-map "*=gemini-3.1-flash-lite:gemini"
+```
+
+`:gemini` 协议声明下游使用 Gemini generateContent——由于 Claude Code 发送的是 Anthropic 格式，转换器在请求方向执行 Anthropic→Gemini 转换，在响应方向执行 Gemini→Anthropic 转换。
+
+**2. 配置 GOST 直接指向 Gemini API：**
+
+```yaml
+# gost.yaml
+services:
+- name: claude-code-proxy
+  addr: :8787
+  handler:
+    type: tcp
+    metadata:
+      sniffing: true
+  listener:
+    type: tcp
+  forwarder:
+    hop: hop-0
+
+hops:
+- name: hop-0
+  nodes:
+  - name: gemini
+    addr: generativelanguage.googleapis.com:443
+    tls:
+      secure: true
+      serverName: generativelanguage.googleapis.com
+    http:
+      host: generativelanguage.googleapis.com
+      rewriteURL:
+      - match: /v1/messages
+        replacement: /v1beta/models/gemini-3.1-flash-lite:streamGenerateContent?alt=sse
+      requestHeader:
+        X-goog-api-key: "your-gemini-api-key"
+        Authorization: ""
+      rewriteRequestBody:
+      - rewriter: gemini-converter
+      rewriteResponseBody:
+      - rewriter: gemini-converter
+
+rewriters:
+- name: gemini-converter
+  plugin:
+    type: http
+    addr: http://127.0.0.1:8000/rewrite
+```
+
+关键细节：
+- `rewriteURL` 将 Anthropic `/v1/messages` 映射到 Gemini 的 `streamGenerateContent?alt=sse`
+- `X-goog-api-key` 是 Gemini API 的认证方式（不使用 `Authorization: Bearer`）
+- `Authorization: ""` —— 空值会删除 Anthropic 的 Bearer token，避免透传到 Google
+- model-map 中的 `:gemini` 协议覆盖在两个方向上都触发 Anthropic↔Gemini 报文转换
+
+**3. 将 Claude Code 指向代理：**
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+claude
+```
+
+Claude Code 将 Anthropic 格式的 `POST /v1/messages` 发送到代理。GOST 拦截后，转换器将报文重写为 Gemini `generateContent` 格式，直接转发到 Google Gemini API。流式响应以 Gemini SSE 分块返回，并被透明地转换为 Anthropic SSE 事件序列。
 
 ## 功能特性
 
