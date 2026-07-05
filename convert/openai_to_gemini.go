@@ -95,7 +95,7 @@ func convertOpenAIRequestToGemini(body []byte, opts *ConvertOptions) ([]byte, er
 		case "system", "developer":
 			sysTexts = append(sysTexts, extractTextContent(m.Content))
 		default:
-			content := convertOpenAIMsgToGeminiContent(m, toolCallIDToName)
+			content := convertOpenAIMsgToGeminiContent(m, toolCallIDToName, opts)
 			if content != nil {
 				gemini.Contents = append(gemini.Contents, *content)
 			}
@@ -159,7 +159,7 @@ func convertOpenAIRequestToGemini(body []byte, opts *ConvertOptions) ([]byte, er
 
 // convertOpenAIMsgToGeminiContent converts a single OpenAI message to Gemini content.
 // toolCallIDToName maps tool_call_id → function name for tool result resolution.
-func convertOpenAIMsgToGeminiContent(msg OpenAIMessage, toolCallIDToName map[string]string) *GeminiContent {
+func convertOpenAIMsgToGeminiContent(msg OpenAIMessage, toolCallIDToName map[string]string, opts *ConvertOptions) *GeminiContent {
 	role := msg.Role
 	switch role {
 	case "assistant":
@@ -210,12 +210,20 @@ func convertOpenAIMsgToGeminiContent(msg OpenAIMessage, toolCallIDToName map[str
 		if tc.Function.Arguments != "" {
 			json.Unmarshal([]byte(tc.Function.Arguments), &args)
 		}
-		parts = append(parts, GeminiPart{
+		part := GeminiPart{
 			FunctionCall: &GeminiFunctionCall{
 				Name: tc.Function.Name,
 				Args: args,
 			},
-		})
+		}
+		if opts != nil && opts.SessionStore != nil && opts.SID != "" {
+			if sig := opts.SessionStore.GetThoughtSig(opts.SID, tc.Function.Name); sig != "" {
+				part.ThoughtSignature = sig
+			} else {
+				part.ThoughtSignature = "skip_thought_signature_validator"
+			}
+		}
+		parts = append(parts, part)
 	}
 
 	// Legacy function_call.
@@ -224,12 +232,20 @@ func convertOpenAIMsgToGeminiContent(msg OpenAIMessage, toolCallIDToName map[str
 		if msg.FunctionCall.Arguments != "" {
 			json.Unmarshal([]byte(msg.FunctionCall.Arguments), &args)
 		}
-		parts = append(parts, GeminiPart{
+		part := GeminiPart{
 			FunctionCall: &GeminiFunctionCall{
 				Name: msg.FunctionCall.Name,
 				Args: args,
 			},
-		})
+		}
+		if opts != nil && opts.SessionStore != nil && opts.SID != "" {
+			if sig := opts.SessionStore.GetThoughtSig(opts.SID, msg.FunctionCall.Name); sig != "" {
+				part.ThoughtSignature = sig
+			} else {
+				part.ThoughtSignature = "skip_thought_signature_validator"
+			}
+		}
+		parts = append(parts, part)
 	}
 
 	// Tool result → functionResponse part.
@@ -530,7 +546,7 @@ func convertGeminiRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte, er
 // OpenAI Chat Response → Gemini Response
 // ---------------------------------------------------------------------------
 
-func convertOpenAIResponseToGemini(body []byte, _ *ConvertOptions) ([]byte, error) {
+func convertOpenAIResponseToGemini(body []byte, opts *ConvertOptions) ([]byte, error) {
 	var resp OpenAIChatResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		slog.Warn("failed to unmarshal OpenAI response", "err", err)
@@ -574,12 +590,20 @@ func convertOpenAIResponseToGemini(body []byte, _ *ConvertOptions) ([]byte, erro
 			if tc.Function.Arguments != "" {
 				json.Unmarshal([]byte(tc.Function.Arguments), &args)
 			}
-			parts = append(parts, GeminiPart{
+			part := GeminiPart{
 				FunctionCall: &GeminiFunctionCall{
 					Name: tc.Function.Name,
 					Args: args,
 				},
-			})
+			}
+			if opts != nil && opts.SessionStore != nil && opts.SID != "" {
+				if sig := opts.SessionStore.GetThoughtSig(opts.SID, tc.Function.Name); sig != "" {
+					part.ThoughtSignature = sig
+				} else {
+					part.ThoughtSignature = "skip_thought_signature_validator"
+				}
+			}
+			parts = append(parts, part)
 		}
 
 		c.Content.Parts = parts

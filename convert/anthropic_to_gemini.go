@@ -150,6 +150,8 @@ func convertAnthropicMsgToGeminiContent(msg AnthropicMessage, opts *ConvertOptio
 			if opts != nil && opts.SessionStore != nil && opts.SID != "" {
 				if sig := opts.SessionStore.GetThoughtSig(opts.SID, block.Name); sig != "" {
 					part.ThoughtSignature = sig
+				} else {
+					part.ThoughtSignature = "skip_thought_signature_validator"
 				}
 			}
 			parts = append(parts, part)
