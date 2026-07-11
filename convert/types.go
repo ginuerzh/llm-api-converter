@@ -457,6 +457,11 @@ type ConvertOptions struct {
 	SessionStore *SessionStore
 	// ErrorMsg, when non-empty, causes HandleSSEEvent to emit an error event.
 	ErrorMsg string
+	// FilterRedactedThinking strips redacted_thinking content blocks from
+	// Anthropic responses before returning. OpenRouter includes these blocks
+	// for newer Claude models (Sonnet 4.5/4.6), which the Claude Code client
+	// cannot parse, causing a crashed/empty output.
+	FilterRedactedThinking bool
 }
 
 // -------- OpenAI Streaming Types --------

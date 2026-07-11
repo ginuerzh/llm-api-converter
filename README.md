@@ -424,6 +424,7 @@ The cache backend is pluggable via the `ReasoningStore` interface (`Get`, `Set`,
 | `--max-tokens` | `8192` | Default max_tokens |
 | `--model-map` | `` | Model mapping: `prefix=target[:protocol],...` (* for catch-all, protocol: openai\|anthropic\|gemini) |
 | `--cache` | `memory` | Reasoning cache backend: `memory` or `file:<path>` |
+| `--filter-redacted-thinking` | `false` | Strip `redacted_thinking` blocks from Anthropic responses (OpenRouter compat) |
 | `--log.level` | `info` | Log level |
 | `--log.format` | `json` | Log format (text or json) |
 

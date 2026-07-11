@@ -112,13 +112,20 @@ func (s *SessionStore) evictLocked() {
 
 // PassthroughStreamHandler passes through events with optional model rewrite.
 type PassthroughStreamHandler struct {
-	model    string
-	protocol Protocol
+	model           string
+	protocol        Protocol
+	filterRedacted  bool
+	redactedIndices map[int]bool // content block indices whose start was filtered
 }
 
 // NewPassthroughStreamHandler creates a passthrough handler for the target model.
-func NewPassthroughStreamHandler(model string, protocol Protocol) *PassthroughStreamHandler {
-	return &PassthroughStreamHandler{model: model, protocol: protocol}
+func NewPassthroughStreamHandler(model string, protocol Protocol, filterRedacted bool) *PassthroughStreamHandler {
+	return &PassthroughStreamHandler{
+		model:           model,
+		protocol:        protocol,
+		filterRedacted:  filterRedacted,
+		redactedIndices: make(map[int]bool),
+	}
 }
 
 func (p *PassthroughStreamHandler) HandleStreamStart() []byte { return nil }
@@ -182,7 +189,8 @@ func (h *GeminiStreamHandler) EmitError(message string) []byte {
 	return append([]byte("event: error\ndata: "), append(b, '\n')...)
 }
 
-// anthropicPassthrough rewrites model in message_start events only.
+// anthropicPassthrough rewrites model in message_start events and
+// filters redacted_thinking content blocks when enabled.
 func (p *PassthroughStreamHandler) anthropicPassthrough(data []byte) []byte {
 	evt := parseSSEEvent(data)
 	if evt.Data == "" {
@@ -192,7 +200,38 @@ func (p *PassthroughStreamHandler) anthropicPassthrough(data []byte) []byte {
 	if err := json.Unmarshal([]byte(evt.Data), &raw); err != nil {
 		return data
 	}
-	if t, _ := raw["type"].(string); t == "message_start" {
+	t, _ := raw["type"].(string)
+
+	// Filter redacted_thinking content blocks when enabled.
+	if p.filterRedacted {
+		switch t {
+		case "content_block_start":
+			if cb, ok := raw["content_block"].(map[string]any); ok {
+				if cbt, _ := cb["type"].(string); cbt == "redacted_thinking" {
+					if idx, ok := raw["index"].(float64); ok {
+						p.redactedIndices[int(idx)] = true
+					}
+					return nil
+				}
+			}
+		case "content_block_delta":
+			if d, ok := raw["delta"].(map[string]any); ok {
+				if dt, _ := d["type"].(string); dt == "redacted_thinking_delta" {
+					return nil
+				}
+			}
+		case "content_block_stop":
+			if idx, ok := raw["index"].(float64); ok {
+				if p.redactedIndices[int(idx)] {
+					delete(p.redactedIndices, int(idx))
+					return nil
+				}
+			}
+		}
+	}
+
+	// Model rewrite in message_start events.
+	if t == "message_start" {
 		if msg, ok := raw["message"].(map[string]any); ok {
 			if old, _ := msg["model"].(string); p.model != "" && old != "" && old != p.model {
 				msg["model"] = p.model

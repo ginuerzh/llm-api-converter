@@ -422,6 +422,7 @@ response.created → response.in_progress → output_item.added → content_part
 | `--max-tokens` | `8192` | 默认 max_tokens |
 | `--model-map` | `` | 模型映射：`prefix=target[:protocol],...`（`*` 为兜底，protocol: openai\|anthropic\|gemini） |
 | `--cache` | `memory` | 推理缓存后端：`memory` 或 `file:<path>` |
+| `--filter-redacted-thinking` | `false` | 从 Anthropic 响应中移除 `redacted_thinking` 内容块（OpenRouter 兼容） |
 | `--log.level` | `info` | 日志级别 |
 | `--log.format` | `json` | 日志格式（text 或 json） |
 

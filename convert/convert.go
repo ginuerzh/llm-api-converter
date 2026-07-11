@@ -174,6 +174,12 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 		}
 	}
 
+	// Filter redacted_thinking SSE events when enabled.
+	if opts.FilterRedactedThinking && isRedactedThinkingSSE(evt) {
+		slog.Debug("filtered redacted_thinking SSE event", "event", evt.Event)
+		return nil, nil
+	}
+
 	// Check for OpenAI streaming chunk: data payload with choices[].delta.
 	if isOpenAIStreamChunk([]byte(evt.Data)) {
 		return convertOpenAIStreamChunkToAnthropic(evt)
@@ -239,6 +245,95 @@ func convertOpenAIStreamChunkToAnthropic(evt *SSEEvent) ([]byte, error) {
 	return reconstructSSEEvent(evt), nil
 }
 
+// stripRedactedThinkingFromResponse removes redacted_thinking content blocks
+// from a non-streaming Anthropic response body. Returns the original body
+// unchanged when no redacted_thinking blocks are found.
+func stripRedactedThinkingFromResponse(body []byte) []byte {
+	var resp struct {
+		Type    string             `json:"type"`
+		Content []*json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return body
+	}
+	if resp.Type != "message" || len(resp.Content) == 0 {
+		return body
+	}
+
+	var filtered []json.RawMessage
+	for _, block := range resp.Content {
+		if block == nil {
+			continue
+		}
+		var typ struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(*block, &typ); err != nil || typ.Type == "redacted_thinking" {
+			continue
+		}
+		filtered = append(filtered, *block)
+	}
+	if len(filtered) == len(resp.Content) {
+		return body
+	}
+	// Rebuild: unmarshal full body, patch content, re-marshal.
+	var full map[string]any
+	if err := json.Unmarshal(body, &full); err != nil {
+		return body
+	}
+	content := make([]any, len(filtered))
+	for i, b := range filtered {
+		var v any
+		if json.Unmarshal(b, &v) == nil {
+			content[i] = v
+		}
+	}
+	full["content"] = content
+	patched, err := json.Marshal(full)
+	if err != nil {
+		return body
+	}
+	return patched
+}
+
+// isRedactedThinkingSSE checks if an SSE event contains a redacted_thinking
+// content block (content_block_start or content_block_delta).
+func isRedactedThinkingSSE(evt *SSEEvent) bool {
+	if evt.Data == "" {
+		return false
+	}
+	var raw struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(evt.Data), &raw); err != nil {
+		return false
+	}
+	switch raw.Type {
+	case "content_block_start":
+		var cbs struct {
+			ContentBlock struct {
+				Type string `json:"type"`
+			} `json:"content_block"`
+		}
+		if err := json.Unmarshal([]byte(evt.Data), &cbs); err != nil {
+			return false
+		}
+		return cbs.ContentBlock.Type == "redacted_thinking"
+	case "content_block_delta":
+		var cbd struct {
+			Delta struct {
+				Type string `json:"type"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(evt.Data), &cbd); err != nil {
+			return false
+		}
+		return cbd.Delta.Type == "redacted_thinking_delta"
+	}
+	return false
+}
+
+// mapOpenAIStreamFinish converts an OpenAI finish_reason to an Anthropic stop_reason.
 func mapOpenAIStreamFinish(reason string) string {
 	switch reason {
 	case "stop":
@@ -442,7 +537,14 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 
 	// Passthrough: body format matches client protocol.
 	if client != ProtocolUnknown && source == client {
-		return passthrough(raw, targetModel, opts, body)
+		out, err := passthrough(raw, targetModel, opts, body)
+		if err != nil {
+			return nil, err
+		}
+		if opts.FilterRedactedThinking && source == ProtocolAnthropic {
+			out = stripRedactedThinkingFromResponse(out)
+		}
+		return out, nil
 	}
 
 	// Convert if source differs from client.
@@ -611,7 +713,7 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 						sourceModel = prefix
 					}
 				}
-				handler := NewPassthroughStreamHandler(sourceModel, target)
+				handler := NewPassthroughStreamHandler(sourceModel, target, opts.FilterRedactedThinking)
 				if store != nil {
 					store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: handler})
 				}

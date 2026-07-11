@@ -18,10 +18,11 @@ var reqIDSeq atomic.Int64
 
 // Options holds the configuration for the rewriter plugin server.
 type Options struct {
-	Model     string
-	MaxTokens int
-	ModelMap  string // raw --model-map flag value
-	Cache     string // reasoning cache backend: "memory" (default) or "file:<path>"
+	Model                 string
+	MaxTokens             int
+	ModelMap              string // raw --model-map flag value
+	Cache                 string // reasoning cache backend: "memory" (default) or "file:<path>"
+	FilterRedactedThinking bool
 }
 
 type rewriteRequest struct {
@@ -89,11 +90,12 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	reqID := reqIDSeq.Add(1)
 
 	opts := &convert.ConvertOptions{
-		Model:          h.opts.Model,
-		MaxTokens:      h.opts.MaxTokens,
-		ModelMap:       h.modelMap,
-		ReasoningCache: h.reasoningCache,
-		SessionStore:   h.sessionStore,
+		Model:                 h.opts.Model,
+		MaxTokens:             h.opts.MaxTokens,
+		ModelMap:              h.modelMap,
+		ReasoningCache:        h.reasoningCache,
+		SessionStore:          h.sessionStore,
+		FilterRedactedThinking: h.opts.FilterRedactedThinking,
 	}
 
 	// Resolve original model name from model map (safety classifier needs it).

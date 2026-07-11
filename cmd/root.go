@@ -11,13 +11,14 @@ import (
 )
 
 var (
-	addr         string
-	model        string
-	maxTokens    int
-	modelMap     string
-	logLevel     string
-	logFormat    string
-	cacheBackend string
+	addr                  string
+	model                 string
+	maxTokens             int
+	modelMap              string
+	logLevel              string
+	logFormat             string
+	cacheBackend          string
+	filterRedactedThinking bool
 )
 
 var rootCmd = &cobra.Command{
@@ -51,10 +52,11 @@ var rootCmd = &cobra.Command{
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return rewriter.ListenAndServe(addr, &rewriter.Options{
-			Model:      model,
-			MaxTokens:  maxTokens,
-			Cache:     cacheBackend,
-				ModelMap:  modelMap,
+			Model:                 model,
+			MaxTokens:             maxTokens,
+			Cache:                 cacheBackend,
+			ModelMap:              modelMap,
+			FilterRedactedThinking: filterRedactedThinking,
 		})
 	},
 }
@@ -73,6 +75,7 @@ func init() {
 	rootCmd.PersistentFlags().IntVar(&maxTokens, "max-tokens", 8192, "default max_tokens")
 	rootCmd.PersistentFlags().StringVar(&modelMap, "model-map", "", "model mapping: prefix=target[:protocol],... (* for catch-all, protocol: openai|anthropic|gemini)")
 	rootCmd.PersistentFlags().StringVar(&cacheBackend, "cache", "memory", "reasoning cache backend: memory (default) or file:<path>")
+	rootCmd.PersistentFlags().BoolVar(&filterRedactedThinking, "filter-redacted-thinking", false, "strip redacted_thinking blocks from Anthropic responses (OpenRouter compat)")
 
 	rootCmd.SilenceErrors = true
 	rootCmd.SilenceUsage = true
