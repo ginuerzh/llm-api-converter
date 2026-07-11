@@ -135,6 +135,14 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 		return []byte("event: message_stop\ndata: {\"type\":\"message_stop\"}"), nil
 	}
 
+	// SSE comments (": ...") carry no data per spec.
+	if len(body) > 0 {
+		trimmed := bytes.TrimLeft(body, " \t\r\n")
+		if len(trimmed) > 0 && trimmed[0] == ':' {
+			return nil, nil
+		}
+	}
+
 	evt := parseSSEEvent(body)
 	if evt.Data == "" {
 		return body, nil
@@ -177,6 +185,14 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 	// Filter redacted_thinking SSE events when enabled.
 	if opts.FilterRedactedThinking && isRedactedThinkingSSE(evt) {
 		slog.Debug("filtered redacted_thinking SSE event", "event", evt.Event)
+		return nil, nil
+	}
+
+	// Filter OpenRouter processing events (non-standard, sent before the
+	// real stream starts). These have no detectable protocol and would
+	// confuse downstream clients if forwarded as-is.
+	if isOpenRouterProcessingEvent(evt) {
+		slog.Debug("filtered OpenRouter processing SSE event", "event", evt.Event)
 		return nil, nil
 	}
 
@@ -333,6 +349,24 @@ func isRedactedThinkingSSE(evt *SSEEvent) bool {
 	return false
 }
 
+// isOpenRouterProcessingEvent detects OpenRouter's non-standard SSE events
+// (event: OPENROUTER PROCESSING, data: {"type":"processing",...}).
+func isOpenRouterProcessingEvent(evt *SSEEvent) bool {
+	if evt.Event == "OPENROUTER PROCESSING" {
+		return true
+	}
+	if evt.Data == "" {
+		return false
+	}
+	var raw struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(evt.Data), &raw); err != nil {
+		return false
+	}
+	return raw.Type == "processing"
+}
+
 // mapOpenAIStreamFinish converts an OpenAI finish_reason to an Anthropic stop_reason.
 func mapOpenAIStreamFinish(reason string) string {
 	switch reason {
@@ -416,6 +450,15 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 	if isSSE(body) {
 		slog.Debug("SSE framing => ConvertSSE")
 		return ConvertSSE(body, opts)
+	}
+
+	// SSE comments (": ...") carry no data per SSE spec. OpenRouter sends
+	// ": OPENROUTER PROCESSING" as a keepalive. Drop them silently.
+	if len(body) > 0 {
+		trimmed := bytes.TrimLeft(body, " \t\r\n")
+		if len(trimmed) > 0 && trimmed[0] == ':' {
+			return nil, nil
+		}
 	}
 
 	// Parse as JSON. NDJSON arrays of Gemini streaming chunks arrive
@@ -648,6 +691,14 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 	if store != nil {
 		if sess := store.Get(sid); sess != nil && sess.IsResponses {
 			return handleResponsesSSEEvent(sid, phase, eventIndex, data, opts)
+		}
+	}
+
+	if len(data) > 0 {
+		trimmed := bytes.TrimLeft(data, " \t\r\n")
+		if len(trimmed) > 0 && trimmed[0] == ':' {
+			slog.Debug("skipping SSE comment", "body", string(bytes.TrimSpace(data)))
+			return nil, nil
 		}
 	}
 

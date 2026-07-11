@@ -202,6 +202,11 @@ func (p *PassthroughStreamHandler) anthropicPassthrough(data []byte) []byte {
 	}
 	t, _ := raw["type"].(string)
 
+	// Filter OpenRouter processing events (non-standard, no protocol value).
+	if t == "processing" {
+		return nil
+	}
+
 	// Filter redacted_thinking content blocks when enabled.
 	if p.filterRedacted {
 		switch t {
