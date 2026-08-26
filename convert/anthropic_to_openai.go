@@ -115,11 +115,19 @@ func toolChoiceInstruction(choice *AnthropicToolChoice, model string) string {
 }
 
 // thinkingToOpenAi converts Anthropic thinking config to OpenAI format.
+// Only values OpenAI-format APIs actually accept ("enabled"/"disabled") are
+// forwarded. Claude Code's "adaptive" mode has no OpenAI equivalent and
+// reasoning-only models reject it as an attempt to disable thinking.
 func thinkingToOpenAi(t *AnthropicThinking) any {
 	if t == nil {
 		return nil
 	}
-	return map[string]any{"type": t.Type}
+	switch t.Type {
+	case "enabled", "disabled":
+		return map[string]any{"type": t.Type}
+	default:
+		return nil
+	}
 }
 
 // thinkingToOpenAiGLM maps Anthropic thinking to GLM's structured thinking field.
@@ -129,23 +137,32 @@ func thinkingToOpenAiGLM(t *AnthropicThinking) any {
 	if t == nil {
 		return nil
 	}
-	result := map[string]any{"type": t.Type}
-	if t.Type == "enabled" && t.BudgetTokens > 0 {
-		result["budget_tokens"] = t.BudgetTokens
+	switch t.Type {
+	case "enabled", "disabled":
+		result := map[string]any{"type": t.Type}
+		if t.Type == "enabled" && t.BudgetTokens > 0 {
+			result["budget_tokens"] = t.BudgetTokens
+		}
+		return result
+	default:
+		return nil
 	}
-	return result
 }
 
 // reasoningEffortToOpenAi maps Anthropic output_config.effort to OpenAI reasoning_effort.
+// Values are preserved verbatim: OpenAI's official enum is low/medium/high, but
+// OpenAI-compatible models (DeepSeek, GLM, OpenRouter reasoning models such as
+// ox-alpha) also accept "max", so it is passed through rather than collapsed.
+// Only xhigh (an internal/higher concept) is capped to "max".
 func reasoningEffortToOpenAi(cfg *AnthropicOutputConfig) any {
 	if cfg == nil || cfg.Effort == "" {
 		return nil
 	}
 	switch strings.ToLower(cfg.Effort) {
-	case "max", "xhigh":
+	case "low", "medium", "high", "max":
+		return strings.ToLower(cfg.Effort)
+	case "xhigh":
 		return "max"
-	case "high", "medium", "low":
-		return "high"
 	}
 	return nil
 }
@@ -179,9 +196,8 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	if req.TopP != nil {
 		oai.TopP = req.TopP
 	}
-	if req.Metadata != nil {
-		oai.Metadata = req.Metadata
-	}
+	// Anthropic metadata (user_id etc.) is NOT forwarded: most OpenAI-compatible
+	// endpoints reject unknown params ("Invalid API parameter").
 
 	// Stop sequences → OpenAI stop.
 	if len(req.StopSequences) > 0 {
