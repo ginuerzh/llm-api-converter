@@ -118,3 +118,37 @@ func TestConvert_AnthropicMetadataNotForwarded(t *testing.T) {
 		t.Fatalf("Anthropic metadata should not be forwarded, got %v", o.Metadata)
 	}
 }
+
+// A single stop_sequences entry must serialize as an array, not a bare string.
+// Jackson-backed endpoints type stop as a list and reject a string value
+// (the reported 'Cannot construct instance of java.util.ArrayList' error).
+func TestConvert_StopSequencesAlwaysArray(t *testing.T) {
+	for _, seqs := range [][]string{
+		{`</block>`},
+		{`</block>`, `</tool>`},
+	} {
+		raw, _ := json.Marshal(seqs)
+		body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"stop_sequences":` + string(raw) + `}`
+		opts := &ConvertOptions{Model: "claude-sonnet-4-5", MaxTokens: 8192, ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat", Protocol: "openai"}}}
+		b, err := Convert([]byte(body), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var o OpenAIChatRequest
+		if err := json.Unmarshal(b, &o); err != nil {
+			t.Fatal(err)
+		}
+		arr, ok := o.Stop.([]any)
+		if !ok {
+			t.Fatalf("stop should be an array, got %T (%v)", o.Stop, o.Stop)
+		}
+		if len(arr) != len(seqs) {
+			t.Fatalf("stop length: want %d, got %d", len(seqs), len(arr))
+		}
+		for i, want := range seqs {
+			if s, _ := arr[i].(string); s != want {
+				t.Fatalf("stop[%d]: want %q, got %q", i, want, s)
+			}
+		}
+	}
+}

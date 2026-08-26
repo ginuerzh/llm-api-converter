@@ -199,17 +199,15 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	// Anthropic metadata (user_id etc.) is NOT forwarded: most OpenAI-compatible
 	// endpoints reject unknown params ("Invalid API parameter").
 
-	// Stop sequences → OpenAI stop.
+	// Stop sequences → OpenAI stop. Always emit an array: some backends
+	// (e.g. Spring/Jackson ChatCompletionRequest) type stop as a list and
+	// reject a bare string. OpenAI itself accepts both forms.
 	if len(req.StopSequences) > 0 {
-		if len(req.StopSequences) == 1 {
-			oai.Stop = req.StopSequences[0]
-		} else {
-			anys := make([]any, len(req.StopSequences))
-			for i, s := range req.StopSequences {
-				anys[i] = s
-			}
-			oai.Stop = anys
+		anys := make([]any, len(req.StopSequences))
+		for i, s := range req.StopSequences {
+			anys[i] = s
 		}
+		oai.Stop = anys
 	}
 
 	// Thinking config → model-specific OpenAI thinking field.
