@@ -304,7 +304,7 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 	return json.Marshal(anthropic)
 }
 
-// extractTextContent extracts the text representation of an OpenAI message content field.
+// extractTextContent extracts the text representation of a message content field.
 func extractTextContent(content any) string {
 	if content == nil {
 		return ""
@@ -321,6 +321,17 @@ func extractTextContent(content any) string {
 						parts = append(parts, txt)
 					}
 				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	case []AnthropicContent:
+		// Typed Anthropic blocks (AnthropicMessage.Content) — the generic
+		// cases above only match the JSON-decoded (map/any) form, and the
+		// fallback below would emit a Go struct dump instead of the text.
+		var parts []string
+		for _, b := range v {
+			if b.Type == "text" && b.Text != "" {
+				parts = append(parts, b.Text)
 			}
 		}
 		return strings.Join(parts, "\n")
