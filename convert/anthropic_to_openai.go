@@ -307,23 +307,33 @@ func convertAnthropicUserMessage(msg AnthropicMessage) []OpenAIMessage {
 	// Check for tool_result blocks (wrapped in "user" role in Anthropic).
 	var toolMsgs []OpenAIMessage
 	var textParts []string
+	var imageParts []map[string]any
 	for _, block := range msg.Content {
 		if block.Type == "tool_result" {
-			content := block.Content
-			if content == nil {
-				content = ""
-			}
+			text, images := toolResultContent(block.Content)
 			toolMsgs = append(toolMsgs, OpenAIMessage{
 				Role:       "tool",
 				ToolCallID: block.ToolUseID,
-				Content:    content,
+				Content:    text,
 			})
+			imageParts = append(imageParts, images...)
 		} else if block.Type == "text" && block.Text != "" {
 			textParts = append(textParts, block.Text)
 		}
 	}
 	if len(toolMsgs) > 0 {
-		if len(textParts) > 0 {
+		if len(imageParts) > 0 {
+			// Images from tool results ride in a trailing user message — the
+			// tool role only takes string content.
+			parts := make([]any, 0, len(imageParts)+1)
+			if len(textParts) > 0 {
+				parts = append(parts, map[string]any{"type": "text", "text": strings.Join(textParts, "\n")})
+			}
+			for _, img := range imageParts {
+				parts = append(parts, img)
+			}
+			toolMsgs = append(toolMsgs, OpenAIMessage{Role: "user", Content: parts})
+		} else if len(textParts) > 0 {
 			text := strings.Join(textParts, "\n")
 			toolMsgs = append(toolMsgs, OpenAIMessage{Role: "user", Content: text})
 		}
@@ -343,12 +353,7 @@ func convertAnthropicUserMessage(msg AnthropicMessage) []OpenAIMessage {
 			}
 		case "image":
 			if block.Source != nil && block.Source.Type == "base64" {
-				parts = append(parts, map[string]any{
-					"type": "image_url",
-					"image_url": map[string]any{
-						"url": "data:" + block.Source.MediaType + ";base64," + block.Source.Data,
-					},
-				})
+				parts = append(parts, dataURIImagePart(block.Source.MediaType, block.Source.Data))
 			}
 		}
 	}
@@ -364,6 +369,81 @@ func convertAnthropicUserMessage(msg AnthropicMessage) []OpenAIMessage {
 		contentArr[i] = p
 	}
 	return []OpenAIMessage{{Role: "user", Content: contentArr}}
+}
+
+// toolResultContent converts Anthropic tool_result content into the plain
+// string the OpenAI tool role requires, plus any images found along the way.
+// Anthropic allows tool_result content to be an array of blocks — Claude Code
+// sends one when tool output contains an image — but strict upstreams reject
+// non-string tool content with
+// "messages.N.tool.content: Input should be a valid string". Images have no
+// string form, so the caller forwards them as image_url parts in a separate
+// user message; other non-text blocks become a placeholder.
+func toolResultContent(content any) (string, []map[string]any) {
+	switch v := content.(type) {
+	case nil:
+		return "", nil
+	case string:
+		return v, nil
+	case []any:
+		var parts []string
+		var images []map[string]any
+		for _, p := range v {
+			m, ok := p.(map[string]any)
+			if !ok {
+				continue
+			}
+			t, _ := m["type"].(string)
+			switch t {
+			case "text":
+				if s, _ := m["text"].(string); s != "" {
+					parts = append(parts, s)
+				}
+			case "image":
+				if img := imageURLPart(m); img != nil {
+					images = append(images, img)
+				} else {
+					parts = append(parts, "[image omitted]")
+				}
+			default:
+				if t != "" {
+					parts = append(parts, "["+t+" omitted]")
+				}
+			}
+		}
+		return strings.Join(parts, "\n"), images
+	default:
+		return stringifyContent(content), nil
+	}
+}
+
+// imageURLPart converts a JSON-decoded Anthropic image block into an OpenAI
+// image_url content part. Only base64 data sources convert; anything else
+// returns nil.
+func imageURLPart(m map[string]any) map[string]any {
+	src, ok := m["source"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if t, _ := src["type"].(string); t != "base64" {
+		return nil
+	}
+	mediaType, _ := src["media_type"].(string)
+	data, _ := src["data"].(string)
+	if mediaType == "" || data == "" {
+		return nil
+	}
+	return dataURIImagePart(mediaType, data)
+}
+
+// dataURIImagePart builds an OpenAI image_url content part from base64 image data.
+func dataURIImagePart(mediaType, data string) map[string]any {
+	return map[string]any{
+		"type": "image_url",
+		"image_url": map[string]any{
+			"url": "data:" + mediaType + ";base64," + data,
+		},
+	}
 }
 
 func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions, ctxParts []string) OpenAIMessage {
