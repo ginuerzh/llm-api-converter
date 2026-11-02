@@ -305,13 +305,20 @@ ported.
 
 ## Implementation status
 
-2026-11-02: the P0 items above are implemented in the working tree.
+2026-11-02: the P0 items above and a follow-up audit are implemented in the
+working tree.
 
 | Item | Files | Tests |
 | --- | --- | --- |
 | Cache-token accounting across all directions and streams | `convert/usage.go`, `convert/types.go`, `convert/gemini_types.go`, the OpenAI/Anthropic/Gemini converters and stream handlers | `convert/usage_test.go` |
 | Gemini thought signature kept per tool-call ID | `convert/session.go` (`GetThoughtSigFor`, `SetThoughtSigFor`), Gemini request/response and SSE converters | `convert/gemini_signature_test.go` |
 | OpenAI passthrough stream hygiene | `convert/tidy.go`, `convert/session.go` | `convert/tidy_test.go` |
+| Anthropic SSE → OpenAI Chat streaming | `convert/stream_anthropic_to_openai.go`, `convert/convert.go` | `convert/audit_test.go` |
+| Gemini thought parts and thinkingConfig | `convert/gemini_types.go`, the Gemini converters and stream handlers | `convert/audit_test.go` |
+| Gemini lifecycle signatures and cache usage | `convert/stream_gemini.go`, `convert/convert.go` | `convert/audit_test.go` |
+| Responses API cache usage (whole and streaming) | `convert/usage.go`, `convert/responses.go`, `convert/stream_anthropic.go`, `convert/stream_responses.go` | `convert/audit_test.go` |
+| Tool-call index inference and restriction bypass | `convert/types.go`, `convert/stream.go`, `convert/stream_responses.go` | `convert/audit_test.go` |
+| Bounded thought-signature store | `convert/session.go` | `convert/audit_test.go` |
 
 The end-to-end harness also passed `--downstream`, a flag that no longer
 exists; it now uses `--model-map "*=deepseek-chat:openai"` instead
@@ -323,10 +330,18 @@ Verification run:
 cd llm-api-converter
 go test ./... -count=1
 CGO_ENABLED=1 go test -race ./convert ./rewriter -count=1
+go vet ./...
 ```
 
-The remaining P1/P2 items are untouched. `count_tokens` still has the
-rewriter-contract limitation described above.
+### Known gaps after the audit
+
+- `count_tokens` still has the rewriter-contract limitation described
+  above.
+- The stateless `ConvertSSE` Gemini → Anthropic fallback still emits text
+  deltas without a text `content_block_start`; the lifecycle path emits
+  complete blocks. Thinking blocks are emitted on both paths now.
+- Gemini clients pointed at an OpenAI Responses upstream have no dedicated
+  streaming converter (Anthropic and OpenAI Chat upstreams do).
 
 ## Recommendation
 
