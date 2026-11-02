@@ -148,7 +148,7 @@ func convertAnthropicMsgToGeminiContent(msg AnthropicMessage, opts *ConvertOptio
 				},
 			}
 			if opts != nil && opts.SessionStore != nil && opts.SID != "" {
-				if sig := opts.SessionStore.GetThoughtSig(opts.SID, block.Name); sig != "" {
+				if sig := opts.SessionStore.GetThoughtSigFor(opts.SID, block.ID, block.Name); sig != "" {
 					part.ThoughtSignature = sig
 				} else {
 					part.ThoughtSignature = "skip_thought_signature_validator"
@@ -246,25 +246,13 @@ func convertGeminiResponseToAnthropic(body []byte, opts *ConvertOptions) ([]byte
 
 	// Usage.
 	if resp.UsageMetadata != nil {
-		anth.Usage = AnthropicUsage{
-			InputTokens:  resp.UsageMetadata.PromptTokenCount,
-			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
-		}
+		anth.Usage = anthropicUsageFromGemini(resp.UsageMetadata)
 	}
 
 	// Candidates → content blocks.
 	if len(resp.Candidates) > 0 {
 		c := resp.Candidates[0]
 		anth.StopReason = mapGeminiFinishToAnthropic(c.FinishReason)
-
-		// Capture thoughtSignature from any functionCall parts for session reuse.
-		for _, part := range c.Content.Parts {
-			if part.FunctionCall != nil && part.ThoughtSignature != "" {
-				if opts != nil && opts.SessionStore != nil && opts.SID != "" {
-					opts.SessionStore.SetThoughtSig(opts.SID, part.FunctionCall.Name, part.ThoughtSignature)
-				}
-			}
-		}
 
 		for _, part := range c.Content.Parts {
 			switch {
@@ -275,6 +263,9 @@ func convertGeminiResponseToAnthropic(body []byte, opts *ConvertOptions) ([]byte
 				})
 			case part.FunctionCall != nil:
 				id := ensureToolID("")
+				if opts != nil && opts.SessionStore != nil && opts.SID != "" {
+					opts.SessionStore.SetThoughtSigFor(opts.SID, id, part.FunctionCall.Name, part.ThoughtSignature)
+				}
 				anth.Content = append(anth.Content, AnthropicContent{
 					Type:  "tool_use",
 					ID:    id,
@@ -371,9 +362,10 @@ func anthropicResponseToSSE(body []byte) ([]byte, error) {
 }
 
 // writeSSEEvent writes a single SSE event to buf in the standard format:
-//   event: <name>
-//   data: <json>
-//   (blank line)
+//
+//	event: <name>
+//	data: <json>
+//	(blank line)
 func writeSSEEvent(buf *bytes.Buffer, event string, data any) {
 	b, _ := json.Marshal(data)
 	buf.WriteString("event: ")
@@ -415,7 +407,7 @@ func convertGeminiRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 	}
 
 	anth := AnthropicRequest{
-		Model:   opts.ResolvedModel,
+		Model:     opts.ResolvedModel,
 		MaxTokens: 8192,
 	}
 
@@ -547,11 +539,7 @@ func convertAnthropicResponseToGemini(body []byte, _ *ConvertOptions) ([]byte, e
 
 	gemini := GeminiChatResponse{}
 	if resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0 {
-		gemini.UsageMetadata = &GeminiUsage{
-			PromptTokenCount:     resp.Usage.InputTokens,
-			CandidatesTokenCount: resp.Usage.OutputTokens,
-			TotalTokenCount:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
-		}
+		gemini.UsageMetadata = geminiUsageFromAnthropic(resp.Usage)
 	}
 
 	c := GeminiCandidate{

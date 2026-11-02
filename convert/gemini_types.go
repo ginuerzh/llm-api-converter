@@ -121,9 +121,10 @@ type GeminiSafetyRating struct {
 }
 
 type GeminiUsage struct {
-	PromptTokenCount     int `json:"promptTokenCount"`
-	CandidatesTokenCount int `json:"candidatesTokenCount"`
-	TotalTokenCount      int `json:"totalTokenCount"`
+	PromptTokenCount        int `json:"promptTokenCount"`
+	CandidatesTokenCount    int `json:"candidatesTokenCount"`
+	TotalTokenCount         int `json:"totalTokenCount"`
+	CachedContentTokenCount int `json:"cachedContentTokenCount,omitempty"`
 }
 
 type GeminiPromptFeedback struct {

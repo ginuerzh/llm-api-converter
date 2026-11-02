@@ -179,7 +179,10 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	}
 
 	// Resolve output model: mapping → passthrough → fallback.
-	outputModel := opts.ResolvedModel; if outputModel == "" { outputModel = resolveModelTarget(req.Model, opts.ModelMap) }
+	outputModel := opts.ResolvedModel
+	if outputModel == "" {
+		outputModel = resolveModelTarget(req.Model, opts.ModelMap)
+	}
 	profile := classifyModel(outputModel)
 
 	oai := OpenAIChatRequest{
@@ -584,18 +587,14 @@ func convertAnthropicResponseToOpenAI(body []byte) ([]byte, error) {
 
 	openai.Choices = []OpenAIChoice{
 		{
-			Index:   0,
-			Message: msg,
+			Index:        0,
+			Message:      msg,
 			FinishReason: mapFinishReason(resp.StopReason),
 		},
 	}
 
 	// Usage.
-	openai.Usage = OpenAIUsage{
-		PromptTokens:     resp.Usage.InputTokens,
-		CompletionTokens: resp.Usage.OutputTokens,
-		TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
-	}
+	openai.Usage = openAIUsageFromAnthropic(resp.Usage)
 
 	return json.Marshal(openai)
 }

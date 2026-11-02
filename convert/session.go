@@ -98,6 +98,36 @@ func (s *SessionStore) SetThoughtSig(sid, funcName, sig string) {
 	s.ThoughtSignatures[sid][funcName] = sig
 }
 
+// GetThoughtSigFor returns the signature stored for a tool call: the call's
+// own ID first, then the function name as a fallback for clients that drop
+// or rewrite the ID.
+func (s *SessionStore) GetThoughtSigFor(sid, callID, name string) string {
+	if callID != "" {
+		if sig := s.GetThoughtSig(sid, callID); sig != "" {
+			return sig
+		}
+	}
+	if name == "" {
+		return ""
+	}
+	return s.GetThoughtSig(sid, name)
+}
+
+// SetThoughtSigFor stores sig under the call's ID and its function name. The
+// ID is what the client sends back with the tool result; the name is only a
+// fallback for clients that lose it.
+func (s *SessionStore) SetThoughtSigFor(sid, callID, name, sig string) {
+	if sig == "" {
+		return
+	}
+	if callID != "" {
+		s.SetThoughtSig(sid, callID, sig)
+	}
+	if name != "" {
+		s.SetThoughtSig(sid, name, sig)
+	}
+}
+
 func (s *SessionStore) evictLocked() {
 	for len(s.order) > 0 {
 		oldest := s.order[0]
@@ -183,7 +213,7 @@ func (h *GeminiStreamHandler) HandleStreamEnd() []byte { return nil }
 
 func (h *GeminiStreamHandler) EmitError(message string) []byte {
 	b, _ := json.Marshal(map[string]any{
-		"type": "error",
+		"type":  "error",
 		"error": map[string]any{"message": message},
 	})
 	return append([]byte("event: error\ndata: "), append(b, '\n')...)
@@ -261,12 +291,19 @@ func (p *PassthroughStreamHandler) openaiPassthrough(data []byte) []byte {
 	if err := json.Unmarshal(payload, &raw); err != nil {
 		return data
 	}
+	changed := false
 	if old, ok := raw["model"].(string); ok && old != p.model {
 		raw["model"] = p.model
+		changed = true
+	}
+	if tidyOpenAIChunk(raw) {
+		changed = true
+	}
+	if changed {
 		if newPayload, err := json.Marshal(raw); err == nil {
 			evt := parseSSEEvent(data)
 			evt.Data = string(newPayload)
-			slog.Debug("stream: passthrough with model rewrite", "model", p.model)
+			slog.Debug("stream: passthrough with tidy", "model", p.model)
 			return reconstructSSEEvent(evt)
 		}
 	}

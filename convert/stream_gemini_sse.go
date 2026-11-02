@@ -51,16 +51,6 @@ func convertGeminiStreamChunk(evt *SSEEvent, opts *ConvertOptions) ([]byte, erro
 
 	c := chunk.Candidates[0]
 
-	// Capture thoughtSignature from functionCall parts for next request.
-	for _, part := range c.Content.Parts {
-		if part.FunctionCall != nil && part.ThoughtSignature != "" {
-			if opts != nil && opts.SessionStore != nil && opts.SID != "" {
-				opts.SessionStore.SetThoughtSig(opts.SID, part.FunctionCall.Name, part.ThoughtSignature)
-				slog.Debug("gemini sse: captured thoughtSignature", "func", part.FunctionCall.Name, "sid", opts.SID)
-			}
-		}
-	}
-
 	// Determine target protocol from model map or fallback to OpenAI delta.
 	target := ProtocolOpenAIChat
 	if opts != nil && opts.ModelMap != nil {
@@ -85,14 +75,14 @@ func convertGeminiStreamChunk(evt *SSEEvent, opts *ConvertOptions) ([]byte, erro
 
 	switch target {
 	case ProtocolAnthropic:
-		return geminiChunkToAnthropic(evt, &chunk, c, model)
+		return geminiChunkToAnthropic(evt, &chunk, c, model, opts)
 	default:
-		return geminiChunkToOpenAI(evt, &chunk, c, model)
+		return geminiChunkToOpenAI(evt, &chunk, c, model, opts)
 	}
 }
 
 // geminiChunkToOpenAI converts a Gemini SSE chunk to an OpenAI delta chunk.
-func geminiChunkToOpenAI(evt *SSEEvent, chunk *GeminiChatResponse, c GeminiCandidate, model string) ([]byte, error) {
+func geminiChunkToOpenAI(evt *SSEEvent, chunk *GeminiChatResponse, c GeminiCandidate, model string, opts *ConvertOptions) ([]byte, error) {
 	if len(c.Content.Parts) == 0 {
 		if c.FinishReason != "" {
 			finish := mapGeminiFinishToOpenAI(c.FinishReason, false)
@@ -103,11 +93,16 @@ func geminiChunkToOpenAI(evt *SSEEvent, chunk *GeminiChatResponse, c GeminiCandi
 				"choices": []map[string]any{{"index": c.Index, "delta": map[string]any{}, "finish_reason": finish}},
 			}
 			if chunk.UsageMetadata != nil {
-				delta["usage"] = map[string]any{
-					"prompt_tokens":     chunk.UsageMetadata.PromptTokenCount,
-					"completion_tokens": chunk.UsageMetadata.CandidatesTokenCount,
-					"total_tokens":      chunk.UsageMetadata.TotalTokenCount,
+				u := openAIUsageFromGemini(chunk.UsageMetadata)
+				usage := map[string]any{
+					"prompt_tokens":     u.PromptTokens,
+					"completion_tokens": u.CompletionTokens,
+					"total_tokens":      u.TotalTokens,
 				}
+				if u.PromptTokensDetails != nil {
+					usage["prompt_tokens_details"] = u.PromptTokensDetails
+				}
+				delta["usage"] = usage
 			}
 			b, _ := json.Marshal(delta)
 			return []byte("data: " + string(b)), nil
@@ -128,8 +123,12 @@ func geminiChunkToOpenAI(evt *SSEEvent, chunk *GeminiChatResponse, c GeminiCandi
 					args = string(b)
 				}
 			}
+			id := "call_" + randHex(16)
+			if opts != nil && opts.SessionStore != nil && opts.SID != "" {
+				opts.SessionStore.SetThoughtSigFor(opts.SID, id, part.FunctionCall.Name, part.ThoughtSignature)
+			}
 			toolCalls = append(toolCalls, OpenAIToolCall{
-				ID:   "call_" + randHex(16),
+				ID:   id,
 				Type: "function",
 				Function: OpenAIFunctionCall{
 					Name:      part.FunctionCall.Name,
@@ -175,7 +174,7 @@ func geminiChunkToOpenAI(evt *SSEEvent, chunk *GeminiChatResponse, c GeminiCandi
 // geminiChunkToAnthropic converts a Gemini SSE chunk to an Anthropic SSE event
 // sequence (content_block_delta with text_delta, or content_block_start/stop
 // for tool_use transitions).
-func geminiChunkToAnthropic(evt *SSEEvent, chunk *GeminiChatResponse, c GeminiCandidate, _ string) ([]byte, error) {
+func geminiChunkToAnthropic(evt *SSEEvent, chunk *GeminiChatResponse, c GeminiCandidate, _ string, opts *ConvertOptions) ([]byte, error) {
 	if len(c.Content.Parts) == 0 {
 		if c.FinishReason != "" {
 			stopReason := mapGeminiFinishToAnthropic(c.FinishReason)
@@ -185,7 +184,7 @@ func geminiChunkToAnthropic(evt *SSEEvent, chunk *GeminiChatResponse, c GeminiCa
 					"stop_reason":   stopReason,
 					"stop_sequence": nil,
 				},
-				"usage": map[string]any{"output_tokens": 0},
+				"usage": geminiAnthropicUsage(chunk.UsageMetadata),
 			})
 			return append(
 				[]byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"),
@@ -212,6 +211,9 @@ func geminiChunkToAnthropic(evt *SSEEvent, chunk *GeminiChatResponse, c GeminiCa
 		case part.FunctionCall != nil:
 			hasToolUse = true
 			id := ensureToolID("")
+			if opts != nil && opts.SessionStore != nil && opts.SID != "" {
+				opts.SessionStore.SetThoughtSigFor(opts.SID, id, part.FunctionCall.Name, part.ThoughtSignature)
+			}
 			buf = append(buf, []byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\""+id+"\",\"name\":\""+part.FunctionCall.Name+"\"}}\n\n")...)
 			args := "{}"
 			if part.FunctionCall.Args != nil {
@@ -244,7 +246,7 @@ func geminiChunkToAnthropic(evt *SSEEvent, chunk *GeminiChatResponse, c GeminiCa
 				"stop_reason":   stopReason,
 				"stop_sequence": nil,
 			},
-			"usage": map[string]any{"output_tokens": 0},
+			"usage": geminiAnthropicUsage(chunk.UsageMetadata),
 		})
 		buf = append(buf, []byte("event: message_delta\ndata: "+string(delta)+"\n\n")...)
 	}

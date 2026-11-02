@@ -96,10 +96,27 @@ type OpenAIChoice struct {
 	LogProbs     any           `json:"logprobs"` // always null in our case
 }
 
+// OpenAIPromptTokensDetails is the cache breakdown OpenAI-compatible
+// providers report under prompt_tokens_details.
+type OpenAIPromptTokensDetails struct {
+	CachedTokens     int `json:"cached_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"` // OpenRouter's
+}
+
 type OpenAIUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+
+	PromptTokensDetails *OpenAIPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+	// Other names providers use for the same cache counts. They are read
+	// when prompt_tokens_details does not say, and never written back.
+	PromptCacheHitTokens int `json:"prompt_cache_hit_tokens,omitempty"` // DeepSeek
+	CachedTokens         int `json:"cached_tokens,omitempty"`           // Moonshot
+	// Anthropic's names, when an Anthropic-shaped relay is in front of an
+	// OpenAI-shaped upstream.
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 }
 
 // -------- Anthropic Messages (Request) --------

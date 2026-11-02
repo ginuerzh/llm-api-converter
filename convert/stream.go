@@ -46,8 +46,8 @@ type StreamConverter struct {
 	// Tool restriction: only emit tool_use blocks for declared tool names.
 	// When restrictTools is true and a tool name is not in declaredTools, the
 	// tool call delta is silently skipped to prevent tool hallucination.
-	restrictTools  bool
-	declaredTools  map[string]struct{}
+	restrictTools bool
+	declaredTools map[string]struct{}
 }
 
 // NewStreamConverter creates a StreamConverter for the given Anthropic model name
@@ -234,9 +234,16 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 		"output_tokens": 0,
 	}
 	if sc.usage != nil {
+		au := anthropicUsageFromOpenAI(sc.usage)
 		usageMap = map[string]any{
-			"input_tokens":  sc.usage.PromptTokens,
-			"output_tokens": sc.usage.CompletionTokens,
+			"input_tokens":  au.InputTokens,
+			"output_tokens": au.OutputTokens,
+		}
+		if au.CacheReadInputTokens > 0 {
+			usageMap["cache_read_input_tokens"] = au.CacheReadInputTokens
+		}
+		if au.CacheCreationInputTokens > 0 {
+			usageMap["cache_creation_input_tokens"] = au.CacheCreationInputTokens
 		}
 	}
 	md := fmt.Sprintf(

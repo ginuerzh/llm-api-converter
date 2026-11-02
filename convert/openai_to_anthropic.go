@@ -184,7 +184,10 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 		return body, nil
 	}
 
-	model := opts.ResolvedModel; if model == "" { model = resolveModelTarget(req.Model, opts.ModelMap) }
+	model := opts.ResolvedModel
+	if model == "" {
+		model = resolveModelTarget(req.Model, opts.ModelMap)
+	}
 	// Respect the request's max_tokens / max_completion_tokens if set,
 	// otherwise fall back to the CLI --max-tokens flag (default 8192).
 	// ponytail: upstream APIs often default to unreasonably low limits.
@@ -531,10 +534,7 @@ func convertOpenAIResponseToAnthropic(body []byte, opts *ConvertOptions) ([]byte
 		Type:  "message",
 		Role:  "assistant",
 		Model: resp.Model,
-		Usage: AnthropicUsage{
-			InputTokens:  resp.Usage.PromptTokens,
-			OutputTokens: resp.Usage.CompletionTokens,
-		},
+		Usage: anthropicUsageFromOpenAI(&resp.Usage),
 	}
 
 	// Rewrite model to the original client-facing name so that Claude Code's

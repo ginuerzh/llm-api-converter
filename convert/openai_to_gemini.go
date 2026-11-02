@@ -217,7 +217,7 @@ func convertOpenAIMsgToGeminiContent(msg OpenAIMessage, toolCallIDToName map[str
 			},
 		}
 		if opts != nil && opts.SessionStore != nil && opts.SID != "" {
-			if sig := opts.SessionStore.GetThoughtSig(opts.SID, tc.Function.Name); sig != "" {
+			if sig := opts.SessionStore.GetThoughtSigFor(opts.SID, tc.ID, tc.Function.Name); sig != "" {
 				part.ThoughtSignature = sig
 			} else {
 				part.ThoughtSignature = "skip_thought_signature_validator"
@@ -239,7 +239,7 @@ func convertOpenAIMsgToGeminiContent(msg OpenAIMessage, toolCallIDToName map[str
 			},
 		}
 		if opts != nil && opts.SessionStore != nil && opts.SID != "" {
-			if sig := opts.SessionStore.GetThoughtSig(opts.SID, msg.FunctionCall.Name); sig != "" {
+			if sig := opts.SessionStore.GetThoughtSigFor(opts.SID, "", msg.FunctionCall.Name); sig != "" {
 				part.ThoughtSignature = sig
 			} else {
 				part.ThoughtSignature = "skip_thought_signature_validator"
@@ -345,11 +345,7 @@ func convertGeminiResponseToOpenAI(body []byte, opts *ConvertOptions) ([]byte, e
 
 	// Usage.
 	if resp.UsageMetadata != nil {
-		openai.Usage = OpenAIUsage{
-			PromptTokens:     resp.UsageMetadata.PromptTokenCount,
-			CompletionTokens: resp.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:      resp.UsageMetadata.TotalTokenCount,
-		}
+		openai.Usage = openAIUsageFromGemini(resp.UsageMetadata)
 	}
 
 	// Candidates → choices.
@@ -369,8 +365,12 @@ func convertGeminiResponseToOpenAI(body []byte, opts *ConvertOptions) ([]byte, e
 						args = string(b)
 					}
 				}
+				id := "call_" + randHex(16)
+				if opts != nil && opts.SessionStore != nil && opts.SID != "" {
+					opts.SessionStore.SetThoughtSigFor(opts.SID, id, part.FunctionCall.Name, part.ThoughtSignature)
+				}
 				msg.ToolCalls = append(msg.ToolCalls, OpenAIToolCall{
-					ID:   "call_" + randHex(16),
+					ID:   id,
 					Type: "function",
 					Function: OpenAIFunctionCall{
 						Name:      part.FunctionCall.Name,
@@ -555,11 +555,7 @@ func convertOpenAIResponseToGemini(body []byte, opts *ConvertOptions) ([]byte, e
 
 	gemini := GeminiChatResponse{}
 	if resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0 {
-		gemini.UsageMetadata = &GeminiUsage{
-			PromptTokenCount:     resp.Usage.PromptTokens,
-			CandidatesTokenCount: resp.Usage.CompletionTokens,
-			TotalTokenCount:      resp.Usage.TotalTokens,
-		}
+		gemini.UsageMetadata = geminiUsageFromOpenAI(&resp.Usage)
 	}
 
 	if len(resp.Choices) > 0 {

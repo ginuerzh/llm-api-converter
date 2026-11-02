@@ -59,11 +59,8 @@ func (c *GeminiToOpenAIStreamConverter) HandleChunk(data []byte) ([]byte, error)
 		c.finishReason = cand.FinishReason
 	}
 	if resp.UsageMetadata != nil {
-		c.usage = &OpenAIUsage{
-			PromptTokens:     resp.UsageMetadata.PromptTokenCount,
-			CompletionTokens: resp.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:      resp.UsageMetadata.TotalTokenCount,
-		}
+		u := openAIUsageFromGemini(resp.UsageMetadata)
+		c.usage = &u
 	}
 
 	// Build delta from parts.
@@ -199,10 +196,8 @@ func (c *GeminiToAnthropicStreamConverter) HandleChunk(data []byte) ([]byte, err
 		c.finishReason = cand.FinishReason
 	}
 	if resp.UsageMetadata != nil {
-		c.usage = &AnthropicUsage{
-			InputTokens:  resp.UsageMetadata.PromptTokenCount,
-			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
-		}
+		u := anthropicUsageFromGemini(resp.UsageMetadata)
+		c.usage = &u
 	}
 
 	var events [][]byte
