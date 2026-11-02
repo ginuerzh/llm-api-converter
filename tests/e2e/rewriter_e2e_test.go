@@ -181,7 +181,7 @@ func startPlugin(t *testing.T) {
 		"--addr", fmt.Sprintf(":%d", pluginPort),
 		"--model", "claude-sonnet-4-20250514",
 		"--max-tokens", "8192",
-		"--downstream", "deepseek-chat",
+		"--model-map", "*=deepseek-chat:openai",
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -665,13 +665,13 @@ func TestRewriterE2E_Streaming(t *testing.T) {
 	var events []sseEvent
 	for scanner.Scan() {
 		evt := parseSSEEvent(scanner.Bytes())
-			events = append(events, evt)
+		events = append(events, evt)
 	}
 	if err := scanner.Err(); err != nil {
 		t.Fatalf("SSE scanner error: %v", err)
 	}
 
-		// Validate the Anthropic SSE event sequence by walking through events
+	// Validate the Anthropic SSE event sequence by walking through events
 	// and matching expected types in order (robust against extra delimiter events).
 	type eventCheck struct {
 		event string
