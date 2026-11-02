@@ -18,6 +18,9 @@ type SessionStore struct {
 	// ThoughtSignatures persists functionCall → thoughtSignature mappings across
 	// session lifecycles (Delete/Set clears the Session but signatures must survive).
 	ThoughtSignatures map[string]map[string]string // sid → funcName → thoughtSig
+	// sigOrder bounds ThoughtSignatures: the oldest sid is dropped once the
+	// store holds maxSize of them.
+	sigOrder []string
 }
 
 // NewSessionStore creates a session store with the given max size.
@@ -94,6 +97,12 @@ func (s *SessionStore) SetThoughtSig(sid, funcName, sig string) {
 	}
 	if s.ThoughtSignatures[sid] == nil {
 		s.ThoughtSignatures[sid] = make(map[string]string)
+		s.sigOrder = append(s.sigOrder, sid)
+		if s.maxSize > 0 && len(s.sigOrder) > s.maxSize {
+			oldest := s.sigOrder[0]
+			s.sigOrder = s.sigOrder[1:]
+			delete(s.ThoughtSignatures, oldest)
+		}
 	}
 	s.ThoughtSignatures[sid][funcName] = sig
 }

@@ -12,43 +12,43 @@ type OpenAIChatRequest struct {
 	Model    string          `json:"model"`
 	Messages []OpenAIMessage `json:"messages"`
 
-	MaxTokens      *int       `json:"max_tokens,omitempty"`
-	MaxCompletionTokens *int `json:"max_completion_tokens,omitempty"`
-	Temperature    *float64   `json:"temperature,omitempty"`
-	TopP           *float64   `json:"top_p,omitempty"`
-	TopK           *int       `json:"top_k,omitempty"` // x Groq
-	Stop           any        `json:"stop,omitempty"`  // string or []string
-	Stream         *bool      `json:"stream,omitempty"`
-	StreamOptions  any        `json:"stream_options,omitempty"`
-	Tools          []OpenAITool `json:"tools,omitempty"`
-	ToolChoice     any        `json:"tool_choice,omitempty"`
-	Thinking       any        `json:"thinking,omitempty"`        // DeepSeek extended thinking
-	ReasoningEffort any       `json:"reasoning_effort,omitempty"` // DeepSeek reasoning effort
-	ThinkingBudget *int       `json:"thinking_budget,omitempty"` // DeepSeek thinking budget
-	OpenAIPromptCacheKey string `json:"prompt_cache_key,omitempty"` // upstream prompt cache key
-	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"` // ignored
-	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`  // ignored
-	N              *int       `json:"n,omitempty"`               // ignored
-	LogitBias      any        `json:"logit_bias,omitempty"`      // ignored
-	User           string     `json:"user,omitempty"`            // ignored
-	Metadata       any        `json:"metadata,omitempty"`
+	MaxTokens            *int         `json:"max_tokens,omitempty"`
+	MaxCompletionTokens  *int         `json:"max_completion_tokens,omitempty"`
+	Temperature          *float64     `json:"temperature,omitempty"`
+	TopP                 *float64     `json:"top_p,omitempty"`
+	TopK                 *int         `json:"top_k,omitempty"` // x Groq
+	Stop                 any          `json:"stop,omitempty"`  // string or []string
+	Stream               *bool        `json:"stream,omitempty"`
+	StreamOptions        any          `json:"stream_options,omitempty"`
+	Tools                []OpenAITool `json:"tools,omitempty"`
+	ToolChoice           any          `json:"tool_choice,omitempty"`
+	Thinking             any          `json:"thinking,omitempty"`          // DeepSeek extended thinking
+	ReasoningEffort      any          `json:"reasoning_effort,omitempty"`  // DeepSeek reasoning effort
+	ThinkingBudget       *int         `json:"thinking_budget,omitempty"`   // DeepSeek thinking budget
+	OpenAIPromptCacheKey string       `json:"prompt_cache_key,omitempty"`  // upstream prompt cache key
+	FrequencyPenalty     *float64     `json:"frequency_penalty,omitempty"` // ignored
+	PresencePenalty      *float64     `json:"presence_penalty,omitempty"`  // ignored
+	N                    *int         `json:"n,omitempty"`                 // ignored
+	LogitBias            any          `json:"logit_bias,omitempty"`        // ignored
+	User                 string       `json:"user,omitempty"`              // ignored
+	Metadata             any          `json:"metadata,omitempty"`
 }
 
 type OpenAIMessage struct {
 	Role             string              `json:"role"`
-	Content          any                 `json:"content"`                       // string or []ContentPart or null
+	Content          any                 `json:"content"` // string or []ContentPart or null
 	ToolCalls        []OpenAIToolCall    `json:"tool_calls,omitempty"`
-	FunctionCall     *OpenAIFunctionCall `json:"function_call,omitempty"`        // legacy (name+arguments at top level)
-	ToolCallID       string              `json:"tool_call_id,omitempty"`         // tool role
-	Name             string              `json:"name,omitempty"`                  // function role
-	ReasoningContent string              `json:"reasoning_content,omitempty"`   // DeepSeek/GLM thinking
+	FunctionCall     *OpenAIFunctionCall `json:"function_call,omitempty"`     // legacy (name+arguments at top level)
+	ToolCallID       string              `json:"tool_call_id,omitempty"`      // tool role
+	Name             string              `json:"name,omitempty"`              // function role
+	ReasoningContent string              `json:"reasoning_content,omitempty"` // DeepSeek/GLM thinking
 }
 
 // OpenAIContentPart is an element in a multi-part user message.
 type OpenAIContentPart struct {
-	Type     string           `json:"type"`               // "text" or "image_url"
-	Text     string           `json:"text,omitempty"`
-	ImageURL *OpenAIImageURL  `json:"image_url,omitempty"`
+	Type     string          `json:"type"` // "text" or "image_url"
+	Text     string          `json:"text,omitempty"`
+	ImageURL *OpenAIImageURL `json:"image_url,omitempty"`
 }
 
 type OpenAIImageURL struct {
@@ -57,9 +57,9 @@ type OpenAIImageURL struct {
 }
 
 type OpenAIToolCall struct {
-	ID       string              `json:"id"`
-	Type     string              `json:"type"`
-	Function OpenAIFunctionCall  `json:"function"`
+	ID       string             `json:"id"`
+	Type     string             `json:"type"`
+	Function OpenAIFunctionCall `json:"function"`
 }
 
 type OpenAIFunctionCall struct {
@@ -123,7 +123,7 @@ type OpenAIUsage struct {
 
 // AnthropicThinking is the extended thinking configuration.
 type AnthropicThinking struct {
-	Type         string `json:"type"`                    // "enabled" or "disabled"
+	Type         string `json:"type"` // "enabled" or "disabled"
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
@@ -208,7 +208,7 @@ func (r *AnthropicRequest) UnmarshalJSON(data []byte) error {
 // modelProfile caches the detection result for a single request so that
 // repeated isDeepSeekModel/isOpenAIStyleModel calls don't re-parse the string.
 type modelProfile struct {
-	model    string
+	model      string
 	isDeepSeek bool
 	isOpenAI   bool
 }
@@ -280,17 +280,21 @@ func (m *AnthropicMessage) UnmarshalJSON(data []byte) error {
 }
 
 type AnthropicContent struct {
-	Type    string `json:"type"`
-	Text    string `json:"text,omitempty"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
 	Thinking string `json:"thinking,omitempty"` // extended thinking
+	// Signature is Anthropic's signature on a thinking block. Gemini's
+	// thoughtSignature is carried here when a Gemini thought becomes an
+	// Anthropic thinking block.
+	Signature string `json:"signature,omitempty"`
 
 	// image
-	Source    *AnthropicImageSource `json:"source,omitempty"`
+	Source *AnthropicImageSource `json:"source,omitempty"`
 
 	// tool_use
-	ID        string `json:"id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Input     any    `json:"input,omitempty"`
+	ID    string `json:"id,omitempty"`
+	Name  string `json:"name,omitempty"`
+	Input any    `json:"input,omitempty"`
 
 	// tool_result
 	ToolUseID string `json:"tool_use_id,omitempty"`
@@ -323,14 +327,14 @@ type AnthropicTool struct {
 // -------- Anthropic Messages (Response) --------
 
 type AnthropicResponse struct {
-	ID           string              `json:"id"`
-	Type         string              `json:"type"`
-	Role         string              `json:"role"`
-	Content      []AnthropicContent  `json:"content"`
-	Model        string              `json:"model"`
-	StopReason   *string             `json:"stop_reason"`
-	StopSequence *string             `json:"stop_sequence"`
-	Usage        AnthropicUsage      `json:"usage"`
+	ID           string             `json:"id"`
+	Type         string             `json:"type"`
+	Role         string             `json:"role"`
+	Content      []AnthropicContent `json:"content"`
+	Model        string             `json:"model"`
+	StopReason   *string            `json:"stop_reason"`
+	StopSequence *string            `json:"stop_sequence"`
+	Usage        AnthropicUsage     `json:"usage"`
 }
 
 type AnthropicUsage struct {
@@ -485,11 +489,12 @@ type ConvertOptions struct {
 
 // OpenAIStreamChunk is an OpenAI /v1/chat/completions streaming response chunk.
 type OpenAIStreamChunk struct {
-	ID      string              `json:"id,omitempty"`
-	Object  string              `json:"object,omitempty"`
-	Model   string              `json:"model,omitempty"`
+	ID      string               `json:"id,omitempty"`
+	Object  string               `json:"object,omitempty"`
+	Created int64                `json:"created,omitempty"`
+	Model   string               `json:"model,omitempty"`
 	Choices []OpenAIStreamChoice `json:"choices"`
-	Usage   *OpenAIUsage        `json:"usage,omitempty"`
+	Usage   *OpenAIUsage         `json:"usage,omitempty"`
 }
 
 // OpenAIStreamChoice is a single choice in a streaming chunk (delta instead of message).
@@ -501,9 +506,9 @@ type OpenAIStreamChoice struct {
 
 // OpenAIDelta is the delta payload inside a streaming chunk.
 type OpenAIDelta struct {
-	Role             string               `json:"role,omitempty"`
-	Content          string               `json:"content,omitempty"`
-	ReasoningContent string               `json:"reasoning_content,omitempty"`
+	Role             string                `json:"role,omitempty"`
+	Content          string                `json:"content,omitempty"`
+	ReasoningContent string                `json:"reasoning_content,omitempty"`
 	ToolCalls        []OpenAIDeltaToolCall `json:"tool_calls,omitempty"`
 	FunctionCall     *OpenAIFunctionCall   `json:"function_call,omitempty"`
 }
@@ -513,9 +518,12 @@ type OpenAIDelta struct {
 // tool_calls are plain arrays), streaming tool calls carry an .index
 // field identifying their position in the array.
 type OpenAIDeltaToolCall struct {
-	Index    int               `json:"index"`
-	ID       string            `json:"id,omitempty"`
-	Type     string            `json:"type,omitempty"`
+	// Index is the call's position. Some providers (Gemini's
+	// OpenAI-compatible endpoint) omit it; nil means the stream has to
+	// infer it from the call's id.
+	Index    *int               `json:"index"`
+	ID       string             `json:"id,omitempty"`
+	Type     string             `json:"type,omitempty"`
 	Function OpenAIFunctionCall `json:"function"`
 }
 

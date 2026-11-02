@@ -40,10 +40,17 @@ func convertAnthropicRequestToGemini(body []byte, opts *ConvertOptions) ([]byte,
 	if len(req.StopSequences) > 0 {
 		gc.StopSequences = req.StopSequences
 	}
-	// Thinking → simplified: budget maps to maxOutputTokens if not already set.
+	// Thinking → Gemini thinkingConfig. Anthropic's budget_tokens is
+	// Gemini's thinkingBudget; max_tokens stays the answer's limit.
 	if req.Thinking != nil && req.Thinking.Type == "enabled" {
-		if req.MaxTokens <= 0 && req.Thinking.BudgetTokens > 0 {
-			gc.MaxOutputTokens = &req.Thinking.BudgetTokens
+		budget := req.Thinking.BudgetTokens
+		if budget <= 0 {
+			budget = -1 // dynamic
+		}
+		include := true
+		gc.ThinkingConfig = &GeminiThinkingConfig{
+			ThinkingBudget:  &budget,
+			IncludeThoughts: &include,
 		}
 	}
 	gemini.GenerationConfig = gc
@@ -134,7 +141,7 @@ func convertAnthropicMsgToGeminiContent(msg AnthropicMessage, opts *ConvertOptio
 				t = block.Text
 			}
 			if t != "" {
-				parts = append(parts, GeminiPart{Text: t})
+				parts = append(parts, GeminiPart{Text: t, Thought: true, ThoughtSignature: block.Signature})
 			}
 		case "tool_use":
 			var args any
@@ -257,10 +264,18 @@ func convertGeminiResponseToAnthropic(body []byte, opts *ConvertOptions) ([]byte
 		for _, part := range c.Content.Parts {
 			switch {
 			case part.Text != "" && part.FunctionCall == nil:
-				anth.Content = append(anth.Content, AnthropicContent{
-					Type: "text",
-					Text: part.Text,
-				})
+				if part.Thought {
+					anth.Content = append(anth.Content, AnthropicContent{
+						Type:      "thinking",
+						Thinking:  part.Text,
+						Signature: part.ThoughtSignature,
+					})
+				} else {
+					anth.Content = append(anth.Content, AnthropicContent{
+						Type: "text",
+						Text: part.Text,
+					})
+				}
 			case part.FunctionCall != nil:
 				id := ensureToolID("")
 				if opts != nil && opts.SessionStore != nil && opts.SID != "" {
@@ -560,7 +575,7 @@ func convertAnthropicResponseToGemini(body []byte, _ *ConvertOptions) ([]byte, e
 				t = block.Text
 			}
 			if t != "" {
-				c.Content.Parts = append(c.Content.Parts, GeminiPart{Text: t})
+				c.Content.Parts = append(c.Content.Parts, GeminiPart{Text: t, Thought: true, ThoughtSignature: block.Signature})
 			}
 		case "tool_use":
 			c.Content.Parts = append(c.Content.Parts, GeminiPart{

@@ -32,10 +32,10 @@ type AnthropicStreamConverter struct {
 	accText      string
 	accReasoning string
 
-	itemIndex   int
-	partIndex   int
-	textItemIx  int // -1 = not started
-	textPartIx  int // -1 = not started
+	itemIndex    int
+	partIndex    int
+	textItemIx   int // -1 = not started
+	textPartIx   int // -1 = not started
 	reasonItemIx int // -1 = not started
 	reasonPartIx int // -1 = not started
 
@@ -233,8 +233,10 @@ func (sc *AnthropicStreamConverter) handleMessageStart(data []byte) ([]byte, err
 			ID    string `json:"id"`
 			Model string `json:"model"`
 			Usage struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
+				InputTokens              int `json:"input_tokens"`
+				OutputTokens             int `json:"output_tokens"`
+				CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+				CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 			} `json:"usage"`
 		} `json:"message"`
 	}
@@ -245,11 +247,12 @@ func (sc *AnthropicStreamConverter) handleMessageStart(data []byte) ([]byte, err
 	if evt.Message.Model != "" {
 		// Keep the client-facing model but capture for reference.
 	}
-	sc.response.Usage = &ResponsesUsage{
-		InputTokens:  evt.Message.Usage.InputTokens,
-		OutputTokens: evt.Message.Usage.OutputTokens,
-		TotalTokens:  evt.Message.Usage.InputTokens + evt.Message.Usage.OutputTokens,
-	}
+	sc.response.Usage = responsesUsageFromAnthropic(AnthropicUsage{
+		InputTokens:              evt.Message.Usage.InputTokens,
+		OutputTokens:             evt.Message.Usage.OutputTokens,
+		CacheReadInputTokens:     evt.Message.Usage.CacheReadInputTokens,
+		CacheCreationInputTokens: evt.Message.Usage.CacheCreationInputTokens,
+	})
 	return nil, nil
 }
 
@@ -257,7 +260,7 @@ func (sc *AnthropicStreamConverter) handleMessageStart(data []byte) ([]byte, err
 // for text blocks, output_item.added for tool_use, output_item.added for thinking.
 func (sc *AnthropicStreamConverter) handleContentBlockStart(data []byte) ([]byte, error) {
 	var evt struct {
-		Index int `json:"index"`
+		Index        int `json:"index"`
 		ContentBlock struct {
 			Type     string `json:"type"` // "text", "tool_use", "thinking"
 			ID       string `json:"id,omitempty"`

@@ -32,6 +32,17 @@ func detectSource(raw map[string]any) Protocol {
 		}
 	}
 
+	// Anthropic streaming event: these type names are Anthropic-only. The
+	// lifecycle path otherwise has to rely on the request URI, which is not
+	// always present in the rewriter metadata.
+	if t, ok := raw["type"].(string); ok {
+		switch t {
+		case "message_start", "content_block_start", "content_block_delta",
+			"content_block_stop", "message_delta", "message_stop":
+			return ProtocolAnthropic
+		}
+	}
+
 	// OpenAI Responses Response: object:"response" or output[].
 	if obj, ok := raw["object"].(string); ok && obj == "response" {
 		return ProtocolOpenAIResponses

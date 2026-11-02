@@ -167,11 +167,18 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 				model, _ := raw["model"].(string)
 				targetModel, to := resolveModel(model, from, opts.ModelMap)
 				if from == to {
+					changed := false
 					if targetModel != "" && targetModel != model {
 						raw["model"] = targetModel
+						changed = true
+					}
+					if from == ProtocolOpenAIChat && tidyOpenAIChunk(raw) {
+						changed = true
+					}
+					if changed {
 						if newData, err := json.Marshal(raw); err == nil {
 							evt.Data = string(newData)
-							slog.Debug("sse: protocol passthrough with model rewrite", "model", targetModel)
+							slog.Debug("sse: protocol passthrough with rewrite", "model", targetModel)
 							return reconstructSSEEvent(evt), nil
 						}
 					}
@@ -201,10 +208,9 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 		return convertOpenAIStreamChunkToAnthropic(evt)
 	}
 
-
-		if isGeminiStreamChunk([]byte(evt.Data)) {
-			return convertGeminiStreamChunk(evt, opts)
-		}
+	if isGeminiStreamChunk([]byte(evt.Data)) {
+		return convertGeminiStreamChunk(evt, opts)
+	}
 
 	// Default: convert data payload with Convert().
 	convertSSEEvent(evt, opts)
@@ -216,9 +222,9 @@ func ConvertSSE(body []byte, opts *ConvertOptions) ([]byte, error) {
 func convertOpenAIStreamChunkToAnthropic(evt *SSEEvent) ([]byte, error) {
 	var chunk struct {
 		Choices []struct {
-			Index        int             `json:"index"`
-			Delta        map[string]any  `json:"delta"`
-			FinishReason *string         `json:"finish_reason"`
+			Index        int            `json:"index"`
+			Delta        map[string]any `json:"delta"`
+			FinishReason *string        `json:"finish_reason"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal([]byte(evt.Data), &chunk); err != nil || len(chunk.Choices) == 0 {
@@ -756,89 +762,162 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			from = target
 		}
 
-			// Passthrough: chunk format matches client protocol.
-			if from != ProtocolUnknown && from == target {
-				sourceModel := opts.RequestModel
-				if sourceModel == "" && model != "" && opts.ModelMap != nil {
-					if prefix := opts.ModelMap.SourcePrefix(model); prefix != "" {
-						sourceModel = prefix
-					}
+		// Passthrough: chunk format matches client protocol.
+		if from != ProtocolUnknown && from == target {
+			sourceModel := opts.RequestModel
+			if sourceModel == "" && model != "" && opts.ModelMap != nil {
+				if prefix := opts.ModelMap.SourcePrefix(model); prefix != "" {
+					sourceModel = prefix
 				}
-				handler := NewPassthroughStreamHandler(sourceModel, target, opts.FilterRedactedThinking)
+			}
+			handler := NewPassthroughStreamHandler(sourceModel, target, opts.FilterRedactedThinking)
+			if store != nil {
+				store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: handler})
+			}
+			if len(data) > 0 {
+				return handler.HandleChunk(data)
+			}
+			return nil, nil
+		}
+
+		// Gemini client on an Anthropic/OpenAI upstream: write the upstream
+		// stream back as Gemini generateContent chunks.
+		if target == ProtocolGemini && from != ProtocolGemini && from != ProtocolUnknown {
+			model := opts.RequestModel
+			if model == "" {
+				model = opts.ResolvedModel
+			}
+			if model == "" {
+				model = opts.Model
+			}
+			var handler responsesStreamHandler
+			switch from {
+			case ProtocolAnthropic:
+				handler = NewAnthropicToGeminiStreamConverter(model, opts)
+			case ProtocolOpenAIChat:
+				handler = NewOpenAIToGeminiStreamConverter(model, opts)
+			}
+			if handler != nil {
 				if store != nil {
 					store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: handler})
 				}
+				startData := handler.HandleStreamStart()
 				if len(data) > 0 {
-					return handler.HandleChunk(data)
-				}
-				return nil, nil
-			}
-
-			// Gemini streaming: each SSE chunk is a complete GeminiChatResponse,
-			// independently convertible to the target protocol via a streaming
-			// state machine that emits the correct event/delta format per chunk.
-			if from == ProtocolGemini && target != ProtocolUnknown && from != target {
-				var handler responsesStreamHandler
-				model := opts.RequestModel
-				if model == "" {
-					model = opts.ResolvedModel
-				}
-				switch target {
-				case ProtocolOpenAIChat:
-					handler = NewGeminiToOpenAIStreamConverter(model)
-				case ProtocolAnthropic:
-					handler = NewGeminiToAnthropicStreamConverter(model)
-				}
-				if handler != nil {
-					if store != nil {
-						store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: handler})
+					if payload := extractSSEPayload(data); payload != nil {
+						chunkData, err := handler.HandleChunk(payload)
+						if err != nil {
+							return startData, err
+						}
+						if len(chunkData) > 0 {
+							if len(startData) > 0 {
+								return append(startData, append([]byte("\n\n"), chunkData...)...), nil
+							}
+							return chunkData, nil
+						}
 					}
-					startData := handler.HandleStreamStart()
+				}
+				return startData, nil
+			}
+		}
 
-					if len(ndjsonChunks) > 0 {
-						// NDJSON: process all chunks through the stream
-						// converter and emit end events in one shot.
-						var parts [][]byte
+		// Anthropic SSE -> OpenAI Chat: the reverse of StreamConverter.
+		// Without this branch an OpenAI client on an Anthropic upstream
+		// receives Anthropic events.
+		if from == ProtocolAnthropic && target == ProtocolOpenAIChat {
+			model := opts.RequestModel
+			if model == "" {
+				model = opts.ResolvedModel
+			}
+			if model == "" {
+				model = opts.Model
+			}
+			handler := NewAnthropicToOpenAIStreamConverter(model, opts)
+			if store != nil {
+				store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: handler})
+			}
+			startData := handler.HandleStreamStart()
+			if len(data) > 0 {
+				if payload := extractSSEPayload(data); payload != nil {
+					chunkData, err := handler.HandleChunk(payload)
+					if err != nil {
+						return startData, err
+					}
+					if len(chunkData) > 0 {
 						if len(startData) > 0 {
-							parts = append(parts, startData)
+							return append(startData, append([]byte("\n\n"), chunkData...)...), nil
 						}
-						for _, chunk := range ndjsonChunks {
-							b, _ := json.Marshal(chunk)
-							out, err := handler.HandleChunk(b)
-							if err != nil {
-								return bytes.Join(parts, []byte("\n\n")), err
-							}
-							if len(out) > 0 {
-								parts = append(parts, out)
-							}
-						}
-						endData := handler.HandleStreamEnd()
-						if len(endData) > 0 {
-							parts = append(parts, endData)
-						}
-						return bytes.Join(parts, []byte("\n\n")), nil
+						return chunkData, nil
 					}
-
-					if len(data) > 0 {
-						payload := extractSSEPayload(data)
-						if payload != nil {
-							chunkData, err := handler.HandleChunk(payload)
-							if err != nil {
-								return startData, err
-							}
-							if len(chunkData) > 0 {
-								if len(startData) > 0 {
-									return append(startData, append([]byte("\n\n"), chunkData...)...), nil
-								}
-								return chunkData, nil
-							}
-						}
-					}
-					return startData, nil
 				}
 			}
+			return startData, nil
+		}
 
-			// Create stream converter (OpenAI deltas => Anthropic SSE).
+		// Gemini streaming: each SSE chunk is a complete GeminiChatResponse,
+		// independently convertible to the target protocol via a streaming
+		// state machine that emits the correct event/delta format per chunk.
+		if from == ProtocolGemini && target != ProtocolUnknown && from != target {
+			var handler responsesStreamHandler
+			model := opts.RequestModel
+			if model == "" {
+				model = opts.ResolvedModel
+			}
+			switch target {
+			case ProtocolOpenAIChat:
+				handler = NewGeminiToOpenAIStreamConverter(model, opts)
+			case ProtocolAnthropic:
+				handler = NewGeminiToAnthropicStreamConverter(model, opts)
+			}
+			if handler != nil {
+				if store != nil {
+					store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: handler})
+				}
+				startData := handler.HandleStreamStart()
+
+				if len(ndjsonChunks) > 0 {
+					// NDJSON: process all chunks through the stream
+					// converter and emit end events in one shot.
+					var parts [][]byte
+					if len(startData) > 0 {
+						parts = append(parts, startData)
+					}
+					for _, chunk := range ndjsonChunks {
+						b, _ := json.Marshal(chunk)
+						out, err := handler.HandleChunk(b)
+						if err != nil {
+							return bytes.Join(parts, []byte("\n\n")), err
+						}
+						if len(out) > 0 {
+							parts = append(parts, out)
+						}
+					}
+					endData := handler.HandleStreamEnd()
+					if len(endData) > 0 {
+						parts = append(parts, endData)
+					}
+					return bytes.Join(parts, []byte("\n\n")), nil
+				}
+
+				if len(data) > 0 {
+					payload := extractSSEPayload(data)
+					if payload != nil {
+						chunkData, err := handler.HandleChunk(payload)
+						if err != nil {
+							return startData, err
+						}
+						if len(chunkData) > 0 {
+							if len(startData) > 0 {
+								return append(startData, append([]byte("\n\n"), chunkData...)...), nil
+							}
+							return chunkData, nil
+						}
+					}
+				}
+				return startData, nil
+			}
+		}
+
+		// Create stream converter (OpenAI deltas => Anthropic SSE).
 		// Create stream converter (OpenAI deltas => Anthropic SSE).
 		sc := newStreamConverterFromData(data, opts)
 		if store != nil {
@@ -892,28 +971,28 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 		}
 
 		// Capture thoughtSignature from Gemini functionCall parts for next request.
-	if payload != nil {
-		var probe struct {
-			Candidates []struct {
-				Content struct {
-					Parts []GeminiPart `json:"parts"`
-				} `json:"content"`
-			} `json:"candidates"`
-		}
-		if json.Unmarshal(payload, &probe) == nil {
-			for _, cand := range probe.Candidates {
-				for _, part := range cand.Content.Parts {
-					if part.FunctionCall != nil && part.ThoughtSignature != "" {
-						if store != nil {
-							store.SetThoughtSig(sid, part.FunctionCall.Name, part.ThoughtSignature)
+		if payload != nil {
+			var probe struct {
+				Candidates []struct {
+					Content struct {
+						Parts []GeminiPart `json:"parts"`
+					} `json:"content"`
+				} `json:"candidates"`
+			}
+			if json.Unmarshal(payload, &probe) == nil {
+				for _, cand := range probe.Candidates {
+					for _, part := range cand.Content.Parts {
+						if part.FunctionCall != nil && part.ThoughtSignature != "" {
+							if store != nil {
+								store.SetThoughtSig(sid, part.FunctionCall.Name, part.ThoughtSignature)
+							}
 						}
 					}
 				}
 			}
 		}
-	}
 
-	// Passthrough handlers expect SSE-framed input from the start
+		// Passthrough handlers expect SSE-framed input from the start
 		// phase, but extractSSEPayload strips framing. Pass the raw
 		// SSE event to preserve proper formatting for the client.
 		chunkInput := payload
@@ -1127,6 +1206,9 @@ func ensureToolID(id string) string {
 	}
 	return "toolu_" + randHex(24)
 }
+
+// intPtr returns a pointer to v, for optional numeric fields.
+func intPtr(v int) *int { return &v }
 
 func randHex(n int) string {
 	b := make([]byte, (n+1)/2)

@@ -8,6 +8,36 @@ import (
 	"strings"
 )
 
+// reasoningEffort reads a Chat request's reasoning_effort, whether the typed
+// field or the raw body kept it (the field is any to accept objects).
+func reasoningEffort(v any, raw map[string]any) string {
+	if s, ok := v.(string); ok && s != "" {
+		return strings.ToLower(s)
+	}
+	if s, _ := raw["reasoning_effort"].(string); s != "" {
+		return strings.ToLower(s)
+	}
+	return ""
+}
+
+// geminiThinkingBudget maps an OpenAI reasoning level to Gemini's token
+// budget. Gemini takes -1 for a dynamic budget and 0 to turn thinking off.
+func geminiThinkingBudget(effort string) int {
+	switch effort {
+	case "minimal", "none":
+		return 0
+	case "low":
+		return 4096
+	case "medium":
+		return 10000
+	case "high":
+		return 24000
+	case "xhigh", "max":
+		return 32000
+	}
+	return 10000
+}
+
 // ---------------------------------------------------------------------------
 // OpenAI Chat Request → Gemini generateContent Request
 // ---------------------------------------------------------------------------
@@ -61,6 +91,14 @@ func convertOpenAIRequestToGemini(body []byte, opts *ConvertOptions) ([]byte, er
 	if seed, _ := rawBody["seed"].(float64); seed != 0 {
 		s := int(seed)
 		gc.Seed = &s
+	}
+	if effort := reasoningEffort(req.ReasoningEffort, rawBody); effort != "" {
+		budget := geminiThinkingBudget(effort)
+		include := true
+		gc.ThinkingConfig = &GeminiThinkingConfig{
+			ThinkingBudget:  &budget,
+			IncludeThoughts: &include,
+		}
 	}
 	// response_format → responseMimeType + responseSchema.
 	if reqFmt, ok := rawBody["response_format"].(map[string]any); ok {
@@ -201,7 +239,7 @@ func convertOpenAIMsgToGeminiContent(msg OpenAIMessage, toolCallIDToName map[str
 
 	// Reasoning content → text part (no native thought marker in Gemini).
 	if msg.ReasoningContent != "" {
-		parts = append([]GeminiPart{{Text: msg.ReasoningContent}}, parts...)
+		parts = append([]GeminiPart{{Text: msg.ReasoningContent, Thought: true}}, parts...)
 	}
 
 	// Tool calls → functionCall parts.
@@ -353,11 +391,16 @@ func convertGeminiResponseToOpenAI(body []byte, opts *ConvertOptions) ([]byte, e
 		c := resp.Candidates[0]
 		msg := OpenAIMessage{Role: "assistant"}
 		var textParts []string
+		var reasoningParts []string
 
 		for _, part := range c.Content.Parts {
 			switch {
 			case part.Text != "" && part.FunctionCall == nil:
-				textParts = append(textParts, part.Text)
+				if part.Thought {
+					reasoningParts = append(reasoningParts, part.Text)
+				} else {
+					textParts = append(textParts, part.Text)
+				}
 			case part.FunctionCall != nil:
 				args := "{}"
 				if part.FunctionCall.Args != nil {
@@ -387,6 +430,9 @@ func convertGeminiResponseToOpenAI(body []byte, opts *ConvertOptions) ([]byte, e
 		}
 
 		content := strings.Join(textParts, "\n")
+		if len(reasoningParts) > 0 {
+			msg.ReasoningContent = strings.Join(reasoningParts, "\n")
+		}
 		if len(msg.ToolCalls) > 0 {
 			if content != "" {
 				msg.Content = content
@@ -571,7 +617,7 @@ func convertOpenAIResponseToGemini(body []byte, opts *ConvertOptions) ([]byte, e
 
 		// Reasoning content → text part first (mimics thinking order).
 		if msg.ReasoningContent != "" {
-			parts = append(parts, GeminiPart{Text: msg.ReasoningContent})
+			parts = append(parts, GeminiPart{Text: msg.ReasoningContent, Thought: true})
 		}
 
 		// Text content.
@@ -593,7 +639,7 @@ func convertOpenAIResponseToGemini(body []byte, opts *ConvertOptions) ([]byte, e
 				},
 			}
 			if opts != nil && opts.SessionStore != nil && opts.SID != "" {
-				if sig := opts.SessionStore.GetThoughtSig(opts.SID, tc.Function.Name); sig != "" {
+				if sig := opts.SessionStore.GetThoughtSigFor(opts.SID, tc.ID, tc.Function.Name); sig != "" {
 					part.ThoughtSignature = sig
 				} else {
 					part.ThoughtSignature = "skip_thought_signature_validator"

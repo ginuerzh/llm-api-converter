@@ -135,6 +135,33 @@ func geminiAnthropicUsage(g *GeminiUsage) map[string]any {
 	return usage
 }
 
+// responsesUsageFromOpenAI maps an OpenAI-shaped usage to the Responses API,
+// where input_tokens includes the cached part and breaks it out under
+// input_tokens_details.
+func responsesUsageFromOpenAI(u *OpenAIUsage) *ResponsesUsage {
+	if u == nil {
+		return nil
+	}
+	out := &ResponsesUsage{
+		InputTokens:  u.PromptTokens,
+		OutputTokens: u.CompletionTokens,
+		TotalTokens:  u.TotalTokens,
+	}
+	if out.TotalTokens == 0 {
+		out.TotalTokens = out.InputTokens + out.OutputTokens
+	}
+	if read, _ := openAICacheCounts(u); read > 0 {
+		out.InputTokensDetails = &ResponsesUsageDetails{CachedTokens: read}
+	}
+	return out
+}
+
+// responsesUsageFromAnthropic maps Anthropic's counting to the Responses API.
+func responsesUsageFromAnthropic(u AnthropicUsage) *ResponsesUsage {
+	o := openAIUsageFromAnthropic(u)
+	return responsesUsageFromOpenAI(&o)
+}
+
 // geminiUsageFromOpenAI maps OpenAI's counting to Gemini's.
 func geminiUsageFromOpenAI(u *OpenAIUsage) *GeminiUsage {
 	if u == nil {

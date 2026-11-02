@@ -11,49 +11,49 @@ import (
 
 // ResponsesRequest is a POST /v1/responses request body.
 type ResponsesRequest struct {
-	Model             string          `json:"model"`
-	Instructions      json.RawMessage `json:"instructions,omitempty"`
-	Input             json.RawMessage `json:"input,omitempty"` // string or []inputItem
-	MaxOutputTokens   *int            `json:"max_output_tokens,omitempty"`
-	Temperature       *float64        `json:"temperature,omitempty"`
-	TopP              *float64        `json:"top_p,omitempty"`
-	Stream            bool            `json:"stream,omitempty"`
-	StreamOptions     any             `json:"stream_options,omitempty"`
-	Tools             []ResponsesTool `json:"tools,omitempty"`
-	ToolChoice        any             `json:"tool_choice,omitempty"`
-	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
-	PreviousResponseID string        `json:"previous_response_id,omitempty"`
-	Store              *bool          `json:"store,omitempty"`
-	Truncation         string         `json:"truncation,omitempty"`
-	Metadata           any            `json:"metadata,omitempty"`
+	Model              string          `json:"model"`
+	Instructions       json.RawMessage `json:"instructions,omitempty"`
+	Input              json.RawMessage `json:"input,omitempty"` // string or []inputItem
+	MaxOutputTokens    *int            `json:"max_output_tokens,omitempty"`
+	Temperature        *float64        `json:"temperature,omitempty"`
+	TopP               *float64        `json:"top_p,omitempty"`
+	Stream             bool            `json:"stream,omitempty"`
+	StreamOptions      any             `json:"stream_options,omitempty"`
+	Tools              []ResponsesTool `json:"tools,omitempty"`
+	ToolChoice         any             `json:"tool_choice,omitempty"`
+	ParallelToolCalls  *bool           `json:"parallel_tool_calls,omitempty"`
+	PreviousResponseID string          `json:"previous_response_id,omitempty"`
+	Store              *bool           `json:"store,omitempty"`
+	Truncation         string          `json:"truncation,omitempty"`
+	Metadata           any             `json:"metadata,omitempty"`
 }
 
 // responsesInputItem is an element in the input array.
 type responsesInputItem struct {
-	Type      string          `json:"type"` // "message", "function_call", "function_call_output", "reasoning"
-	Role      string          `json:"role,omitempty"`
-	Content   json.RawMessage `json:"content,omitempty"` // string or []contentPart
-	ID        string          `json:"id,omitempty"`
-	CallID    string          `json:"call_id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Arguments string          `json:"arguments,omitempty"`
-	Input     string          `json:"input,omitempty"`
-	Output    json.RawMessage `json:"output,omitempty"`
+	Type      string                      `json:"type"` // "message", "function_call", "function_call_output", "reasoning"
+	Role      string                      `json:"role,omitempty"`
+	Content   json.RawMessage             `json:"content,omitempty"` // string or []contentPart
+	ID        string                      `json:"id,omitempty"`
+	CallID    string                      `json:"call_id,omitempty"`
+	Name      string                      `json:"name,omitempty"`
+	Arguments string                      `json:"arguments,omitempty"`
+	Input     string                      `json:"input,omitempty"`
+	Output    json.RawMessage             `json:"output,omitempty"`
 	Summary   []ResponsesReasoningSummary `json:"summary,omitempty"`
-	Text      json.RawMessage `json:"text,omitempty"`
+	Text      json.RawMessage             `json:"text,omitempty"`
 }
 
 // ResponsesOutputItem is an element in the output array.
 type ResponsesOutputItem struct {
-	ID        string                     `json:"id"`
-	Type      string                     `json:"type"` // "message", "reasoning", "function_call"
-	Status    string                     `json:"status,omitempty"`
-	Role      string                     `json:"role,omitempty"`
-	Content   []ResponsesContentPart     `json:"content,omitempty"`
+	ID        string                      `json:"id"`
+	Type      string                      `json:"type"` // "message", "reasoning", "function_call"
+	Status    string                      `json:"status,omitempty"`
+	Role      string                      `json:"role,omitempty"`
+	Content   []ResponsesContentPart      `json:"content,omitempty"`
 	Summary   []ResponsesReasoningSummary `json:"summary,omitempty"`
-	CallID    string                     `json:"call_id,omitempty"`
-	Name      string                     `json:"name,omitempty"`
-	Arguments string                     `json:"arguments,omitempty"`
+	CallID    string                      `json:"call_id,omitempty"`
+	Name      string                      `json:"name,omitempty"`
+	Arguments string                      `json:"arguments,omitempty"`
 }
 
 // ResponsesContentPart is a typed content part inside an output item.
@@ -71,11 +71,11 @@ type ResponsesReasoningSummary struct {
 
 // ResponsesTool represents a tool declaration in a Responses API request.
 type ResponsesTool struct {
-	Name        string                `json:"name,omitempty"`
-	Description string                `json:"description,omitempty"`
-	Parameters  any                   `json:"parameters,omitempty"`
-	Strict      *bool                 `json:"strict,omitempty"`
-	Type        string                `json:"type,omitempty"`       // "function" (OpenAI format)
+	Name        string                 `json:"name,omitempty"`
+	Description string                 `json:"description,omitempty"`
+	Parameters  any                    `json:"parameters,omitempty"`
+	Strict      *bool                  `json:"strict,omitempty"`
+	Type        string                 `json:"type,omitempty"`     // "function" (OpenAI format)
 	Function    *ResponsesToolFunction `json:"function,omitempty"` // alternative wrapping
 }
 
@@ -113,11 +113,11 @@ type ResponsesResponse struct {
 
 // ResponsesUsage represents token usage in a Responses API response.
 type ResponsesUsage struct {
-	InputTokens          int                   `json:"input_tokens"`
-	OutputTokens         int                   `json:"output_tokens"`
-	TotalTokens          int                   `json:"total_tokens"`
-	InputTokensDetails   *ResponsesUsageDetails `json:"input_tokens_details,omitempty"`
-	OutputTokensDetails  *ResponsesUsageDetails `json:"output_tokens_details,omitempty"`
+	InputTokens         int                    `json:"input_tokens"`
+	OutputTokens        int                    `json:"output_tokens"`
+	TotalTokens         int                    `json:"total_tokens"`
+	InputTokensDetails  *ResponsesUsageDetails `json:"input_tokens_details,omitempty"`
+	OutputTokensDetails *ResponsesUsageDetails `json:"output_tokens_details,omitempty"`
 }
 
 // ResponsesUsageDetails holds breakdown details for token usage.
@@ -134,41 +134,41 @@ type ResponsesUsageDetails struct {
 type ResponsesStreamEventType string
 
 const (
-	ResponseCreated                ResponsesStreamEventType = "response.created"
-	ResponseInProgress             ResponsesStreamEventType = "response.in_progress"
-	ResponseCompleted              ResponsesStreamEventType = "response.completed"
-	ResponseOutputItemAdded        ResponsesStreamEventType = "response.output_item.added"
-	ResponseOutputItemDone         ResponsesStreamEventType = "response.output_item.done"
-	ResponseContentPartAdded       ResponsesStreamEventType = "response.content_part.added"
-	ResponseContentPartDone        ResponsesStreamEventType = "response.content_part.done"
-	ResponseOutputTextDelta        ResponsesStreamEventType = "response.output_text.delta"
-	ResponseOutputTextDone         ResponsesStreamEventType = "response.output_text.done"
-	ResponseReasoningSummaryPartAdded ResponsesStreamEventType = "response.reasoning_summary_part.added"
-	ResponseReasoningSummaryDelta     ResponsesStreamEventType = "response.reasoning_summary_text.delta"
-	ResponseReasoningSummaryDone      ResponsesStreamEventType = "response.reasoning_summary_text.done"
-	ResponseReasoningSummaryPartDone  ResponsesStreamEventType = "response.reasoning_summary_part.done"
-	ResponseFunctionCallArgumentsDelta  ResponsesStreamEventType = "response.function_call_arguments.delta"
-	ResponseFunctionCallArgumentsDone    ResponsesStreamEventType = "response.function_call_arguments.done"
-	ResponseIncomplete                ResponsesStreamEventType = "response.incomplete"
-	ResponseFailed                   ResponsesStreamEventType = "response.failed"
+	ResponseCreated                    ResponsesStreamEventType = "response.created"
+	ResponseInProgress                 ResponsesStreamEventType = "response.in_progress"
+	ResponseCompleted                  ResponsesStreamEventType = "response.completed"
+	ResponseOutputItemAdded            ResponsesStreamEventType = "response.output_item.added"
+	ResponseOutputItemDone             ResponsesStreamEventType = "response.output_item.done"
+	ResponseContentPartAdded           ResponsesStreamEventType = "response.content_part.added"
+	ResponseContentPartDone            ResponsesStreamEventType = "response.content_part.done"
+	ResponseOutputTextDelta            ResponsesStreamEventType = "response.output_text.delta"
+	ResponseOutputTextDone             ResponsesStreamEventType = "response.output_text.done"
+	ResponseReasoningSummaryPartAdded  ResponsesStreamEventType = "response.reasoning_summary_part.added"
+	ResponseReasoningSummaryDelta      ResponsesStreamEventType = "response.reasoning_summary_text.delta"
+	ResponseReasoningSummaryDone       ResponsesStreamEventType = "response.reasoning_summary_text.done"
+	ResponseReasoningSummaryPartDone   ResponsesStreamEventType = "response.reasoning_summary_part.done"
+	ResponseFunctionCallArgumentsDelta ResponsesStreamEventType = "response.function_call_arguments.delta"
+	ResponseFunctionCallArgumentsDone  ResponsesStreamEventType = "response.function_call_arguments.done"
+	ResponseIncomplete                 ResponsesStreamEventType = "response.incomplete"
+	ResponseFailed                     ResponsesStreamEventType = "response.failed"
 )
 
 // ResponsesStreamEvent is a generic Responses API stream event envelope.
 type ResponsesStreamEvent struct {
 	Type           ResponsesStreamEventType `json:"type"`
 	SequenceNumber *int                     `json:"sequence_number,omitempty"`
-	Response     *ResponsesResponse       `json:"response,omitempty"`
-	Item         *ResponsesOutputItem     `json:"item,omitempty"`
-	OutputIndex  *int                     `json:"output_index,omitempty"`
-	ContentIndex *int                     `json:"content_index,omitempty"`
-	PartIndex    *int                     `json:"part_index,omitempty"`
-	ItemID       string                   `json:"item_id,omitempty"`
-	SummaryIndex *int                     `json:"summary_index,omitempty"`
-	Part         any                      `json:"part,omitempty"`
-	Delta        string                   `json:"delta,omitempty"`
-	TextDone     string                   `json:"text,omitempty"`
-	Arguments    string                   `json:"arguments,omitempty"`
-	SummaryText  string                   `json:"summary_text,omitempty"`
+	Response       *ResponsesResponse       `json:"response,omitempty"`
+	Item           *ResponsesOutputItem     `json:"item,omitempty"`
+	OutputIndex    *int                     `json:"output_index,omitempty"`
+	ContentIndex   *int                     `json:"content_index,omitempty"`
+	PartIndex      *int                     `json:"part_index,omitempty"`
+	ItemID         string                   `json:"item_id,omitempty"`
+	SummaryIndex   *int                     `json:"summary_index,omitempty"`
+	Part           any                      `json:"part,omitempty"`
+	Delta          string                   `json:"delta,omitempty"`
+	TextDone       string                   `json:"text,omitempty"`
+	Arguments      string                   `json:"arguments,omitempty"`
+	SummaryText    string                   `json:"summary_text,omitempty"`
 }
 
 // -------- Request Conversion: Responses → Chat --------
@@ -180,12 +180,15 @@ func ConvertResponsesToChat(body []byte, opts *ConvertOptions) ([]byte, error) {
 		return nil, fmt.Errorf("unmarshal Responses request: %w", err)
 	}
 
-	model := opts.ResolvedModel; if model == "" { model = resolveModelTarget(req.Model, opts.ModelMap) }
+	model := opts.ResolvedModel
+	if model == "" {
+		model = resolveModelTarget(req.Model, opts.ModelMap)
+	}
 	if model == "" {
 		model = opts.Model
 	}
 	chat := OpenAIChatRequest{
-		Model: model,
+		Model:  model,
 		Stream: &req.Stream,
 	}
 	if req.MaxOutputTokens != nil {
@@ -213,7 +216,7 @@ func ConvertResponsesToChat(body []byte, opts *ConvertOptions) ([]byte, error) {
 		var instrText string
 		if err := json.Unmarshal(req.Instructions, &instrText); err == nil && instrText != "" {
 			instrText = stripLeadingAnthropicBillingHeader(instrText)
-				result.systemTexts = append(result.systemTexts, instrText)
+			result.systemTexts = append(result.systemTexts, instrText)
 		}
 	}
 	if len(result.systemTexts) > 0 {
@@ -236,10 +239,10 @@ func ConvertResponsesToChat(body []byte, opts *ConvertOptions) ([]byte, error) {
 				slog.Debug("skipping non-function Responses tool", "type", t.Type)
 				continue
 			}
-				// ponytail: custom tools get a single "input" string param schema
-				if t.Type == "custom" {
-					params = customToolInputSchema()
-				}
+			// ponytail: custom tools get a single "input" string param schema
+			if t.Type == "custom" {
+				params = customToolInputSchema()
+			}
 			chat.Tools = append(chat.Tools, OpenAITool{
 				Type: "function",
 				Function: OpenAIFunction{
@@ -299,8 +302,8 @@ func ConvertResponsesToAnthropic(body []byte, opts *ConvertOptions) ([]byte, err
 	if len(req.Instructions) > 0 {
 		var instrText string
 		if err := json.Unmarshal(req.Instructions, &instrText); err == nil && instrText != "" {
-				instrText = stripLeadingAnthropicBillingHeader(instrText)
-				result.systemTexts = append(result.systemTexts, instrText)
+			instrText = stripLeadingAnthropicBillingHeader(instrText)
+			result.systemTexts = append(result.systemTexts, instrText)
 		}
 	}
 	if len(result.systemTexts) > 0 {
@@ -449,13 +452,9 @@ func ConvertAnthropicToResponses(body []byte, opts *ConvertOptions) ([]byte, err
 		}
 	}
 
-	r.Usage = &ResponsesUsage{
-		InputTokens:  resp.Usage.InputTokens,
-		OutputTokens: resp.Usage.OutputTokens,
-		TotalTokens:  resp.Usage.InputTokens + resp.Usage.OutputTokens,
-		OutputTokensDetails: &ResponsesUsageDetails{
-			TextTokens: resp.Usage.OutputTokens,
-		},
+	r.Usage = responsesUsageFromAnthropic(resp.Usage)
+	r.Usage.OutputTokensDetails = &ResponsesUsageDetails{
+		TextTokens: resp.Usage.OutputTokens,
 	}
 	return json.Marshal(r)
 }
@@ -764,16 +763,16 @@ func responsesContentToOpenAI(content json.RawMessage) any {
 					ImageURL: &OpenAIImageURL{URL: imageURL},
 				})
 			}
-			case t == "input_file":
-				converted = append(converted, OpenAIContentPart{
-					Type: "text",
-					Text: fmt.Sprintf("[input_file: %v]", p["input_file"]),
-				})
-			case t == "input_audio":
-				converted = append(converted, OpenAIContentPart{
-					Type: "text",
-					Text: fmt.Sprintf("[input_audio: %v]", p["input_audio"]),
-				})
+		case t == "input_file":
+			converted = append(converted, OpenAIContentPart{
+				Type: "text",
+				Text: fmt.Sprintf("[input_file: %v]", p["input_file"]),
+			})
+		case t == "input_audio":
+			converted = append(converted, OpenAIContentPart{
+				Type: "text",
+				Text: fmt.Sprintf("[input_audio: %v]", p["input_audio"]),
+			})
 		}
 	}
 	if len(converted) == 1 && converted[0].Type == "text" {
@@ -1022,8 +1021,8 @@ func convertToResponsesResponse(body []byte, opts *ConvertOptions) ([]byte, erro
 
 // responsesInputParseResult holds the result of parsing a Responses input.
 type responsesInputParseResult struct {
-	messages       []OpenAIMessage
-	systemTexts    []string
+	messages    []OpenAIMessage
+	systemTexts []string
 }
 
 // stripLeadingAnthropicBillingHeader removes the first leading

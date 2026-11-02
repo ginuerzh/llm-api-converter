@@ -15,16 +15,75 @@ import (
 type GeminiToOpenAIStreamConverter struct {
 	model        string
 	id           string
+	opts         *ConvertOptions
 	finalized    bool
 	finishReason string
 	usage        *OpenAIUsage
+
+	// tool accumulates a functionCall whose arguments may arrive over
+	// several chunks; nextTool is the next OpenAI index.
+	tool     *geminiPendingTool
+	nextTool int
 }
 
-func NewGeminiToOpenAIStreamConverter(model string) *GeminiToOpenAIStreamConverter {
-	return &GeminiToOpenAIStreamConverter{
+// geminiPendingTool is a functionCall being assembled from one or more Gemini
+// chunks. Gemini may repeat the call with more fields as the arguments grow.
+type geminiPendingTool struct {
+	name string
+	id   string
+	args map[string]any
+	sig  string
+}
+
+func (p *geminiPendingTool) merge(fc *GeminiFunctionCall, sig string) {
+	if p.args == nil {
+		p.args = make(map[string]any)
+	}
+	p.args = mergeGeminiArgs(p.args, fc.Args)
+	if p.id == "" {
+		p.id = fc.ID
+	}
+	if sig != "" {
+		p.sig = sig
+	}
+}
+
+func sameGeminiTool(p *geminiPendingTool, fc *GeminiFunctionCall) bool {
+	if p == nil || p.name != fc.Name {
+		return false
+	}
+	return p.id == "" || fc.ID == "" || p.id == fc.ID
+}
+
+func mergeGeminiArgs(dst map[string]any, src any) map[string]any {
+	m, ok := src.(map[string]any)
+	if !ok {
+		return dst
+	}
+	if dst == nil {
+		dst = make(map[string]any)
+	}
+	for k, v := range m {
+		if dm, ok := dst[k].(map[string]any); ok {
+			if sm, ok := v.(map[string]any); ok {
+				dst[k] = mergeGeminiArgs(dm, sm)
+				continue
+			}
+		}
+		dst[k] = v
+	}
+	return dst
+}
+
+func NewGeminiToOpenAIStreamConverter(model string, opts ...*ConvertOptions) *GeminiToOpenAIStreamConverter {
+	c := &GeminiToOpenAIStreamConverter{
 		model: model,
 		id:    "chatcmpl-gemini-" + randHex(16),
 	}
+	if len(opts) > 0 {
+		c.opts = opts[0]
+	}
+	return c
 }
 
 // HandleStreamStart returns nil — OpenAI SSE has no start-of-stream event.
@@ -63,43 +122,78 @@ func (c *GeminiToOpenAIStreamConverter) HandleChunk(data []byte) ([]byte, error)
 		c.usage = &u
 	}
 
-	// Build delta from parts.
-	delta := OpenAIDelta{}
+	// Emit text immediately; buffer function calls until their arguments
+	// stop growing (text, another call, finish or end of stream).
+	var events [][]byte
 	for _, part := range cand.Content.Parts {
 		if part.Text != "" {
-			delta.Content += part.Text
+			events = append(events, c.flushTool()...)
+			d := OpenAIDelta{}
+			if part.Thought {
+				d.ReasoningContent = part.Text
+			} else {
+				d.Content = part.Text
+			}
+			events = append(events, c.chunkEvent(d, nil))
 		}
 		if part.FunctionCall != nil {
-			args := "{}"
-			if part.FunctionCall.Args != nil {
-				if b, err := json.Marshal(part.FunctionCall.Args); err == nil {
-					args = string(b)
-				}
-			}
-			delta.ToolCalls = append(delta.ToolCalls, OpenAIDeltaToolCall{
-				Index: len(delta.ToolCalls),
-				ID:    "call_" + randHex(16),
-				Type:  "function",
-				Function: OpenAIFunctionCall{
-					Name:      part.FunctionCall.Name,
-					Arguments: args,
-				},
-			})
+			events = append(events, c.bufferTool(part.FunctionCall, part.ThoughtSignature)...)
 		}
 	}
-
-	if delta.Content == "" && len(delta.ToolCalls) == 0 {
-		return nil, nil
+	if cand.FinishReason != "" {
+		events = append(events, c.flushTool()...)
 	}
+	return joinSSE(events), nil
+}
 
+func (c *GeminiToOpenAIStreamConverter) chunkEvent(delta OpenAIDelta, finish *string) []byte {
 	chunk := OpenAIStreamChunk{
 		ID:      c.id,
 		Object:  "chat.completion.chunk",
 		Model:   c.model,
-		Choices: []OpenAIStreamChoice{{Index: 0, Delta: delta}},
+		Choices: []OpenAIStreamChoice{{Index: 0, Delta: delta, FinishReason: finish}},
 	}
 	b, _ := json.Marshal(chunk)
-	return append([]byte("data: "), append(b, '\n')...), nil
+	return []byte("data: " + string(b) + "\n\n")
+}
+
+func (c *GeminiToOpenAIStreamConverter) bufferTool(fc *GeminiFunctionCall, sig string) [][]byte {
+	var events [][]byte
+	if c.tool != nil && !sameGeminiTool(c.tool, fc) {
+		events = append(events, c.flushTool()...)
+	}
+	if c.tool == nil {
+		c.tool = &geminiPendingTool{name: fc.Name, id: fc.ID}
+	}
+	c.tool.merge(fc, sig)
+	return events
+}
+
+func (c *GeminiToOpenAIStreamConverter) flushTool() [][]byte {
+	if c.tool == nil {
+		return nil
+	}
+	args := "{}"
+	if b, err := json.Marshal(c.tool.args); err == nil && len(b) > 0 {
+		args = string(b)
+	}
+	id := "call_" + randHex(16)
+	name := c.tool.name
+	if c.opts != nil && c.opts.SessionStore != nil && c.opts.SID != "" {
+		c.opts.SessionStore.SetThoughtSigFor(c.opts.SID, id, name, c.tool.sig)
+	}
+	idx := c.nextTool
+	c.nextTool++
+	c.tool = nil
+	return [][]byte{c.chunkEvent(OpenAIDelta{ToolCalls: []OpenAIDeltaToolCall{{
+		Index: intPtr(idx),
+		ID:    id,
+		Type:  "function",
+		Function: OpenAIFunctionCall{
+			Name:      name,
+			Arguments: args,
+		},
+	}}}, nil)}
 }
 
 func (c *GeminiToOpenAIStreamConverter) HandleStreamEnd() []byte {
@@ -109,6 +203,7 @@ func (c *GeminiToOpenAIStreamConverter) HandleStreamEnd() []byte {
 	c.finalized = true
 
 	var result [][]byte
+	result = append(result, c.flushTool()...)
 
 	// Emit final chunk with finish reason + usage.
 	if c.finishReason != "" || c.usage != nil {
@@ -116,18 +211,17 @@ func (c *GeminiToOpenAIStreamConverter) HandleStreamEnd() []byte {
 		chunk := OpenAIStreamChunk{
 			ID:      c.id,
 			Object:  "chat.completion.chunk",
+			Model:   c.model,
 			Choices: []OpenAIStreamChoice{{Index: 0, Delta: OpenAIDelta{}, FinishReason: fr}},
-		}
-		if c.usage != nil {
-			chunk.Usage = c.usage
+			Usage:   c.usage,
 		}
 		b, _ := json.Marshal(chunk)
-		result = append(result, []byte("data: "+string(b)))
+		result = append(result, []byte("data: "+string(b)+"\n\n"))
 	}
 
 	// [DONE] marker.
-	result = append(result, []byte("data: [DONE]"))
-	return bytes.Join(result, []byte("\n\n"))
+	result = append(result, []byte("data: [DONE]\n\n"))
+	return joinSSE(result)
 }
 
 func (c *GeminiToOpenAIStreamConverter) EmitError(message string) []byte {
@@ -148,20 +242,26 @@ func (c *GeminiToOpenAIStreamConverter) EmitError(message string) []byte {
 type GeminiToAnthropicStreamConverter struct {
 	model          string
 	msgID          string
-	curBlockType   string // "text" or "tool_use"
+	opts           *ConvertOptions
+	curBlockType   string // "text", "thinking" or "tool_use"
 	curBlockIndex  int
 	nextBlockIndex int
 	finishReason   string
-	usage          *AnthropicUsage
+	usage          *GeminiUsage
 	started        bool
 	finalized      bool
+	tool           *geminiPendingTool
 }
 
-func NewGeminiToAnthropicStreamConverter(model string) *GeminiToAnthropicStreamConverter {
-	return &GeminiToAnthropicStreamConverter{
+func NewGeminiToAnthropicStreamConverter(model string, opts ...*ConvertOptions) *GeminiToAnthropicStreamConverter {
+	c := &GeminiToAnthropicStreamConverter{
 		model: model,
 		msgID: "msg_gemini_" + randHex(16),
 	}
+	if len(opts) > 0 {
+		c.opts = opts[0]
+	}
+	return c
 }
 
 func (c *GeminiToAnthropicStreamConverter) HandleStreamStart() []byte {
@@ -196,8 +296,7 @@ func (c *GeminiToAnthropicStreamConverter) HandleChunk(data []byte) ([]byte, err
 		c.finishReason = cand.FinishReason
 	}
 	if resp.UsageMetadata != nil {
-		u := anthropicUsageFromGemini(resp.UsageMetadata)
-		c.usage = &u
+		c.usage = resp.UsageMetadata
 	}
 
 	var events [][]byte
@@ -205,32 +304,81 @@ func (c *GeminiToAnthropicStreamConverter) HandleChunk(data []byte) ([]byte, err
 	for _, part := range cand.Content.Parts {
 		switch {
 		case part.Text != "":
-			if c.curBlockType == "tool_use" {
-				events = append(events, c.contentBlockStop())
+			events = append(events, c.flushTool()...)
+			if part.Thought {
+				if c.curBlockType != "thinking" {
+					if c.curBlockType != "" {
+						events = append(events, c.contentBlockStop())
+						c.curBlockType = ""
+					}
+					events = append(events, c.ensureBlock("thinking", "")...)
+				}
+				events = append(events, c.thinkingDelta(part.Text)...)
+				if part.ThoughtSignature != "" {
+					events = append(events, c.signatureDelta(part.ThoughtSignature)...)
+				}
+			} else {
+				if c.curBlockType == "thinking" || c.curBlockType == "tool_use" {
+					events = append(events, c.contentBlockStop())
+					c.curBlockType = ""
+				}
+				if c.curBlockType == "" {
+					events = append(events, c.ensureBlock("text", "")...)
+				}
+				events = append(events, c.textDelta(part.Text)...)
 			}
-			if c.curBlockType == "" || c.curBlockType == "tool_use" {
-				events = append(events, c.ensureBlock("text", "")...)
-			}
-			events = append(events, c.textDelta(part.Text)...)
 
 		case part.FunctionCall != nil:
-			if c.curBlockType == "text" {
-				events = append(events, c.contentBlockStop())
-			}
-			meta := fmt.Sprintf(`"id":"%s","name":"%s"`, "toolu_"+randHex(24), part.FunctionCall.Name)
-			events = append(events, c.ensureBlock("tool_use", meta)...)
-
-			if part.FunctionCall.Args != nil {
-				argsJSON, _ := json.Marshal(part.FunctionCall.Args)
-				events = append(events, c.inputJSONDelta(string(argsJSON))...)
-			}
+			events = append(events, c.bufferTool(part.FunctionCall, part.ThoughtSignature)...)
 		}
+	}
+
+	if cand.FinishReason != "" {
+		events = append(events, c.flushTool()...)
 	}
 
 	if len(events) == 0 {
 		return nil, nil
 	}
 	return bytes.Join(events, []byte("\n\n")), nil
+}
+
+func (c *GeminiToAnthropicStreamConverter) bufferTool(fc *GeminiFunctionCall, sig string) [][]byte {
+	var events [][]byte
+	if c.tool != nil && !sameGeminiTool(c.tool, fc) {
+		events = append(events, c.flushTool()...)
+	}
+	if c.tool == nil {
+		c.tool = &geminiPendingTool{name: fc.Name, id: fc.ID}
+	}
+	c.tool.merge(fc, sig)
+	return events
+}
+
+func (c *GeminiToAnthropicStreamConverter) flushTool() [][]byte {
+	if c.tool == nil {
+		return nil
+	}
+	var events [][]byte
+	if c.curBlockType != "" {
+		events = append(events, c.contentBlockStop())
+		c.curBlockType = ""
+	}
+	id := "toolu_" + randHex(24)
+	name := c.tool.name
+	if c.opts != nil && c.opts.SessionStore != nil && c.opts.SID != "" {
+		c.opts.SessionStore.SetThoughtSigFor(c.opts.SID, id, name, c.tool.sig)
+	}
+	meta := fmt.Sprintf(`"id":"%s","name":"%s"`, id, name)
+	events = append(events, c.ensureBlock("tool_use", meta)...)
+	argsJSON, _ := json.Marshal(c.tool.args)
+	if len(argsJSON) == 0 {
+		argsJSON = []byte("{}")
+	}
+	events = append(events, c.inputJSONDelta(string(argsJSON))...)
+	c.curBlockType = "tool_use"
+	c.tool = nil
+	return events
 }
 
 func (c *GeminiToAnthropicStreamConverter) HandleStreamEnd() []byte {
@@ -240,6 +388,7 @@ func (c *GeminiToAnthropicStreamConverter) HandleStreamEnd() []byte {
 	c.finalized = true
 
 	var events [][]byte
+	events = append(events, c.flushTool()...)
 
 	// Close the current content block.
 	if c.curBlockType != "" {
@@ -252,9 +401,10 @@ func (c *GeminiToAnthropicStreamConverter) HandleStreamEnd() []byte {
 	if c.finishReason != "" {
 		stopReason = mapGeminiFinishToAnthropicStr(c.finishReason)
 	}
+	usageJSON, _ := json.Marshal(geminiAnthropicUsage(c.usage))
 	md := fmt.Sprintf(
-		`event: message_delta`+"\n"+`data: {"type":"message_delta","delta":{"stop_reason":"%s","stop_sequence":null},"usage":{"input_tokens":%d,"output_tokens":%d}}`,
-		stopReason, c.usageInputTokens(), c.usageOutputTokens(),
+		`event: message_delta`+"\n"+`data: {"type":"message_delta","delta":{"stop_reason":"%s","stop_sequence":null},"usage":%s}`,
+		stopReason, usageJSON,
 	)
 	events = append(events, []byte(md))
 
@@ -311,6 +461,32 @@ func (c *GeminiToAnthropicStreamConverter) textDelta(text string) [][]byte {
 	return [][]byte{[]byte(evt)}
 }
 
+func (c *GeminiToAnthropicStreamConverter) thinkingDelta(text string) [][]byte {
+	escaped, _ := json.Marshal(text)
+	raw := string(escaped)
+	if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
+		raw = raw[1 : len(raw)-1]
+	}
+	evt := fmt.Sprintf(
+		`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":"%s"}}`,
+		c.curBlockIndex, raw,
+	)
+	return [][]byte{[]byte(evt)}
+}
+
+func (c *GeminiToAnthropicStreamConverter) signatureDelta(sig string) [][]byte {
+	escaped, _ := json.Marshal(sig)
+	raw := string(escaped)
+	if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
+		raw = raw[1 : len(raw)-1]
+	}
+	evt := fmt.Sprintf(
+		`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":"%s"}}`,
+		c.curBlockIndex, raw,
+	)
+	return [][]byte{[]byte(evt)}
+}
+
 func (c *GeminiToAnthropicStreamConverter) inputJSONDelta(partialJSON string) [][]byte {
 	escaped, _ := json.Marshal(partialJSON)
 	raw := string(escaped)
@@ -334,18 +510,4 @@ func mapGeminiFinishToAnthropicStr(reason string) string {
 	default:
 		return "end_turn"
 	}
-}
-
-func (c *GeminiToAnthropicStreamConverter) usageInputTokens() int {
-	if c.usage != nil {
-		return c.usage.InputTokens
-	}
-	return 0
-}
-
-func (c *GeminiToAnthropicStreamConverter) usageOutputTokens() int {
-	if c.usage != nil {
-		return c.usage.OutputTokens
-	}
-	return 0
 }

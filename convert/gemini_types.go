@@ -4,12 +4,12 @@ package convert
 
 // GeminiChatRequest is a Google Gemini generateContent request body.
 type GeminiChatRequest struct {
-	Contents         []GeminiContent        `json:"contents"`
-	SystemInstruction *GeminiContent        `json:"systemInstruction,omitempty"`
-	Tools            []GeminiTool           `json:"tools,omitempty"`
-	ToolConfig       *GeminiToolConfig      `json:"toolConfig,omitempty"`
-	SafetySettings   []GeminiSafetySetting  `json:"safetySettings,omitempty"`
-	GenerationConfig *GeminiGenerationConfig `json:"generationConfig,omitempty"`
+	Contents          []GeminiContent         `json:"contents"`
+	SystemInstruction *GeminiContent          `json:"systemInstruction,omitempty"`
+	Tools             []GeminiTool            `json:"tools,omitempty"`
+	ToolConfig        *GeminiToolConfig       `json:"toolConfig,omitempty"`
+	SafetySettings    []GeminiSafetySetting   `json:"safetySettings,omitempty"`
+	GenerationConfig  *GeminiGenerationConfig `json:"generationConfig,omitempty"`
 }
 
 type GeminiContent struct {
@@ -18,18 +18,20 @@ type GeminiContent struct {
 }
 
 type GeminiPart struct {
-	Text                string                    `json:"text,omitempty"`
-	InlineData          *GeminiInlineData         `json:"inlineData,omitempty"`
-	FunctionCall        *GeminiFunctionCall       `json:"functionCall,omitempty"`
-	FunctionResponse    *GeminiFunctionResponse   `json:"functionResponse,omitempty"`
-	FileData            *GeminiFileData           `json:"fileData,omitempty"`
-	ExecutableCode      *GeminiExecutableCode     `json:"executableCode,omitempty"`
+	Text                string                     `json:"text,omitempty"`
+	Thought             bool                       `json:"thought,omitempty"`
+	InlineData          *GeminiInlineData          `json:"inlineData,omitempty"`
+	FunctionCall        *GeminiFunctionCall        `json:"functionCall,omitempty"`
+	FunctionResponse    *GeminiFunctionResponse    `json:"functionResponse,omitempty"`
+	FileData            *GeminiFileData            `json:"fileData,omitempty"`
+	ExecutableCode      *GeminiExecutableCode      `json:"executableCode,omitempty"`
 	CodeExecutionResult *GeminiCodeExecutionResult `json:"codeExecutionResult,omitempty"`
-	ThoughtSignature    string                    `json:"thoughtSignature,omitempty"`
+	ThoughtSignature    string                     `json:"thoughtSignature,omitempty"`
 }
 
 // GeminiFunctionCall represents a function call part (like tool_use).
 type GeminiFunctionCall struct {
+	ID   string `json:"id,omitempty"`
 	Name string `json:"name"`
 	Args any    `json:"args"`
 }
@@ -56,22 +58,30 @@ type GeminiExecutableCode struct {
 }
 
 type GeminiCodeExecutionResult struct {
-	Outcome  string `json:"outcome"`
-	Output   string `json:"output"`
+	Outcome string `json:"outcome"`
+	Output  string `json:"output"`
 }
 
 type GeminiGenerationConfig struct {
-	Temperature      *float64            `json:"temperature,omitempty"`
-	TopP             *float64            `json:"topP,omitempty"`
-	TopK             *float64            `json:"topK,omitempty"`
-	MaxOutputTokens  *int                `json:"maxOutputTokens,omitempty"`
-	StopSequences    []string            `json:"stopSequences,omitempty"`
-	ResponseMimeType string              `json:"responseMimeType,omitempty"`
-	ResponseSchema   any                 `json:"responseSchema,omitempty"`
-	CandidateCount   *int                `json:"candidateCount,omitempty"`
-	Seed             *int                `json:"seed,omitempty"`
-	PresencePenalty  *float64            `json:"presencePenalty,omitempty"`
-	FrequencyPenalty *float64            `json:"frequencyPenalty,omitempty"`
+	Temperature      *float64              `json:"temperature,omitempty"`
+	TopP             *float64              `json:"topP,omitempty"`
+	TopK             *float64              `json:"topK,omitempty"`
+	MaxOutputTokens  *int                  `json:"maxOutputTokens,omitempty"`
+	StopSequences    []string              `json:"stopSequences,omitempty"`
+	ResponseMimeType string                `json:"responseMimeType,omitempty"`
+	ResponseSchema   any                   `json:"responseSchema,omitempty"`
+	CandidateCount   *int                  `json:"candidateCount,omitempty"`
+	Seed             *int                  `json:"seed,omitempty"`
+	PresencePenalty  *float64              `json:"presencePenalty,omitempty"`
+	FrequencyPenalty *float64              `json:"frequencyPenalty,omitempty"`
+	ThinkingConfig   *GeminiThinkingConfig `json:"thinkingConfig,omitempty"`
+}
+
+// GeminiThinkingConfig controls a Gemini model's reasoning. ThinkingBudget is
+// -1 for a dynamic budget, 0 to turn thinking off, or an explicit token cap.
+type GeminiThinkingConfig struct {
+	ThinkingBudget  *int  `json:"thinkingBudget,omitempty"`
+	IncludeThoughts *bool `json:"includeThoughts,omitempty"`
 }
 
 // GeminiTool wraps function declarations for function calling.
@@ -103,16 +113,16 @@ type GeminiSafetySetting struct {
 // -------- Gemini generateContent (Response) --------
 
 type GeminiChatResponse struct {
-	Candidates     []GeminiCandidate  `json:"candidates"`
-	UsageMetadata  *GeminiUsage       `json:"usageMetadata,omitempty"`
+	Candidates     []GeminiCandidate     `json:"candidates"`
+	UsageMetadata  *GeminiUsage          `json:"usageMetadata,omitempty"`
 	PromptFeedback *GeminiPromptFeedback `json:"promptFeedback,omitempty"`
 }
 
 type GeminiCandidate struct {
-	Content       GeminiContent       `json:"content"`
-	FinishReason  string              `json:"finishReason"`
+	Content       GeminiContent        `json:"content"`
+	FinishReason  string               `json:"finishReason"`
 	SafetyRatings []GeminiSafetyRating `json:"safetyRatings,omitempty"`
-	Index         int                 `json:"index"`
+	Index         int                  `json:"index"`
 }
 
 type GeminiSafetyRating struct {
@@ -128,6 +138,6 @@ type GeminiUsage struct {
 }
 
 type GeminiPromptFeedback struct {
-	BlockReason   string                `json:"blockReason,omitempty"`
-	SafetyRatings []GeminiSafetyRating  `json:"safetyRatings,omitempty"`
+	BlockReason   string               `json:"blockReason,omitempty"`
+	SafetyRatings []GeminiSafetyRating `json:"safetyRatings,omitempty"`
 }

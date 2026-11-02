@@ -111,11 +111,16 @@ func geminiChunkToOpenAI(evt *SSEEvent, chunk *GeminiChatResponse, c GeminiCandi
 	}
 
 	var parts []string
+	var reasoning []string
 	var toolCalls []OpenAIToolCall
 	for _, part := range c.Content.Parts {
 		switch {
 		case part.Text != "" && part.FunctionCall == nil:
-			parts = append(parts, part.Text)
+			if part.Thought {
+				reasoning = append(reasoning, part.Text)
+			} else {
+				parts = append(parts, part.Text)
+			}
 		case part.FunctionCall != nil:
 			args := "{}"
 			if part.FunctionCall.Args != nil {
@@ -139,13 +144,17 @@ func geminiChunkToOpenAI(evt *SSEEvent, chunk *GeminiChatResponse, c GeminiCandi
 	}
 
 	content := strings.Join(parts, "")
-	if content == "" && len(toolCalls) == 0 {
+	reasoningContent := strings.Join(reasoning, "")
+	if content == "" && reasoningContent == "" && len(toolCalls) == 0 {
 		return []byte{}, nil
 	}
 
 	deltaObj := map[string]any{}
 	if content != "" {
 		deltaObj["content"] = content
+	}
+	if reasoningContent != "" {
+		deltaObj["reasoning_content"] = reasoningContent
 	}
 	if len(toolCalls) > 0 {
 		// For streaming, tool_calls require index-based deltas.
@@ -199,6 +208,28 @@ func geminiChunkToAnthropic(evt *SSEEvent, chunk *GeminiChatResponse, c GeminiCa
 
 	for _, part := range c.Content.Parts {
 		switch {
+		case part.Text != "" && part.Thought && part.FunctionCall == nil:
+			start, _ := json.Marshal(map[string]any{
+				"type":          "content_block_start",
+				"index":         0,
+				"content_block": map[string]any{"type": "thinking"},
+			})
+			buf = append(buf, []byte("event: content_block_start\ndata: "+string(start)+"\n\n")...)
+			delta, _ := json.Marshal(map[string]any{
+				"type":  "content_block_delta",
+				"index": 0,
+				"delta": map[string]any{"type": "thinking_delta", "thinking": part.Text},
+			})
+			buf = append(buf, []byte("event: content_block_delta\ndata: "+string(delta)+"\n\n")...)
+			if part.ThoughtSignature != "" {
+				sig, _ := json.Marshal(map[string]any{
+					"type":  "content_block_delta",
+					"index": 0,
+					"delta": map[string]any{"type": "signature_delta", "signature": part.ThoughtSignature},
+				})
+				buf = append(buf, []byte("event: content_block_delta\ndata: "+string(sig)+"\n\n")...)
+			}
+			buf = append(buf, []byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")...)
 		case part.Text != "" && part.FunctionCall == nil:
 			if part.Text != "" {
 				delta, _ := json.Marshal(map[string]any{

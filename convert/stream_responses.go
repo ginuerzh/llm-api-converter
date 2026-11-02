@@ -20,14 +20,17 @@ type ResponsesStreamConverter struct {
 	accText      string
 	accReasoning string
 
-	itemIndex     int
-	partIndex     int
-	textItemIx    int // -1 = none started
-	textPartIx    int // -1 = none started
-	reasonItemIx  int // -1 = none
-	reasonPartIx  int // -1 = none
+	itemIndex       int
+	partIndex       int
+	textItemIx      int // -1 = none started
+	textPartIx      int // -1 = none started
+	reasonItemIx    int // -1 = none
+	reasonPartIx    int // -1 = none
 	toolCallByIndex map[int]*fcState
-	seqNum         int // auto-incremented per emitted event
+	nextToolIndex   int
+	lastToolIndex   int
+	openToolID      string
+	seqNum          int // auto-incremented per emitted event
 
 	toolSpecs map[string]codexToolSpec // tool name → spec for output item type mapping
 }
@@ -53,10 +56,11 @@ func NewResponsesStreamConverter(model string) *ResponsesStreamConverter {
 			Truncation:        "disabled",
 			ToolChoice:        "auto",
 			ParallelToolCalls: boolPtr(true),
-				Reasoning:         map[string]any{"effort": nil, "summary": nil},
+			Reasoning:         map[string]any{"effort": nil, "summary": nil},
 		},
 		toolCallByIndex: make(map[int]*fcState),
 		toolSpecs:       make(map[string]codexToolSpec),
+		lastToolIndex:   -1,
 		textItemIx:      -1,
 		textPartIx:      -1,
 		reasonItemIx:    -1,
@@ -322,8 +326,34 @@ func (sc *ResponsesStreamConverter) EmitError(message string) []byte {
 	return sc.makeEvent(ResponseFailed, string(evt))
 }
 
+func (sc *ResponsesStreamConverter) toolIndex(tc OpenAIDeltaToolCall) int {
+	if tc.Index != nil {
+		idx := *tc.Index
+		if idx >= sc.nextToolIndex {
+			sc.nextToolIndex = idx + 1
+		}
+		sc.lastToolIndex = idx
+		if tc.ID != "" {
+			sc.openToolID = tc.ID
+		}
+		return idx
+	}
+	if tc.ID != "" && tc.ID != sc.openToolID {
+		idx := sc.nextToolIndex
+		sc.nextToolIndex++
+		sc.lastToolIndex = idx
+		sc.openToolID = tc.ID
+		return idx
+	}
+	if sc.lastToolIndex < 0 {
+		sc.lastToolIndex = sc.nextToolIndex
+		sc.nextToolIndex++
+	}
+	return sc.lastToolIndex
+}
+
 func (sc *ResponsesStreamConverter) handleToolCall(tc OpenAIDeltaToolCall) [][]byte {
-	idx := tc.Index
+	idx := sc.toolIndex(tc)
 	if existing, seen := sc.toolCallByIndex[idx]; seen {
 		existing.Arguments += tc.Function.Arguments
 		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDelta, ItemID: existing.ID, OutputIndex: &existing.ItemIx, Arguments: tc.Function.Arguments})
@@ -353,10 +383,7 @@ func (sc *ResponsesStreamConverter) handleToolCall(tc OpenAIDeltaToolCall) [][]b
 }
 
 func (sc *ResponsesStreamConverter) setUsage(usage *OpenAIUsage) {
-	sc.response.Usage = &ResponsesUsage{
-		InputTokens: usage.PromptTokens, OutputTokens: usage.CompletionTokens,
-		TotalTokens: usage.TotalTokens,
-	}
+	sc.response.Usage = responsesUsageFromOpenAI(usage)
 }
 
 // makeEvent builds an SSE data line with an auto-incremented sequence_number.
@@ -390,7 +417,6 @@ func splitInlineThink(content string) (string, string) {
 	}
 	return rest[closeIdx+len(thinkClose):], rest[:closeIdx]
 }
-
 
 // SetToolSpecs sets the tool specs for output item type mapping.
 func (sc *ResponsesStreamConverter) SetToolSpecs(specs map[string]codexToolSpec) {

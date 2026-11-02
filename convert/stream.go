@@ -26,6 +26,17 @@ type StreamConverter struct {
 	// Tool call accumulation: map of OpenAI tool_call index → accumulated state.
 	toolCallByIndex map[int]*streamToolState
 
+	// Tool call positions when the provider omits index: nextToolIndex is
+	// the next free slot, lastToolIndex the call a fragment without an id
+	// continues (-1 before the first call).
+	nextToolIndex int
+	lastToolIndex int
+	openToolID    string
+
+	// Tool calls suppressed by declaredTools, so later fragments of the same
+	// call cannot open an unnamed tool_use block.
+	skippedCalls map[int]bool
+
 	// Finish reason seen from latest chunk.
 	finishReason string
 	finalized    bool
@@ -58,6 +69,8 @@ func NewStreamConverter(model string, reasoningCache *ReasoningCache, declaredTo
 		model:           model,
 		nextBlockIndex:  0,
 		toolCallByIndex: make(map[int]*streamToolState),
+		skippedCalls:    make(map[int]bool),
+		lastToolIndex:   -1,
 		reasoningCache:  reasoningCache,
 	}
 	if len(declaredTools) > 0 {
@@ -146,7 +159,6 @@ func (sc *StreamConverter) HandleChunk(data []byte) ([]byte, error) {
 	}
 	if delta.FunctionCall != nil {
 		events = append(events, sc.handleToolCallDelta(OpenAIDeltaToolCall{
-			Index:    0,
 			Type:     "function",
 			Function: *delta.FunctionCall,
 		})...)
@@ -367,13 +379,49 @@ func (sc *StreamConverter) thinkingDelta(content string) [][]byte {
 // handleToolCallDelta processes a single tool call delta entry.
 // If tool restriction is enabled and the tool name is not declared, the delta
 // is silently skipped to prevent tool hallucination.
+// toolIndex is the position of tc's call. A provider that sends no index
+// starts a new call when the fragment names a new id, and continues the
+// last call otherwise.
+func (sc *StreamConverter) toolIndex(tc OpenAIDeltaToolCall) int {
+	if tc.Index != nil {
+		idx := *tc.Index
+		if idx >= sc.nextToolIndex {
+			sc.nextToolIndex = idx + 1
+		}
+		sc.lastToolIndex = idx
+		if tc.ID != "" {
+			sc.openToolID = tc.ID
+		}
+		return idx
+	}
+	if tc.ID != "" && tc.ID != sc.openToolID {
+		idx := sc.nextToolIndex
+		sc.nextToolIndex++
+		sc.lastToolIndex = idx
+		sc.openToolID = tc.ID
+		return idx
+	}
+	if sc.lastToolIndex < 0 {
+		sc.lastToolIndex = sc.nextToolIndex
+		sc.nextToolIndex++
+	}
+	return sc.lastToolIndex
+}
+
 func (sc *StreamConverter) handleToolCallDelta(tc OpenAIDeltaToolCall) [][]byte {
-	idx := tc.Index
+	idx := sc.toolIndex(tc)
+
+	// A call suppressed by declaredTools stays suppressed: its later
+	// fragments carry no name and would otherwise open an empty tool_use.
+	if sc.skippedCalls[idx] {
+		return nil
+	}
 
 	// Tool restriction: skip undeclared tool names on the first delta for a call.
 	name := tc.Function.Name
 	if sc.restrictTools && name != "" {
 		if _, ok := sc.declaredTools[name]; !ok {
+			sc.skippedCalls[idx] = true
 			return nil
 		}
 	}
