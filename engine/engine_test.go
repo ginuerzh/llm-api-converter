@@ -47,11 +47,11 @@ func TestRewriteReplacesModelOnPassthrough(t *testing.T) {
 	e := New(Options{
 		Model:     "deepseek-chat",
 		MaxTokens: 8192,
-		ResolveModel: func(client, effort string) (string, string) {
+		ResolveModel: func(client, effort string) (string, string, string) {
 			if client == "claude-opus-4-5" {
-				return "deepseek-v4-pro", "anthropic"
+				return "deepseek-v4-pro", "anthropic", "strong"
 			}
-			return "", ""
+			return "", "", ""
 		},
 	})
 	body := []byte(`{"model":"claude-opus-4-5","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
@@ -80,9 +80,9 @@ func TestResolveModelReceivesEffort(t *testing.T) {
 	e := New(Options{
 		Model:     "deepseek-chat",
 		MaxTokens: 8192,
-		ResolveModel: func(client, effort string) (string, string) {
+		ResolveModel: func(client, effort string) (string, string, string) {
 			gotEffort = effort
-			return "deepseek-v4-flash", "openai"
+			return "deepseek-v4-flash", "openai", "fast"
 		},
 	})
 	body := []byte(`{"model":"gpt-5.5","thinking":{"type":"enabled","budget_tokens":20000},"messages":[{"role":"user","content":"hi"}]}`)

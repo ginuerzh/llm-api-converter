@@ -22,7 +22,7 @@ type Options struct {
 
 	// ResolveModel maps the client-facing model (and normalized effort) to the
 	// provider model and wire. Returning an empty target means "no mapping".
-	ResolveModel func(clientModel, effort string) (target, protocol string)
+	ResolveModel func(clientModel, effort string) (target, protocol, logical string)
 }
 
 // Meta carries the per-call metadata supplied by the proxy.
@@ -37,11 +37,12 @@ type Meta struct {
 // Result is the converted payload plus the model/effort facts observed on the
 // request path.
 type Result struct {
-	Data        []byte
-	ClientModel string
-	TargetModel string
-	Effort      string
-	Direction   string
+	Data         []byte
+	ClientModel  string
+	TargetModel  string
+	LogicalModel string
+	Effort       string
+	Direction    string
 
 	InputTokens  int
 	OutputTokens int
@@ -114,7 +115,8 @@ func (e *Engine) Rewrite(ctx context.Context, data []byte, meta Meta) (Result, e
 	}
 
 	if meta.Direction == "request" && e.opts.ResolveModel != nil && res.ClientModel != "" {
-		target, protocol := e.opts.ResolveModel(res.ClientModel, res.Effort)
+		target, protocol, logical := e.opts.ResolveModel(res.ClientModel, res.Effort)
+		res.LogicalModel = logical
 		if target != "" {
 			res.TargetModel = target
 			if !strings.EqualFold(target, res.ClientModel) {
