@@ -1171,7 +1171,7 @@ git commit -m "fix(convert): sanitize anthropic tool ids"
 - Produces: `func supportsTopKPassthrough(model string) bool`
 - Produces: `func stripAllProviderPrefixes(model string) string`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append:
 
@@ -1290,13 +1290,13 @@ func TestP2_TopKProviderGating(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests and capture RED**
+- [x] **Step 2: Run the tests and capture RED**
 
 Run: `go test -count=1 -run 'TestP2_(DeveloperRoleBecomesSystem|ParallelToolCalls|ResponsesParallelToolCalls|TopKProviderGating)' ./convert`
 
 Expected: developer becomes a user message; parallel fields are dropped; `top_k` is dropped for all models.
 
-- [ ] **Step 3: Implement the mappings**
+- [x] **Step 3: Implement the mappings**
 
 In `convert/types.go`:
 
@@ -1395,7 +1395,7 @@ if len(anth.Tools) > 0 && req.ParallelToolCalls != nil {
 }
 ```
 
-- [ ] **Step 4: Run the focused and full tests**
+- [x] **Step 4: Run the focused and full tests**
 
 Run: `go test -count=1 -run 'TestP2_(DeveloperRoleBecomesSystem|ParallelToolCalls|ResponsesParallelToolCalls|TopKProviderGating)' ./convert`
 
@@ -1405,7 +1405,7 @@ Run: `go test -count=1 ./...`
 
 Expected: all packages PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/types.go convert/openai_to_anthropic.go convert/anthropic_to_openai.go convert/responses.go convert/anthropic_openai_p2_test.go
@@ -1413,12 +1413,12 @@ git commit -m "fix(convert): preserve request fidelity fields"
 ```
 
 **Implementation record:**
-- Date/status:
-- Repository/commit:
-- Files changed:
-- Tests/commands/results:
-- Review findings/fixes:
-- Deferred/limitations:
+- Date/status: 2026-11-06 / complete
+- Repository/commit: `llm-api-converter` `7e9f5e4`
+- Files changed: `convert/types.go`, `convert/openai_to_anthropic.go`, `convert/anthropic_to_openai.go`, `convert/responses.go`, `convert/anthropic_openai_p2_test.go`
+- Tests/commands/results: RED build failed on missing `ParallelToolCalls`/`DisableParallelToolUse` fields; GREEN focused run → PASS; `go test -count=1 ./...` → all packages PASS; `go vet ./...` and `git diff --check` clean.
+- Review findings/fixes: `top_k` is gated to known providers and checks all provider prefixes for reasoning models; `disable_parallel_tool_use` is skipped for Anthropic `none` and when no tools exist.
+- Deferred/limitations: Responses request → Anthropic is the only Responses direction with a parallel mapping; there is no Anthropic request → Responses request converter.
 
 ---
 
