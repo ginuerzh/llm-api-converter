@@ -245,8 +245,8 @@ Add `ParallelToolCalls *bool` to `OpenAIChatRequest` and
   `parallel_tool_calls = !disable_parallel_tool_use`.
 - Responses paths: `ConvertResponsesToAnthropic` applies the same OpenAI →
   Anthropic rule to `ResponsesRequest.ParallelToolCalls` after non-function
-  tools are filtered, and `ConvertAnthropicToResponses` applies the reverse
-  rule to `ResponsesRequest.ParallelToolCalls`.
+  tools are filtered. There is no Anthropic request → Responses request
+  converter, so no reverse Responses mapping exists.
 - Do not attach `disable_parallel_tool_use` to an Anthropic `none` tool choice,
   and ignore the field when no tools are declared, because Anthropic rejects a
   tool choice without tools.
@@ -372,8 +372,8 @@ plan does not have to guess:
    `length` stays `max_tokens`.
 5. **Empty `{}` at tool close:** centralize in a helper used by every tool-block
    close site, including the explicit stop in `handleToolCallDelta`.
-6. **Parallel tool calls:** cover Chat and Responses request paths; skip the
-   field for Anthropic `none`.
+6. **Parallel tool calls:** cover the Chat request path and the
+   Responses→Anthropic request path; skip the field for Anthropic `none`.
 7. **Streaming refusal:** include `delta.refusal`, not only the non-stream
    message field.
 8. **`top_k` model string:** strip all provider segments for reasoning
