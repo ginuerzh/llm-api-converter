@@ -374,7 +374,7 @@ git commit -m "fix(convert): normalize Anthropic tool histories"
   - `convertAnthropicMessage(msg AnthropicMessage, opts *ConvertOptions, model string, ctxParts []string) []OpenAIMessage`
   - `convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions, model string, ctxParts []string) OpenAIMessage`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestP1_UnsignedThinkingDroppedForAnthropic(t *testing.T) {
@@ -505,13 +505,13 @@ func TestP1_ResponsesUnsignedThinkingAndMetadata(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP1_(UnsignedThinkingDroppedForAnthropic|ReasoningContentGatedByTargetModel|DeepSeekPlaceholderOnlyForDeepSeek|EffortRequiresThinking|MetadataWhitelist)' -v`
 
 Expected: FAIL — unsigned thinking and reasoning_content appear for non-DeepSeek targets; effort is forwarded without thinking; extra metadata keys pass through.
 
-- [ ] **Step 3: Implement the gating**
+- [x] **Step 3: Implement the gating**
 
 - `replaysReasoning(model)` returns `isDeepSeekModel(model) || isGLMModel(model)`.
 - `anthropicMetadata(metadata any, user string) any` accepts
@@ -528,13 +528,13 @@ Expected: FAIL — unsigned thinking and reasoning_content appear for non-DeepSe
 - Replace the direct `req.Metadata` copies in `convertOpenAIRequestToAnthropic`
   and `ConvertResponsesToAnthropic` with `anthropicMetadata`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP1_' -v`
 
 Expected: PASS.
 
-- [ ] **Step 5: Run the full suite and commit**
+- [x] **Step 5: Run the full suite and commit**
 
 Run: `cd llm-api-converter && go test -count=1 ./... && go vet ./...`
 
@@ -547,13 +547,31 @@ git commit -m "fix(convert): gate reasoning replay and whitelist metadata"
 
 **Implementation record**
 
-- Status: Pending
-- Date:
-- Repository / commit:
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter` @ `<pending>` (`fix(convert): gate reasoning replay and whitelist metadata`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-2.
 - Files changed:
+  - `convert/anthropic_to_openai.go` — added `replaysReasoning` (DeepSeek or GLM). `convertAnthropicMessage`/`convertAnthropicAssistantMessage` now take the resolved target model; prior thinking/cached reasoning is replayed only when `replaysReasoning` is true, the reasoning-cache lookup is gated the same way, and `placeholderReasoning` is emitted only for DeepSeek. On the DeepSeek branch, `reasoning_effort` is forwarded only when `thinking.type == "enabled"`.
+  - `convert/openai_to_anthropic.go` — added `anthropicMetadata` (keeps only `user_id`, falls back to `user`, returns nil when empty) and replaced the raw metadata copy. `convertMessageContent`/`convertAssistantContent` take the resolved target model and emit an unsigned `thinking` block from `reasoning_content` only for DeepSeek targets.
+  - `convert/responses.go` — `ConvertResponsesToAnthropic` applies `anthropicMetadata` (no `user` fallback) and threads the resolved target model through `convertChatMessageToAnthropic` into the shared assistant-content helper.
+  - `convert/anthropic_openai_p1_test.go` — the six plan tests plus a `replaysReasoning` target table, an `anthropicMetadata` table (including `map[string]string` and the empty result), and a GLM replay/no-placeholder test.
+  - `convert/convert_test.go` — updated three existing tests whose old expectations contradicted P1-7: the thinking round-trip and both reasoning-cache tests now target `deepseek-chat` through the model map.
+  - `convert/anthropic_to_openai_test.go` — updated `TestConvert_DeepSeekAdaptiveThinkingDropped` for P1-8: adaptive thinking no longer forwards `reasoning_effort`.
 - Tests / commands:
+  - RED: `go test ./convert -run 'TestP1_(UnsignedThinkingDroppedForAnthropic|ReasoningContentGatedByTargetModel|DeepSeekPlaceholderOnlyForDeepSeek|EffortRequiresThinking|MetadataWhitelist|ResponsesUnsignedThinkingAndMetadata)' -v` → six failures: unsigned thinking sent to a gpt-4 target; `gpt-4o received reasoning_content: "chain"`; non-DeepSeek placeholder; `effort forwarded without thinking: high`; metadata kept `trace`; Responses unsigned thinking.
+  - GREEN: same command → PASS; `go test ./convert -run 'TestP1_' -v` → PASS (Tasks 1-3 tests).
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `go test -race -count=1 ./...` → PASS.
+  - `go vet ./...` → clean; `git diff --check` → clean.
 - Review findings:
+  - P1-5's plan assertion type-asserts `anth.Metadata.(map[string]any)`, so the helper returns `map[string]any` even for `map[string]string` input.
+  - Four pre-existing tests asserted the old ungated behavior; they were updated rather than weakening the implementation. They now use a DeepSeek model map (thinking round-trip and reasoning-cache tests) or assert the P1-8 effort rule (adaptive thinking).
+  - `convertAnthropicAssistantMessage` still parses thinking blocks for every target but assigns `ReasoningContent` only when replay is allowed; no other content changes.
+  - No third-party dependency, registry/model-map, or same-protocol passthrough changes.
 - Deferred:
+  - Unsigned OpenAI reasoning is still replayed on the OpenAI→Anthropic response path (`convertOpenAIMessageToContent`), which the design explicitly leaves unchanged; only request-history replay is gated.
+  - `replaysReasoning`/`isDeepSeekModel` match bare model prefixes; a `provider/deepseek-*` target string is not detected. This matches the existing DeepSeek checks in the same converter.
+  - The resolved SHA is recorded by the follow-up docs commit and Task 7's status table.
 
 ---
 

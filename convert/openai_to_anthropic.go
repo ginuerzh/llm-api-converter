@@ -212,9 +212,7 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 	if req.TopK != nil {
 		anthropic.TopK = req.TopK
 	}
-	if req.Metadata != nil {
-		anthropic.Metadata = req.Metadata
-	}
+	anthropic.Metadata = anthropicMetadata(req.Metadata, req.User)
 
 	// Stop sequences.
 	if req.Stop != nil {
@@ -278,7 +276,7 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 		if am.Role != "user" && am.Role != "assistant" {
 			am.Role = "user"
 		}
-		am.Content = convertMessageContent(m)
+		am.Content = convertMessageContent(m, model)
 		// Anthropic rejects empty content arrays, so messages that produced
 		// no valid blocks are dropped instead of being sent as-is.
 		if len(am.Content) == 0 {
@@ -395,13 +393,36 @@ func flattenContentForGLM(msgs []OpenAIMessage) {
 	}
 }
 
+// anthropicMetadata whitelists OpenAI metadata for Anthropic. Anthropic only
+// recognizes metadata.user_id, so every other key is dropped. It falls back to
+// the OpenAI request's user field when metadata has no usable user_id, and
+// returns nil when neither source yields one.
+func anthropicMetadata(metadata any, user string) any {
+	var userID string
+	switch m := metadata.(type) {
+	case map[string]any:
+		userID, _ = m["user_id"].(string)
+	case map[string]string:
+		userID = m["user_id"]
+	}
+	if userID == "" {
+		userID = user
+	}
+	if userID == "" {
+		return nil
+	}
+	return map[string]any{"user_id": userID}
+}
+
 // convertMessageContent converts an OpenAI message into Anthropic content blocks.
-func convertMessageContent(msg OpenAIMessage) []AnthropicContent {
+// model is the resolved target model, used to decide whether unsigned reasoning
+// may be replayed as a thinking block.
+func convertMessageContent(msg OpenAIMessage, model string) []AnthropicContent {
 	switch msg.Role {
 	case "user":
 		return convertUserContent(msg.Content)
 	case "assistant":
-		return convertAssistantContent(msg)
+		return convertAssistantContent(msg, model)
 	case "tool":
 		return convertToolResultContent(msg)
 	case "function":
@@ -485,7 +506,7 @@ func convertImageURL(m map[string]any) *AnthropicContent {
 	}
 }
 
-func convertAssistantContent(msg OpenAIMessage) []AnthropicContent {
+func convertAssistantContent(msg OpenAIMessage, model string) []AnthropicContent {
 	// Collect all tool calls, including legacy function_call.
 	toolCalls := msg.ToolCalls
 	if msg.FunctionCall != nil {
@@ -495,10 +516,14 @@ func convertAssistantContent(msg OpenAIMessage) []AnthropicContent {
 		})
 	}
 
+	// Anthropic requires a signature on replayed thinking blocks. Unsigned
+	// reasoning_content is only replayable to DeepSeek-style upstreams.
+	replayThinking := msg.ReasoningContent != "" && isDeepSeekModel(model)
+
 	if len(toolCalls) > 0 {
 		var blocks []AnthropicContent
 		// Reasoning content → thinking block (must come before text).
-		if msg.ReasoningContent != "" {
+		if replayThinking {
 			blocks = append(blocks, AnthropicContent{
 				Type:     "thinking",
 				Thinking: msg.ReasoningContent,
@@ -517,7 +542,7 @@ func convertAssistantContent(msg OpenAIMessage) []AnthropicContent {
 	}
 
 	// Reasoning content without tools — single thinking + text.
-	if msg.ReasoningContent != "" {
+	if replayThinking {
 		blocks := []AnthropicContent{
 			{Type: "thinking", Thinking: msg.ReasoningContent},
 		}

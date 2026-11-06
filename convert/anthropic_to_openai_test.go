@@ -24,11 +24,10 @@ func TestConvert_DeepSeekAdaptiveThinkingDropped(t *testing.T) {
 	if o.Thinking != nil {
 		t.Fatalf("thinking should be dropped for non-OpenAI thinking.type, got %v", o.Thinking)
 	}
-	if o.ReasoningEffort == nil {
-		t.Fatal("reasoning_effort should still be set from output_config.effort")
-	}
-	if e, _ := o.ReasoningEffort.(string); e != "high" {
-		t.Fatalf("reasoning_effort: want 'high', got %v", o.ReasoningEffort)
+	// P1-8: effort is only forwarded when thinking is explicitly enabled, so
+	// adaptive thinking must not re-enable reasoning through output_config.
+	if o.ReasoningEffort != nil {
+		t.Fatalf("reasoning_effort should not be set for adaptive thinking, got %v", o.ReasoningEffort)
 	}
 }
 

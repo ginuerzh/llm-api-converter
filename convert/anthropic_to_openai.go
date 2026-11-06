@@ -10,6 +10,12 @@ import (
 
 const placeholderReasoning = "Compatibility bridge placeholder reasoning for prior assistant history."
 
+// replaysReasoning reports whether the target model accepts reasoning_content
+// replay. Only the vendors that require it get prior reasoning attached.
+func replaysReasoning(model string) bool {
+	return isDeepSeekModel(model) || isGLMModel(model)
+}
+
 // currentToolContextParts extracts the tool call/result context from the most
 // recent tool-calling turn in the message list. Returns the signature parts
 // for the latest turn (empty if no tool call turn found).
@@ -216,7 +222,11 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	// Thinking config → model-specific OpenAI thinking field.
 	if profile.isDeepSeek {
 		oai.Thinking = thinkingToOpenAi(req.Thinking)
-		oai.ReasoningEffort = reasoningEffortToOpenAi(req.OutputConfig)
+		// Effort must not re-enable reasoning on requests that did not ask
+		// for thinking (for example title and classifier calls).
+		if req.Thinking != nil && req.Thinking.Type == "enabled" {
+			oai.ReasoningEffort = reasoningEffortToOpenAi(req.OutputConfig)
+		}
 	} else if isGLMModel(outputModel) {
 		oai.Thinking = thinkingToOpenAiGLM(req.Thinking)
 	}
@@ -249,7 +259,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 
 	// Messages.
 	for _, msg := range req.Messages {
-		oai.Messages = append(oai.Messages, convertAnthropicMessage(msg, opts, ctxParts)...)
+		oai.Messages = append(oai.Messages, convertAnthropicMessage(msg, opts, outputModel, ctxParts)...)
 	}
 
 	// Message sequence sanitization: coalesce adjacent tool calls, pair
@@ -295,12 +305,12 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	return json.Marshal(oai)
 }
 
-func convertAnthropicMessage(msg AnthropicMessage, opts *ConvertOptions, ctxParts []string) []OpenAIMessage {
+func convertAnthropicMessage(msg AnthropicMessage, opts *ConvertOptions, model string, ctxParts []string) []OpenAIMessage {
 	switch msg.Role {
 	case "user":
 		return convertAnthropicUserMessage(msg)
 	case "assistant":
-		return []OpenAIMessage{convertAnthropicAssistantMessage(msg, opts, ctxParts)}
+		return []OpenAIMessage{convertAnthropicAssistantMessage(msg, opts, model, ctxParts)}
 	default:
 		return []OpenAIMessage{{Role: "user", Content: extractTextContent(msg.Content)}}
 	}
@@ -449,7 +459,7 @@ func dataURIImagePart(mediaType, data string) map[string]any {
 	}
 }
 
-func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions, ctxParts []string) OpenAIMessage {
+func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions, model string, ctxParts []string) OpenAIMessage {
 	var textParts []string
 	var reasoning string
 	var toolCalls []OpenAIToolCall
@@ -481,7 +491,7 @@ func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions
 	}
 
 	oaiMsg := OpenAIMessage{Role: "assistant"}
-	if reasoning != "" {
+	if replaysReasoning(model) && reasoning != "" {
 		oaiMsg.ReasoningContent = reasoning
 	}
 	content := strings.Join(textParts, "")
@@ -498,8 +508,9 @@ func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions
 	}
 
 	// If reasoning is empty but tool_calls exist (Claude Code compressed thinking),
-	// try to restore reasoning_content from cache (multi-tier).
-	if oaiMsg.ReasoningContent == "" && len(oaiMsg.ToolCalls) > 0 && opts != nil && opts.ReasoningCache != nil {
+	// try to restore reasoning_content from cache (multi-tier). Only targets that
+	// replay reasoning get anything attached.
+	if oaiMsg.ReasoningContent == "" && len(oaiMsg.ToolCalls) > 0 && replaysReasoning(model) && opts != nil && opts.ReasoningCache != nil {
 		ids := make([]string, len(oaiMsg.ToolCalls))
 		for i, tc := range oaiMsg.ToolCalls {
 			ids[i] = tc.ID
@@ -507,7 +518,7 @@ func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions
 		content := extractTextContent(oaiMsg.Content)
 		if cached := opts.ReasoningCache.GetBest(ids, ctxParts, content); cached != "" {
 			oaiMsg.ReasoningContent = cached
-		} else {
+		} else if isDeepSeekModel(model) {
 			// Placeholder fallback — DeepSeek requires reasoning_content
 			// when tool_calls are present, even if cache is empty.
 			oaiMsg.ReasoningContent = placeholderReasoning

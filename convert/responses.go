@@ -293,9 +293,7 @@ func ConvertResponsesToAnthropic(body []byte, opts *ConvertOptions) ([]byte, err
 	if req.TopP != nil {
 		anth.TopP = req.TopP
 	}
-	if req.Metadata != nil {
-		anth.Metadata = req.Metadata
-	}
+	anth.Metadata = anthropicMetadata(req.Metadata, "")
 
 	// Parse input + instructions → Anthropic messages + system.
 	result := parseResponsesInput(req.Input)
@@ -310,7 +308,7 @@ func ConvertResponsesToAnthropic(body []byte, opts *ConvertOptions) ([]byte, err
 
 	// Convert OpenAI messages → Anthropic messages.
 	for _, msg := range result.messages {
-		am := convertChatMessageToAnthropic(msg)
+		am := convertChatMessageToAnthropic(msg, model)
 		// Anthropic rejects empty content arrays, so messages that produced
 		// no valid blocks are dropped instead of being sent as-is.
 		if len(am.Content) == 0 {
@@ -703,7 +701,9 @@ func parseResponsesInput(input json.RawMessage) responsesInputParseResult {
 }
 
 // convertChatMessageToAnthropic converts an OpenAI message to Anthropic format.
-func convertChatMessageToAnthropic(msg OpenAIMessage) AnthropicMessage {
+// model is the resolved target model, used to decide whether unsigned
+// reasoning may be replayed as a thinking block.
+func convertChatMessageToAnthropic(msg OpenAIMessage, model string) AnthropicMessage {
 	role := msg.Role
 	if role != "user" && role != "assistant" {
 		role = "user"
@@ -715,7 +715,7 @@ func convertChatMessageToAnthropic(msg OpenAIMessage) AnthropicMessage {
 	case "user":
 		am.Content = convertUserContent(msg.Content)
 	case "assistant":
-		am.Content = convertAssistantContent(msg)
+		am.Content = convertAssistantContent(msg, model)
 	case "tool":
 		am.Content = convertToolResultContent(msg)
 	default:

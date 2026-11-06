@@ -311,3 +311,200 @@ func TestP1_UserRunKeepsResultsFirst(t *testing.T) {
 		t.Fatalf("blocks = %+v, want tool_result then text", blocks)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// P1-4/P1-5/P1-7/P1-8: thinking, reasoning replay, effort, metadata gating
+// ---------------------------------------------------------------------------
+
+func TestP1_UnsignedThinkingDroppedForAnthropic(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[
+		{"role":"assistant","content":"hi","reasoning_content":"chain",
+		 "tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]}]}`
+	b, _ := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 1024, ResolvedModel: "gpt-4"})
+	var anth AnthropicRequest
+	_ = json.Unmarshal(b, &anth)
+	for _, block := range anth.Messages[0].Content {
+		if block.Type == "thinking" {
+			t.Fatalf("unsigned thinking sent to Anthropic target: %+v", block)
+		}
+	}
+
+	b, _ = convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 1024, ResolvedModel: "deepseek-chat"})
+	_ = json.Unmarshal(b, &anth)
+	found := false
+	for _, block := range anth.Messages[0].Content {
+		found = found || block.Type == "thinking"
+	}
+	if !found {
+		t.Fatal("DeepSeek target lost its thinking block")
+	}
+}
+
+func TestP1_ReasoningContentGatedByTargetModel(t *testing.T) {
+	body := `{"model":"claude","max_tokens":10,"messages":[
+		{"role":"assistant","content":[{"type":"thinking","thinking":"chain"},{"type":"tool_use","id":"a","name":"f","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"ok"}]}]}`
+
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "gpt-4o"})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	if oai.Messages[0].ReasoningContent != "" {
+		t.Fatalf("gpt-4o received reasoning_content: %q", oai.Messages[0].ReasoningContent)
+	}
+
+	b, _ = convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "deepseek-chat"})
+	_ = json.Unmarshal(b, &oai)
+	if oai.Messages[0].ReasoningContent != "chain" {
+		t.Fatalf("deepseek reasoning = %q, want chain", oai.Messages[0].ReasoningContent)
+	}
+}
+
+func TestP1_DeepSeekPlaceholderOnlyForDeepSeek(t *testing.T) {
+	body := `{"model":"claude","max_tokens":10,"messages":[
+		{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"ok"}]}]}`
+
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "gpt-4o", ReasoningCache: NewReasoningCache(10)})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	if oai.Messages[0].ReasoningContent != "" {
+		t.Fatalf("non-DeepSeek placeholder: %q", oai.Messages[0].ReasoningContent)
+	}
+
+	b, _ = convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "deepseek-chat", ReasoningCache: NewReasoningCache(10)})
+	_ = json.Unmarshal(b, &oai)
+	if oai.Messages[0].ReasoningContent == "" {
+		t.Fatal("DeepSeek lost its compatibility placeholder")
+	}
+}
+
+func TestP1_EffortRequiresThinking(t *testing.T) {
+	body := `{"model":"claude","max_tokens":10,"output_config":{"effort":"high"},
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "deepseek-chat"})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	if oai.ReasoningEffort != nil {
+		t.Fatalf("effort forwarded without thinking: %v", oai.ReasoningEffort)
+	}
+
+	body = `{"model":"claude","max_tokens":10,"thinking":{"type":"enabled","budget_tokens":1024},
+		"output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"}]}`
+	b, _ = convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "deepseek-chat"})
+	_ = json.Unmarshal(b, &oai)
+	if oai.ReasoningEffort != "high" {
+		t.Fatalf("effort = %v, want high", oai.ReasoningEffort)
+	}
+}
+
+func TestP1_MetadataWhitelist(t *testing.T) {
+	body := `{"model":"gpt-4","user":"u2","metadata":{"user_id":"u1","trace":"x"},
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 10})
+	var anth AnthropicRequest
+	_ = json.Unmarshal(b, &anth)
+	m, _ := anth.Metadata.(map[string]any)
+	if len(m) != 1 || m["user_id"] != "u1" {
+		t.Fatalf("metadata = %+v, want only user_id=u1", anth.Metadata)
+	}
+
+	body = `{"model":"gpt-4","user":"u2","metadata":{"trace":"x"},
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ = convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 10})
+	_ = json.Unmarshal(b, &anth)
+	m, _ = anth.Metadata.(map[string]any)
+	if len(m) != 1 || m["user_id"] != "u2" {
+		t.Fatalf("metadata = %+v, want fallback user_id=u2", anth.Metadata)
+	}
+}
+
+func TestP1_ResponsesUnsignedThinkingAndMetadata(t *testing.T) {
+	body := `{"model":"gpt-4o","metadata":{"user_id":"u1","trace":"x"},"input":[
+		{"type":"reasoning","text":"chain"},
+		{"type":"function_call","call_id":"a","name":"f","arguments":"{}"}]}`
+	b, err := ConvertResponsesToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var anth AnthropicRequest
+	if err := json.Unmarshal(b, &anth); err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range anth.Messages {
+		for _, block := range msg.Content {
+			if block.Type == "thinking" {
+				t.Fatalf("Responses unsigned thinking sent to Anthropic: %+v", block)
+			}
+		}
+	}
+	m, _ := anth.Metadata.(map[string]any)
+	if len(m) != 1 || m["user_id"] != "u1" {
+		t.Fatalf("Responses metadata = %+v, want only user_id=u1", anth.Metadata)
+	}
+}
+
+func TestP1_ReplaysReasoningTargets(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"deepseek-chat", true},
+		{"deepseek-v4-pro", true},
+		{"glm-4.6", true},
+		{"gpt-4o", false},
+		{"claude-sonnet-4-5", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := replaysReasoning(tc.model); got != tc.want {
+			t.Errorf("replaysReasoning(%q) = %v, want %v", tc.model, got, tc.want)
+		}
+	}
+}
+
+func TestP1_AnthropicMetadataHelper(t *testing.T) {
+	cases := []struct {
+		name     string
+		metadata any
+		user     string
+		want     any
+	}{
+		{"keeps user_id", map[string]any{"user_id": "u1", "trace": "x"}, "u2", map[string]any{"user_id": "u1"}},
+		{"string map", map[string]string{"user_id": "u3", "trace": "x"}, "", map[string]any{"user_id": "u3"}},
+		{"falls back to user", map[string]any{"trace": "x"}, "u2", map[string]any{"user_id": "u2"}},
+		{"empty user_id falls back", map[string]any{"user_id": ""}, "u4", map[string]any{"user_id": "u4"}},
+		{"no source", nil, "", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := anthropicMetadata(tc.metadata, tc.user)
+			gotMap, gotOK := got.(map[string]any)
+			wantMap, wantOK := tc.want.(map[string]any)
+			if gotOK != wantOK || len(gotMap) != len(wantMap) || gotMap["user_id"] != wantMap["user_id"] {
+				t.Fatalf("anthropicMetadata(%v, %q) = %v, want %v", tc.metadata, tc.user, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestP1_GLMReplaysReasoningWithoutPlaceholder(t *testing.T) {
+	body := `{"model":"claude","max_tokens":10,"messages":[
+		{"role":"assistant","content":[{"type":"thinking","thinking":"chain"},{"type":"tool_use","id":"a","name":"f","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"ok"}]}]}`
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "glm-4.6"})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	if oai.Messages[0].ReasoningContent != "chain" {
+		t.Fatalf("glm reasoning = %q, want chain", oai.Messages[0].ReasoningContent)
+	}
+
+	body = `{"model":"claude","max_tokens":10,"messages":[
+		{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"ok"}]}]}`
+	b, _ = convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "glm-4.6", ReasoningCache: NewReasoningCache(10)})
+	oai = OpenAIChatRequest{}
+	_ = json.Unmarshal(b, &oai)
+	if oai.Messages[0].ReasoningContent != "" {
+		t.Fatalf("glm placeholder: %q", oai.Messages[0].ReasoningContent)
+	}
+}

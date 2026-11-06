@@ -1353,7 +1353,10 @@ func TestConvert_AnthropicReqToOpenAIReq_WithSystem(t *testing.T) {
 
 func TestConvert_AnthropicReqToOpenAIReq_Thinking(t *testing.T) {
 	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"assistant","content":[{"type":"thinking","thinking":"thinking steps..."},{"type":"text","text":"answer"}]}]}`
-	b, err := Convert([]byte(body), anthropicOpts())
+	opts := anthropicOpts()
+	// P1-7: reasoning_content is replayed only to models that require it.
+	opts.ModelMap = ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat", Protocol: "openai"}}
+	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1972,6 +1975,8 @@ func TestConvert_ReasoningCache_StoreInject(t *testing.T) {
 	// Step 2: Anthropic Request (tool_use, no thinking)
 	opts2 := &ConvertOptions{
 		ReasoningCache: rc,
+		// P1-7: reasoning replay is gated on DeepSeek/GLM targets.
+		ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat", Protocol: "openai"}},
 	}
 	anthReq := `{
 		"model":"claude-sonnet-4-20250514","max_tokens":8192,"messages":[
@@ -2007,6 +2012,8 @@ func TestConvert_ReasoningCache_Miss(t *testing.T) {
 
 	opts := &ConvertOptions{
 		ReasoningCache: rc, // empty cache → miss
+		// P1-7: the DeepSeek placeholder is only emitted for DeepSeek targets.
+		ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat", Protocol: "openai"}},
 	}
 	anthReq := `{
 		"model":"claude-sonnet-4-20250514","max_tokens":8192,"messages":[
