@@ -1433,7 +1433,7 @@ git commit -m "fix(convert): preserve request fidelity fields"
 - Behavior: both Responses converters call `EmitError("stream ended with incomplete tool call arguments")` before finalizing when any non-empty argument string is not a JSON object.
 - Behavior: no-argument function calls emit `"arguments":"{}"` in `response.function_call_arguments.done` and `response.output_item.done`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append:
 
@@ -1488,13 +1488,13 @@ func TestP2_ResponsesNoArgumentToolEmitsEmptyObject(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests and capture RED**
+- [x] **Step 2: Run the tests and capture RED**
 
 Run: `go test -count=1 -run 'TestP2_(ResponsesTruncatedToolErrors|AnthropicToResponsesTruncatedToolErrors|ResponsesNoArgumentToolEmitsEmptyObject)' ./convert`
 
 Expected: truncated streams complete successfully and no-argument items carry empty arguments.
 
-- [ ] **Step 3: Implement the guards and `{}` output**
+- [x] **Step 3: Implement the guards and `{}` output**
 
 In both `HandleStreamEnd` methods, **before** `sc.finalized = true`:
 
@@ -1522,7 +1522,7 @@ Use `args` in `response.function_call_arguments.done` and in the
 `function_call_arguments.done` unconditionally for each tool call (it is now
 safe because the guard runs first).
 
-- [ ] **Step 4: Run the focused, full, and race tests**
+- [x] **Step 4: Run the focused, full, and race tests**
 
 Run: `go test -count=1 -run 'TestP2_(ResponsesTruncatedToolErrors|AnthropicToResponsesTruncatedToolErrors|ResponsesNoArgumentToolEmitsEmptyObject)' ./convert`
 
@@ -1536,7 +1536,7 @@ Run: `CGO_ENABLED=1 go test -race -count=1 ./convert`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/stream_responses.go convert/stream_anthropic.go convert/anthropic_openai_p2_test.go
@@ -1544,12 +1544,12 @@ git commit -m "fix(convert): reject truncated responses tool streams"
 ```
 
 **Implementation record:**
-- Date/status:
-- Repository/commit:
-- Files changed:
-- Tests/commands/results:
-- Review findings/fixes:
-- Deferred/limitations:
+- Date/status: 2026-11-06 / complete
+- Repository/commit: `llm-api-converter` `5a50512`
+- Files changed: `convert/stream_responses.go`, `convert/stream_anthropic.go`, `convert/anthropic_openai_p2_test.go`
+- Tests/commands/results: RED focused run showed truncated streams emitting `function_call_arguments.done` and `response.completed`; GREEN focused run → PASS; `go test -count=1 ./...` → all packages PASS; `CGO_ENABLED=1 go test -race -count=1 ./convert` → PASS; `go vet ./...` and `git diff --check` clean.
+- Review findings/fixes: both Responses-bound converters guard before setting `finalized`; no-argument calls now emit `"arguments":"{}"` in both done events.
+- Deferred/limitations: none.
 
 ---
 
