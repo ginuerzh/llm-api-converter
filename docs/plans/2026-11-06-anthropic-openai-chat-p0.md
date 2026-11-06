@@ -232,13 +232,22 @@ git commit -m "fix(convert): drop empty Anthropic text blocks"
 
 **Implementation record**
 
-- Status: Pending
-- Date:
-- Repository / commit:
+- Status: Done
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter` @ `ef2230b` (`fix(convert): drop empty Anthropic text blocks`, branch `feat/anthropic-openai-p0`); the record itself lands in the follow-up docs commit `docs(convert): record task 1 implementation`.
 - Files changed:
+  - `convert/openai_to_anthropic.go` — added `appendTextBlock`; `convertUserContent`/`convertAssistantContent` no longer emit empty or whitespace-only text blocks and return `nil` when nothing valid remains; `convertOpenAIRequestToAnthropic` skips messages whose content is empty.
+  - `convert/responses.go` — `ConvertResponsesToAnthropic` applies the same skip rule in the shared Chat→Anthropic message loop.
+  - `convert/anthropic_openai_p0_test.go` — new; P0-1 regression tests for the Chat and Responses request paths, empty user messages, and the all-empty fallback.
+  - `convert/convert_test.go` — tool-only assistant expectation changed from two blocks (empty text + `tool_use`) to one `tool_use` block, plus an assertion that no text block is empty.
 - Tests / commands:
-- Review findings / fixes:
-- Deferred:
+  - RED: `go test ./convert -run 'TestP0_(OpenAI|Responses)ToAnthropic' -v` → FAIL: Chat path emitted `{"type":"text"}` for `content:null` + `tool_calls`, Responses path did the same, and an empty user message was kept.
+  - GREEN: `go test ./convert -run 'TestP0_|TestConvert_AssistantToolCalls|TestConvert_NoTools' -v` → PASS.
+  - `go test ./...` → PASS (convert, engine, rewriter, tests/e2e).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS.
+  - `go vet ./...` → clean.
+- Review findings / fixes: self-review confirmed the existing `"..."` user fallback still repairs an all-empty request, reasoning-only assistant turns keep their `thinking` block, and tool-only assistant turns emit only `tool_use`. The editor auto-formatted a pre-existing unformatted struct in `convert_test.go`; that hunk was reverted so the diff stays scoped to P0-1. Pairwise registry, model-map behavior, and same-protocol passthrough are untouched.
+- Deferred: the response-side `convertOpenAIMessageToContent` still substitutes a single-space text block when an assistant response has neither text nor tool calls (deliberate existing workaround, outside P0-1); empty `tool_result` content is not normalized (P0-3 scope).
 
 ---
 
