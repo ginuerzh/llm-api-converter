@@ -849,9 +849,9 @@ this task. Record both commit SHAs in the implementation record.
 - Status: Done
 - Date: 2026-11-06
 - Repository / commit:
-  - `llm-api-converter` @ `DOCS_SHA_PENDING` (`docs(convert): record P0 review status`, branch `feat/anthropic-openai-p0`).
-  - `/root/code/go-gost` @ `MEMORY_SHA_PENDING` (`docs(memory): record llm-api-converter P0 review`).
-  - A commit cannot contain its own SHA; these two SHAs are filled in by the follow-up docs commit `docs(convert): record task 5 commit SHAs` in `llm-api-converter`.
+  - `llm-api-converter` @ `5db0762` (`docs(convert): record P0 review status`, branch `feat/anthropic-openai-p0`).
+  - `/root/code/go-gost` @ `085383f` (`docs(memory): record llm-api-converter P0 review`).
+  - A commit cannot contain its own SHA; these two SHAs were added by the follow-up docs commit `docs(convert): record task 5 commit SHAs` in `llm-api-converter`.
 - Files changed:
   - `docs/reviews/2026-11-06-anthropic-openai-chat-review.md` — header status changed to “P0 fixed and verified; P1/P2 findings remain open”; the P0 Status table now lists P0-1…P0-4 as fixed with `ef2230b`, `612b033`, `dbf50b8`, `4d77eb1`; added the verification commands and result at `4d77eb1`.
   - `docs/plans/2026-11-06-anthropic-openai-chat-p0.md` — ticked the completed step checkboxes in Tasks 1–5; filled the Task 2 and Task 3 resolved SHAs; added Task 4’s resolved SHA; recorded Task 1’s follow-up docs commit; corrected Task 2’s whitespace-hunk claim (the `responses_test.go` hunk was not reverted); widened Task 2’s deferred Gemini note to the whole `ToolConfig` switch; filled this Task 5 record.
