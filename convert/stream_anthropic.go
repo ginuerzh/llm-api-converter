@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -147,6 +148,11 @@ func (sc *AnthropicStreamConverter) HandleStreamEnd() []byte {
 	if sc.finalized {
 		return nil
 	}
+	for _, fc := range sc.toolCallByIndex {
+		if !streamToolArgsComplete(fc.Arguments) {
+			return sc.EmitError("stream ended with incomplete tool call arguments")
+		}
+	}
 	sc.finalized = true
 	var events [][]byte
 
@@ -200,14 +206,18 @@ func (sc *AnthropicStreamConverter) HandleStreamEnd() []byte {
 	}
 	// Finalize tool calls.
 	for _, fc := range sc.toolCallByIndex {
-		if fc.Arguments != "" {
-			evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDone, ItemID: fc.ID, Arguments: canonicalJSONString(fc.Arguments)})
-			events = append(events, eventBytes(ResponseFunctionCallArgumentsDone, string(evt)))
+		args := fc.Arguments
+		if strings.TrimSpace(args) == "" {
+			args = "{}"
+		} else {
+			args = canonicalJSONString(args)
 		}
-		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, OutputIndex: &fc.ItemIx,
+		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDone, ItemID: fc.ID, Arguments: args})
+		events = append(events, eventBytes(ResponseFunctionCallArgumentsDone, string(evt)))
+		evt, _ = json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, OutputIndex: &fc.ItemIx,
 			Item: &ResponsesOutputItem{
 				ID: fc.ID, Type: "function_call", Status: "completed",
-				CallID: fc.ID, Name: fc.Name, Arguments: canonicalJSONString(fc.Arguments),
+				CallID: fc.ID, Name: fc.Name, Arguments: args,
 			}})
 		events = append(events, eventBytes(ResponseOutputItemDone, string(evt)))
 	}

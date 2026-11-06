@@ -626,3 +626,52 @@ func TestP2_TopKProviderGating(t *testing.T) {
 		})
 	}
 }
+
+func TestP2_ResponsesTruncatedToolErrors(t *testing.T) {
+	sc := NewResponsesStreamConverter("gpt-4o")
+	sc.HandleStreamStart()
+	_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"f","arguments":"{\"a\":"}}]},"finish_reason":null}]}`))
+	end := string(sc.HandleStreamEnd())
+	if !strings.Contains(end, "response.failed") || !strings.Contains(end, "incomplete tool call arguments") {
+		t.Fatalf("truncated Responses stream end = %s, want response.failed", end)
+	}
+	if strings.Contains(end, "response.completed") || strings.Contains(end, "response.function_call_arguments.done") {
+		t.Fatalf("truncated Responses stream closed normally: %s", end)
+	}
+}
+
+func TestP2_AnthropicToResponsesTruncatedToolErrors(t *testing.T) {
+	sc := NewAnthropicStreamConverter("claude")
+	sc.HandleStreamStart()
+	_, _ = sc.HandleChunk([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"f","input":{}}}`))
+	_, _ = sc.HandleChunk([]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"a\":"}}`))
+	end := string(sc.HandleStreamEnd())
+	if !strings.Contains(end, "response.failed") || !strings.Contains(end, "incomplete tool call arguments") {
+		t.Fatalf("truncated Anthropic→Responses end = %s, want response.failed", end)
+	}
+	if strings.Contains(end, "response.completed") || strings.Contains(end, "response.function_call_arguments.done") {
+		t.Fatalf("truncated Anthropic→Responses stream closed normally: %s", end)
+	}
+}
+
+func TestP2_ResponsesNoArgumentToolEmitsEmptyObject(t *testing.T) {
+	t.Run("chat to responses", func(t *testing.T) {
+		sc := NewResponsesStreamConverter("gpt-4o")
+		sc.HandleStreamStart()
+		_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"f","arguments":""}}]},"finish_reason":null}]}`))
+		end := string(sc.HandleStreamEnd())
+		if !strings.Contains(end, `"arguments":"{}"`) {
+			t.Fatalf("no-arg Responses tool = %s, want arguments {}", end)
+		}
+	})
+
+	t.Run("anthropic to responses", func(t *testing.T) {
+		sc := NewAnthropicStreamConverter("claude")
+		sc.HandleStreamStart()
+		_, _ = sc.HandleChunk([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"f","input":{}}}`))
+		end := string(sc.HandleStreamEnd())
+		if !strings.Contains(end, `"arguments":"{}"`) {
+			t.Fatalf("no-arg Anthropic→Responses tool = %s, want arguments {}", end)
+		}
+	})
+}

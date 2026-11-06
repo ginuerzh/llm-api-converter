@@ -200,6 +200,11 @@ func (sc *ResponsesStreamConverter) HandleStreamEnd() []byte {
 	if sc.finalized {
 		return nil
 	}
+	for _, fc := range sc.toolCallByIndex {
+		if !streamToolArgsComplete(fc.Arguments) {
+			return sc.EmitError("stream ended with incomplete tool call arguments")
+		}
+	}
 	sc.finalized = true
 	var events [][]byte
 
@@ -245,15 +250,19 @@ func (sc *ResponsesStreamConverter) HandleStreamEnd() []byte {
 		events = append(events, sc.makeEvent(ResponseOutputItemDone, string(evt)))
 	}
 	for _, fc := range sc.toolCallByIndex {
-		if fc.Arguments != "" {
-			evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDone, ItemID: fc.ID, OutputIndex: &fc.ItemIx, Arguments: canonicalJSONString(fc.Arguments)})
-			events = append(events, sc.makeEvent(ResponseFunctionCallArgumentsDone, string(evt)))
+		args := fc.Arguments
+		if strings.TrimSpace(args) == "" {
+			args = "{}"
+		} else {
+			args = canonicalJSONString(args)
 		}
+		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDone, ItemID: fc.ID, OutputIndex: &fc.ItemIx, Arguments: args})
+		events = append(events, sc.makeEvent(ResponseFunctionCallArgumentsDone, string(evt)))
 		// ponytail: codex requires a complete, deserializable function_call item
 		// (with arguments) in output_item.done — it ignores *_arguments.delta/.done
 		// and silently drops items that fail to deserialize, losing the tool call.
-		item := ResponsesOutputItem{ID: fc.ID, Type: "function_call", Status: "completed", CallID: fc.ID, Name: fc.Name, Arguments: canonicalJSONString(fc.Arguments)}
-		evt, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, OutputIndex: &fc.ItemIx, Item: &item})
+		item := ResponsesOutputItem{ID: fc.ID, Type: "function_call", Status: "completed", CallID: fc.ID, Name: fc.Name, Arguments: args}
+		evt, _ = json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemDone, OutputIndex: &fc.ItemIx, Item: &item})
 		events = append(events, sc.makeEvent(ResponseOutputItemDone, string(evt)))
 	}
 
