@@ -675,3 +675,178 @@ func TestP2_ResponsesNoArgumentToolEmitsEmptyObject(t *testing.T) {
 		}
 	})
 }
+
+func TestP2_GeminiEmitErrorSafety(t *testing.T) {
+	message := "bad \"quote\"\nline\\slash"
+	t.Run("gemini to openai", func(t *testing.T) {
+		c := NewGeminiToOpenAIStreamConverter("gemini-2.5-flash")
+		first := c.EmitError(message)
+		if first == nil {
+			t.Fatal("first error = nil")
+		}
+		if second := c.EmitError("again"); second != nil {
+			t.Fatalf("second error = %s", second)
+		}
+		if end := c.HandleStreamEnd(); end != nil {
+			t.Fatalf("normal close after error = %s", end)
+		}
+		payload := strings.TrimSuffix(strings.TrimPrefix(string(first), "data: "), "\n\n")
+		var evt struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(payload), &evt); err != nil {
+			t.Fatalf("invalid error JSON %q: %v", payload, err)
+		}
+		if evt.Error.Message != message {
+			t.Fatalf("message = %q, want %q", evt.Error.Message, message)
+		}
+	})
+
+	t.Run("gemini to anthropic", func(t *testing.T) {
+		c := NewGeminiToAnthropicStreamConverter("claude")
+		first := c.EmitError(message)
+		if first == nil {
+			t.Fatal("first error = nil")
+		}
+		if second := c.EmitError("again"); second != nil {
+			t.Fatalf("second error = %s", second)
+		}
+		if end := c.HandleStreamEnd(); end != nil {
+			t.Fatalf("normal close after error = %s", end)
+		}
+		if !strings.HasPrefix(string(first), "event: error\ndata: ") {
+			t.Fatalf("error framing = %q", first)
+		}
+		var evt struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		payload := strings.TrimPrefix(string(first), "event: error\ndata: ")
+		if err := json.Unmarshal([]byte(payload), &evt); err != nil {
+			t.Fatalf("invalid error JSON %q: %v", payload, err)
+		}
+		if evt.Error.Message != message {
+			t.Fatalf("message = %q, want %q", evt.Error.Message, message)
+		}
+	})
+
+	t.Run("anthropic to gemini", func(t *testing.T) {
+		c := NewAnthropicToGeminiStreamConverter("gemini-2.5-flash")
+		first := c.EmitError(message)
+		if first == nil {
+			t.Fatal("first error = nil")
+		}
+		if second := c.EmitError("again"); second != nil {
+			t.Fatalf("second error = %s", second)
+		}
+		if end := c.HandleStreamEnd(); end != nil {
+			t.Fatalf("normal close after error = %s", end)
+		}
+	})
+
+	t.Run("openai to gemini", func(t *testing.T) {
+		c := NewOpenAIToGeminiStreamConverter("gemini-2.5-flash")
+		first := c.EmitError(message)
+		if first == nil {
+			t.Fatal("first error = nil")
+		}
+		if second := c.EmitError("again"); second != nil {
+			t.Fatalf("second error = %s", second)
+		}
+		if end := c.HandleStreamEnd(); end != nil {
+			t.Fatalf("normal close after error = %s", end)
+		}
+	})
+}
+
+func TestP2_GeminiUpstreamErrorTerminal(t *testing.T) {
+	t.Run("gemini to openai", func(t *testing.T) {
+		c := NewGeminiToOpenAIStreamConverter("gemini-2.5-flash")
+		out, err := c.HandleChunk([]byte(`{"error":{"message":"boom"}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), "boom") {
+			t.Fatalf("error chunk = %s", out)
+		}
+		if end := c.HandleStreamEnd(); end != nil {
+			t.Fatalf("normal close after upstream error = %s", end)
+		}
+	})
+
+	t.Run("gemini to anthropic", func(t *testing.T) {
+		c := NewGeminiToAnthropicStreamConverter("claude")
+		out, err := c.HandleChunk([]byte(`{"error":{"message":"boom"}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), "boom") {
+			t.Fatalf("error chunk = %s", out)
+		}
+		if end := c.HandleStreamEnd(); end != nil {
+			t.Fatalf("normal close after upstream error = %s", end)
+		}
+	})
+
+	t.Run("anthropic to gemini", func(t *testing.T) {
+		c := NewAnthropicToGeminiStreamConverter("gemini-2.5-flash")
+		out, err := c.HandleChunk([]byte(`{"type":"error","error":{"message":"boom"}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), "boom") {
+			t.Fatalf("error chunk = %s", out)
+		}
+		if end := c.HandleStreamEnd(); end != nil {
+			t.Fatalf("normal close after upstream error = %s", end)
+		}
+	})
+
+	t.Run("openai to gemini", func(t *testing.T) {
+		c := NewOpenAIToGeminiStreamConverter("gemini-2.5-flash")
+		out, err := c.HandleChunk([]byte(`{"error":{"message":"boom"}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), "boom") {
+			t.Fatalf("error chunk = %s", out)
+		}
+		if end := c.HandleStreamEnd(); end != nil {
+			t.Fatalf("normal close after upstream error = %s", end)
+		}
+	})
+}
+
+func TestP2_GeminiEndPhaseStreamErrorDispatched(t *testing.T) {
+	cases := []struct {
+		name       string
+		handler    responsesStreamHandler
+		wantError  string
+		normalMark string
+	}{
+		{"gemini to openai", NewGeminiToOpenAIStreamConverter("gemini-2.5-flash"), "data: ", `[DONE]`},
+		{"gemini to anthropic", NewGeminiToAnthropicStreamConverter("claude"), "event: error", "message_stop"},
+		{"anthropic to gemini", NewAnthropicToGeminiStreamConverter("gemini-2.5-flash"), "data: ", "finishReason"},
+		{"openai to gemini", NewOpenAIToGeminiStreamConverter("gemini-2.5-flash"), "data: ", "finishReason"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewSessionStore()
+			store.Set("g1", &Session{ID: "g1", StreamHandler: tc.handler})
+			opts := &ConvertOptions{SessionStore: store, Direction: "response", SID: "g1", ErrorMsg: `upstream "reset"`}
+			out, err := HandleSSEEvent("g1", "end", 0, nil, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(out), tc.wantError) {
+				t.Fatalf("end-phase error not dispatched: %s", out)
+			}
+			if strings.Contains(string(out), tc.normalMark) {
+				t.Fatalf("normal close followed the error: %s", out)
+			}
+		})
+	}
+}

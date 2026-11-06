@@ -112,10 +112,18 @@ type GeminiSafetySetting struct {
 
 // -------- Gemini generateContent (Response) --------
 
+// GeminiError is the top-level error object Gemini can return in a stream.
+type GeminiError struct {
+	Code    int    `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+	Status  string `json:"status,omitempty"`
+}
+
 type GeminiChatResponse struct {
 	Candidates     []GeminiCandidate     `json:"candidates"`
 	UsageMetadata  *GeminiUsage          `json:"usageMetadata,omitempty"`
 	PromptFeedback *GeminiPromptFeedback `json:"promptFeedback,omitempty"`
+	Error          *GeminiError          `json:"error,omitempty"`
 }
 
 type GeminiCandidate struct {

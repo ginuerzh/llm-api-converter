@@ -964,22 +964,6 @@ func TestP1_AnthropicErrorThenEndPhaseOneError(t *testing.T) {
 	}
 }
 
-func TestP1_GeminiEndPhaseStreamErrorNotDispatched(t *testing.T) {
-	store := NewSessionStore()
-	store.Set("g1", &Session{ID: "g1", StreamHandler: NewGeminiToAnthropicStreamConverter("claude")})
-	opts := &ConvertOptions{SessionStore: store, Direction: "response", SID: "g1", ErrorMsg: `upstream "reset"`}
-	out, err := HandleSSEEvent("g1", "end", 0, nil, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(out), `event: error`) {
-		t.Fatalf("gemini handler received end-phase error: %s", out)
-	}
-	if !strings.Contains(string(out), "message_stop") {
-		t.Fatalf("gemini normal close missing: %s", out)
-	}
-}
-
 func TestP1_StreamConverterEmitErrorIsTerminal(t *testing.T) {
 	sc := NewStreamConverter("claude", nil, nil)
 	sc.HandleStreamStart()

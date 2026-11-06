@@ -1021,12 +1021,13 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 		// GOST reports interrupted streams through stream_error metadata. An
 		// interrupted stream must surface as an error, not as a normal close:
 		// a synthesized message_stop would report truncated output (including
-		// partial tool arguments) as a successful response. Only the in-scope
-		// Anthropic/OpenAI Chat converters guarantee a terminal, JSON-safe
-		// error event; every other handler keeps its previous end behavior.
+		// partial tool arguments) as a successful response. Every stateful
+		// converter now provides a terminal, JSON-safe error event.
 		if opts.ErrorMsg != "" {
 			switch handler.(type) {
-			case *StreamConverter, *AnthropicToOpenAIStreamConverter:
+			case *StreamConverter, *AnthropicToOpenAIStreamConverter,
+				*GeminiToOpenAIStreamConverter, *GeminiToAnthropicStreamConverter,
+				*AnthropicToGeminiStreamConverter, *OpenAIToGeminiStreamConverter:
 				return handler.EmitError(opts.ErrorMsg), nil
 			}
 		}
