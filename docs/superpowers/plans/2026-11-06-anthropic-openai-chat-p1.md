@@ -549,7 +549,7 @@ git commit -m "fix(convert): gate reasoning replay and whitelist metadata"
 
 - Status: Complete
 - Date: 2026-11-06
-- Repository / commit: `llm-api-converter` @ `<pending>` (`fix(convert): gate reasoning replay and whitelist metadata`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-2.
+- Repository / commit: `llm-api-converter` @ `d2ec345` (`fix(convert): gate reasoning replay and whitelist metadata`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-2.
 - Files changed:
   - `convert/anthropic_to_openai.go` — added `replaysReasoning` (DeepSeek or GLM). `convertAnthropicMessage`/`convertAnthropicAssistantMessage` now take the resolved target model; prior thinking/cached reasoning is replayed only when `replaysReasoning` is true, the reasoning-cache lookup is gated the same way, and `placeholderReasoning` is emitted only for DeepSeek. On the DeepSeek branch, `reasoning_effort` is forwarded only when `thinking.type == "enabled"`.
   - `convert/openai_to_anthropic.go` — added `anthropicMetadata` (keeps only `user_id`, falls back to `user`, returns nil when empty) and replaced the raw metadata copy. `convertMessageContent`/`convertAssistantContent` take the resolved target model and emit an unsigned `thinking` block from `reasoning_content` only for DeepSeek targets.
