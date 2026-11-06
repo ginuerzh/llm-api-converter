@@ -1,0 +1,1308 @@
+# Anthropic ↔ OpenAI Chat P1 Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Close all 15 P1 findings from the 2026-11-06 Anthropic ↔ OpenAI Chat review without changing the pairwise converter architecture.
+
+**Architecture:** In-place fixes in `llm-api-converter/convert`, with capability decisions derived from the resolved target model. Message normalization and tool-pair repair are adapted from magpie's logic to the existing `AnthropicMessage`/`AnthropicContent` types.
+
+**Tech Stack:** Go, `encoding/json`, existing `convert`, `engine`, and `rewriter` packages. No new dependencies.
+
+**Spec:** `docs/superpowers/specs/2026-11-06-anthropic-openai-chat-p1-design.md`
+
+## Global Constraints
+
+- Do not add third-party dependencies.
+- Keep the pairwise converter registry, model-map, and same-protocol passthrough behavior intact.
+- Code comments are English.
+- Every task must leave `go test -count=1 ./...` green.
+- Commit only; never push.
+- Do not modify `core/` or other go-gost modules.
+- Each task fills its **Implementation record** in this plan with date, repository/commit, files, commands/results, review findings, and deferred items, and commits it with the task.
+- Follow TDD: write the failing test, capture RED, implement, capture GREEN.
+
+## Review Focus
+
+The spec implies these inputs but no single task's tests cover all of them; each line names the task that owns its test.
+
+1. **Interrupted tool histories** (`assistant(tool_use)` with no result, orphan result, parallel results): must become valid Anthropic turns with results first. Task 2.
+2. **Anthropic target receiving unsigned OpenAI reasoning**: must not emit an unsigned `thinking` block for a Claude target. Task 3.
+3. **OpenAI reasoning models** (`o1`/`o3`/`o4`/`gpt-5`) with `max_tokens` and sampling params: must map to `max_completion_tokens` and drop unsupported sampling. Task 4.
+4. **Upstream SSE error mid-stream and scanner error at end**: must surface an error event, not a successful empty response. Task 6.
+5. **Structured-output and URL-image round trips**: must preserve the schema/URL rather than silently dropping. Task 5.
+
+---
+
+### Task 1: Stream usage, error escaping, typed delta content
+
+**Files:**
+- Modify: `convert/stream_anthropic_to_openai.go:225-234`
+- Modify: `convert/stream.go:292-301`
+- Modify: `convert/session.go:184-188`
+- Modify: `convert/types.go:507-514`
+- Test: `convert/anthropic_openai_p1_test.go` (create)
+
+**Interfaces:**
+- Produces: `func (d *OpenAIDelta) UnmarshalJSON(data []byte) error`
+- Produces: `setUsage` merges each non-zero field instead of overwriting all four.
+- Produces: both `EmitError` implementations build their payload with `json.Marshal`.
+
+- [x] **Step 1: Write the failing tests**
+
+```go
+package convert
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestP1_AnthropicStreamUsageMergesPartialUpdates(t *testing.T) {
+	c := NewAnthropicToOpenAIStreamConverter("claude", &ConvertOptions{RequestModel: "claude"})
+	_, _ = c.HandleChunk([]byte(`{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":1000,"output_tokens":1,"cache_read_input_tokens":200}}}`))
+	_, _ = c.HandleChunk([]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":50}}`))
+
+	var usage *OpenAIUsage
+	for _, line := range strings.Split(string(c.HandleStreamEnd()), "\n") {
+		line = strings.TrimPrefix(line, "data: ")
+		var chunk OpenAIStreamChunk
+		if json.Unmarshal([]byte(line), &chunk) == nil && chunk.Usage != nil {
+			usage = chunk.Usage
+		}
+	}
+	if usage == nil {
+		t.Fatal("no usage chunk")
+	}
+	if usage.PromptTokens != 1200 || usage.CompletionTokens != 50 || usage.TotalTokens != 1250 {
+		t.Fatalf("usage = %+v, want prompt=1200 completion=50 total=1250", usage)
+	}
+	if usage.PromptTokensDetails == nil || usage.PromptTokensDetails.CachedTokens != 200 {
+		t.Fatalf("cached tokens lost: %+v", usage.PromptTokensDetails)
+	}
+}
+
+func TestP1_AnthropicEmitErrorEscapesJSON(t *testing.T) {
+	want := "bad \"quote\"\nline\\backslash"
+	sc := NewStreamConverter("claude", nil, nil)
+	out := string(sc.EmitError(want))
+	parts := strings.SplitN(out, "\n", 2)
+	if len(parts) != 2 {
+		t.Fatalf("error event = %q", out)
+	}
+	data := strings.TrimPrefix(parts[1], "data: ")
+	var evt struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(data), &evt); err != nil {
+		t.Fatalf("invalid error JSON %q: %v", data, err)
+	}
+	if evt.Error.Message != want {
+		t.Fatalf("message = %q, want %q", evt.Error.Message, want)
+	}
+}
+
+func TestP1_TypedDeltaContent(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	out, err := sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"content":[{"type":"text","text":"hel"},{"type":"text","text":"lo"}]},"finish_reason":null}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"text":"hello"`) {
+		t.Fatalf("typed content not joined: %s", out)
+	}
+}
+```
+
+- [x] **Step 2: Run tests to verify they fail**
+
+Run: `cd llm-api-converter && go test ./convert -run 'TestP1_(AnthropicStreamUsageMergesPartialUpdates|AnthropicEmitErrorEscapesJSON|TypedDeltaContent)' -v`
+
+Expected: FAIL — usage prompt is 1000/50 instead of 1200/50; error JSON is malformed; typed content fails to unmarshal.
+
+- [x] **Step 3: Implement the three fixes**
+
+`setUsage`: update each of `InputTokens`, `OutputTokens`, `CacheReadInputTokens`, `CacheCreationInputTokens` only when the argument is greater than zero; set `hasUsage = true` if any argument was greater than zero.
+
+`StreamConverter.EmitError` and `PassthroughStreamHandler.EmitError`: marshal
+`map[string]any{"type":"error","error":map[string]any{"type":"stream_error","message":message}}`
+and prefix `event: error\ndata: `.
+
+`OpenAIDelta.UnmarshalJSON`: decode into a shadow type plus a
+`Content json.RawMessage`; accept a string or `null` directly, accept an array
+of `{type,text}` parts and concatenate only `type == "text"`; ignore malformed
+content shapes instead of failing the stream.
+
+- [x] **Step 4: Run tests to verify they pass**
+
+Run: `cd llm-api-converter && go test ./convert -run 'TestP1_' -v`
+
+Expected: PASS.
+
+- [x] **Step 5: Run the full suite and commit**
+
+Run: `cd llm-api-converter && go test -count=1 ./... && go vet ./...`
+
+Expected: PASS and clean.
+
+```bash
+git add convert/anthropic_openai_p1_test.go convert/stream_anthropic_to_openai.go convert/stream.go convert/session.go convert/types.go docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p1.md
+git commit -m "fix(convert): merge stream usage and accept typed deltas"
+```
+
+**Implementation record**
+
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter` @ `e534397` (`fix(convert): merge stream usage and accept typed deltas`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line.
+- Files changed:
+  - `convert/stream_anthropic_to_openai.go` — `setUsage` merges non-zero fields instead of overwriting all four, so `message_start` input and cache counts survive the `message_delta` output update.
+  - `convert/stream.go` — `StreamConverter.EmitError` builds its payload with `json.Marshal`.
+  - `convert/session.go` — `PassthroughStreamHandler.EmitError` builds its payload with `json.Marshal`; dropped the now-unused `fmt` import.
+  - `convert/types.go` — added `(*OpenAIDelta).UnmarshalJSON` and `joinOpenAIDeltaContent`; content accepts a string, `null`, or typed parts (only `type == "text"` is concatenated), and other shapes decode to empty content instead of failing the stream.
+  - `convert/anthropic_openai_p1_test.go` — new: the three plan tests plus coverage for the passthrough `EmitError`, string/null/non-text/malformed delta content, and preservation of the other delta fields.
+- Tests / commands:
+  - RED: `cd llm-api-converter && go test ./convert -run 'TestP1_(AnthropicStreamUsageMergesPartialUpdates|AnthropicEmitErrorEscapesJSON|TypedDeltaContent)' -v` → 3 failures: `usage = ... PromptTokens:0 ...`; `invalid error JSON ...: invalid character 'q' after object key:value pair`; `unmarshal stream chunk: json: cannot unmarshal array into Go struct field OpenAIStreamChunk.choices.0.delta.content of type string`.
+  - GREEN: `cd llm-api-converter && go test ./convert -run 'TestP1_' -v` → PASS (6 tests, 5 subtests).
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS.
+  - `go vet ./...` → clean; `git diff --check` → clean.
+- Review findings: Self-review found no functional defects. Added three tests beyond the plan snippet to cover the `PassthroughStreamHandler.EmitError` site, the `null`/non-text/malformed content resolutions, and that the custom unmarshaller still decodes `role`, `reasoning_content`, and `tool_calls`; all passed on first run. Marshalling is unchanged because only `UnmarshalJSON` was added, so converter output stays byte-identical. The shadow struct inside `UnmarshalJSON` must stay in sync with `OpenAIDelta`; a comment records that. No dependency, registry, model-map, routing, or passthrough changes.
+- Deferred: Per the plan's rule, zero usage fields mean "not reported", so a provider that reports a genuine zero after a non-zero value keeps the earlier value; no such provider is known. `gofmt -l convert/` lists eight pre-existing unformatted files (`anthropic_to_openai_test.go`, `convert_test.go`, `gemini_test.go`, `protocol.go`, `protocol_test.go`, `reasoning_cache.go`, `responses_parity_test.go`, `stream_test.go`), untouched by this task. The resolved SHA is recorded by the follow-up docs commit and Task 7's status table.
+
+---
+
+### Task 2: Message coalescing, tool-pair repair, history tool stubs
+
+**Files:**
+- Create: `convert/message_normalize.go`
+- Modify: `convert/openai_to_anthropic.go:249-292` (after messages are built)
+- Modify: `convert/responses.go:311-345`
+- Test: `convert/anthropic_openai_p1_test.go`
+
+**Interfaces:**
+- Produces: `func normalizeAnthropicMessages(msgs []AnthropicMessage) []AnthropicMessage`
+- Produces: `func stubHistoryTools(req *AnthropicRequest, msgs []AnthropicMessage)`
+- `normalizeAnthropicMessages` merges consecutive same-role messages, puts
+  `tool_result` blocks before text/image blocks, inserts synthetic results for
+  unanswered calls, converts orphan results to text, and closes a trailing open
+  exchange with a synthetic user message.
+- `stubHistoryTools` adds one `AnthropicTool` per distinct `tool_use` name when
+  `len(req.Tools) == 0`, with description
+  `"Tool from earlier conversation. Do not call."` and schema
+  `{"type":"object","properties":{}}`, then sets
+  `req.ToolChoice = &AnthropicToolChoice{Type:"none"}`.
+
+- [x] **Step 1: Write the failing tests**
+
+```go
+func TestP1_ParallelToolResultsCoalesce(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[
+		{"role":"user","content":"start"},
+		{"role":"assistant","content":null,"tool_calls":[
+			{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}},
+			{"id":"b","type":"function","function":{"name":"g","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"a","content":"ra"},
+		{"role":"tool","tool_call_id":"b","content":"rb"},
+		{"role":"user","content":"next"}]}`
+	b, err := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var anth AnthropicRequest
+	if err := json.Unmarshal(b, &anth); err != nil {
+		t.Fatal(err)
+	}
+	if len(anth.Messages) != 3 {
+		t.Fatalf("messages = %d, want 3: %s", len(anth.Messages), b)
+	}
+	last := anth.Messages[2].Content
+	if len(last) != 3 || last[0].Type != "tool_result" || last[1].Type != "tool_result" || last[2].Type != "text" {
+		t.Fatalf("last user blocks = %+v, want two tool_result then text", last)
+	}
+}
+
+func TestP1_UnansweredToolUseGetsSyntheticResult(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[
+		{"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]},
+		{"role":"user","content":"continue"}]}`
+	b, _ := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 1024})
+	var anth AnthropicRequest
+	_ = json.Unmarshal(b, &anth)
+	last := anth.Messages[len(anth.Messages)-1].Content
+	if len(last) != 2 || last[0].Type != "tool_result" || last[0].ToolUseID != "a" || !last[0].IsError {
+		t.Fatalf("blocks = %+v, want synthetic tool_result first", last)
+	}
+	if last[1].Type != "text" || last[1].Text != "continue" {
+		t.Fatalf("text block = %+v", last[1])
+	}
+}
+
+func TestP1_OrphanToolResultBecomesText(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[
+		{"role":"tool","tool_call_id":"missing","content":"orphan text"}]}`
+	b, _ := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 1024})
+	var anth AnthropicRequest
+	_ = json.Unmarshal(b, &anth)
+	got := anth.Messages[0].Content[0]
+	if got.Type != "text" || got.Text != "orphan text" {
+		t.Fatalf("orphan result = %+v, want text block", got)
+	}
+}
+
+func TestP1_TrailingToolUseGetsSyntheticUserResult(t *testing.T) {
+	msgs := []AnthropicMessage{
+		{Role: "user", Content: []AnthropicContent{{Type: "text", Text: "hi"}}},
+		{Role: "assistant", Content: []AnthropicContent{{Type: "tool_use", ID: "a", Name: "f", Input: map[string]any{}}}},
+	}
+	got := normalizeAnthropicMessages(msgs)
+	if len(got) != 3 || got[2].Role != "user" {
+		t.Fatalf("messages = %+v, want trailing synthetic user", got)
+	}
+	if got[2].Content[0].Type != "tool_result" || got[2].Content[0].ToolUseID != "a" {
+		t.Fatalf("trailing result = %+v", got[2].Content)
+	}
+}
+
+func TestP1_HistoryToolsGetStubDeclarations(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[
+		{"role":"assistant","content":null,"tool_calls":[{"id":"a","type":"function","function":{"name":"lookup","arguments":"{}"}}]},
+		{"role":"user","content":"go on"}]}`
+	b, _ := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 1024})
+	var anth AnthropicRequest
+	_ = json.Unmarshal(b, &anth)
+	if len(anth.Tools) != 1 || anth.Tools[0].Name != "lookup" {
+		t.Fatalf("tools = %+v, want one lookup stub", anth.Tools)
+	}
+	if anth.ToolChoice == nil || anth.ToolChoice.Type != "none" {
+		t.Fatalf("tool_choice = %+v, want none", anth.ToolChoice)
+	}
+}
+```
+
+- [x] **Step 2: Run tests to verify they fail**
+
+Run: `cd llm-api-converter && go test ./convert -run 'TestP1_(ParallelToolResultsCoalesce|UnansweredToolUseGetsSyntheticResult|OrphanToolResultBecomesText|TrailingToolUseGetsSyntheticUserResult|HistoryToolsGetStubDeclarations)' -v`
+
+Expected: FAIL — parallel results are separate user messages, no synthetic result, orphan result stays a `tool_result`, no stub tools.
+
+- [x] **Step 3: Implement the normalizer and stubs**
+
+Create `convert/message_normalize.go`. Algorithm:
+
+1. Walk messages in order. For each message, split user content into
+   `results` (type `tool_result`) and `rest` (everything else).
+2. Maintain `pending []string`, `open map[string]bool`,
+   `answered map[string]bool`.
+3. On assistant: close the previous exchange (append a synthetic user message
+   for unanswered pending calls), collect new `tool_use` IDs into `pending`,
+   then append the assistant message.
+4. On user: keep results whose ID is open and not already answered; convert
+   orphan/duplicate results to text via `resultSaid`; append synthetic results
+   for pending unanswered calls; emit `append(results, rest...)`; clear the
+   exchange.
+5. After the loop, close any open exchange.
+6. Merge consecutive same-role messages by appending content.
+
+Synthetic result: `AnthropicContent{Type:"tool_result", ToolUseID:id, Content:"Tool result missing.", IsError:true}`.
+`resultSaid` returns a text block with the result text, or
+`"Tool result received."` when empty.
+
+Call `normalizeAnthropicMessages` in `convertOpenAIRequestToAnthropic` after
+the message loop and before the empty-history fallback. Then call
+`stubHistoryTools(&anthropic, anthropic.Messages)` when `len(anthropic.Tools) == 0`
+(this also covers Responses tools that were all filtered as non-function).
+Apply the same two calls in `ConvertResponsesToAnthropic` after its message
+loop and tool mapping, using the same `len(anth.Tools) == 0` condition.
+
+- [x] **Step 4: Run tests to verify they pass**
+
+Run: `cd llm-api-converter && go test ./convert -run 'TestP1_' -v`
+
+Expected: PASS.
+
+- [x] **Step 5: Run the full suite and commit**
+
+Run: `cd llm-api-converter && go test -count=1 ./... && go vet ./...`
+
+Expected: PASS and clean.
+
+```bash
+git add convert/message_normalize.go convert/openai_to_anthropic.go convert/responses.go convert/anthropic_openai_p1_test.go docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p1.md
+git commit -m "fix(convert): normalize Anthropic tool histories"
+```
+
+**Implementation record**
+
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter` @ `7620613` (`fix(convert): normalize Anthropic tool histories`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Task 1.
+- Files changed:
+  - `convert/message_normalize.go` — new: `normalizeAnthropicMessages` processes each run of consecutive user messages as one turn (so parallel tool results coalesce and all `tool_result` blocks precede text/image blocks), keeps results whose ID is open and unanswered, converts orphan/duplicate results to text (`"Tool result received."` when empty), appends synthetic `is_error` results (`"Tool result missing."`) for unanswered calls, closes a trailing open exchange, and merges consecutive same-role messages. `stubHistoryTools` adds one deduplicated stub declaration per distinct history `tool_use` name (description `"Tool from earlier conversation. Do not call."`, schema `{"type":"object","properties":{}}`) and sets `tool_choice: {"type":"none"}`; it is a no-op when tools are already declared or no history names exist.
+  - `convert/openai_to_anthropic.go` — calls the normalizer after the message loop and before the empty-history fallback; calls `stubHistoryTools` when no tools are declared.
+  - `convert/responses.go` — applies the same normalizer/stub calls in `ConvertResponsesToAnthropic` after the message loop and tool mapping, when `len(anth.Tools) == 0`.
+  - `convert/anthropic_openai_p1_test.go` — the five plan tests, a sixth Responses-path test, and three edge tests covering the exact synthetic/orphan text, stub schema/dedup/declared-tools guard, and results-first ordering across a user run.
+- Tests / commands:
+  - RED: `go test ./convert -run 'TestP1_(ParallelToolResultsCoalesce|UnansweredToolUseGetsSyntheticResult|OrphanToolResultBecomesText|TrailingToolUseGetsSyntheticUserResult|HistoryToolsGetStubDeclarations|ResponsesToolHistoryNormalized)' -v` → build failure `undefined: normalizeAnthropicMessages`; with a temporary passthrough stub all six failed for the expected reasons: `messages = 5, want 3`; `blocks = [text continue], want synthetic tool_result first`; orphan stayed `{Type:tool_result ...}`; `messages = 2, want trailing synthetic user`; `tools = [], want one lookup stub`; Responses `messages = 4, want 3`.
+  - GREEN: `cd llm-api-converter && go test ./convert -run 'TestP1_' -v` → PASS (9 new Task 2 tests plus Task 1 tests).
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS.
+  - `go vet ./...` → clean; `git diff --check` → clean.
+- Review findings: Self-review found no functional defects. Tool-use IDs are tracked only when non-empty: a legacy OpenAI `function_call` has no ID, so synthesizing a `tool_result` with an empty `tool_use_id` would be invalid; this also preserves `TestConvert_FunctionCallToToolUse` (its name still gets a stub). User runs are grouped before partitioning so a later result cannot end up after earlier text (`TestP1_UserRunKeepsResultsFirst`). Merging drops empty-content messages (Anthropic rejects empty arrays) and copies blocks instead of appending into the input's backing array. The normalizer/stub calls are guarded so declared tools, the pairwise converter registry/model map, and same-protocol passthrough are unchanged; no dependencies were added and no helper signatures were changed.
+- Deferred: Distinct stub tools are emitted in history order rather than sorted; no ordering requirement exists and output is deterministic for a given input. An orphan tool result containing only image blocks falls back to `"Tool result received."`, losing the image; no known client sends image-only tool results. A history `tool_use` with an empty ID remains unpaired because Anthropic has no valid result ID to use. The resolved SHA is recorded by the follow-up docs commit, matching Task 1.
+
+---
+
+### Task 3: Thinking, reasoning_content, effort, and metadata gating
+
+**Files:**
+- Modify: `convert/openai_to_anthropic.go:270-300`, `:390-405`, `:480-515`
+- Modify: `convert/responses.go:296-320`, `:697-720`
+- Modify: `convert/anthropic_to_openai.go:216-222`, `:252`, `:298-310`, `:452-520`
+- Test: `convert/anthropic_openai_p1_test.go`
+
+**Interfaces:**
+- Produces: `func replaysReasoning(model string) bool`
+- Produces: `func anthropicMetadata(metadata any, user string) any`
+- Changes:
+  - `convertAssistantContent(msg OpenAIMessage, model string) []AnthropicContent`
+  - `convertMessageContent(msg OpenAIMessage, model string) []AnthropicContent`
+  - `convertChatMessageToAnthropic(msg OpenAIMessage, model string) AnthropicMessage`
+  - `convertAnthropicMessage(msg AnthropicMessage, opts *ConvertOptions, model string, ctxParts []string) []OpenAIMessage`
+  - `convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions, model string, ctxParts []string) OpenAIMessage`
+
+- [x] **Step 1: Write the failing tests**
+
+```go
+func TestP1_UnsignedThinkingDroppedForAnthropic(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[
+		{"role":"assistant","content":"hi","reasoning_content":"chain",
+		 "tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]}]}`
+	b, _ := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 1024, ResolvedModel: "gpt-4"})
+	var anth AnthropicRequest
+	_ = json.Unmarshal(b, &anth)
+	for _, block := range anth.Messages[0].Content {
+		if block.Type == "thinking" {
+			t.Fatalf("unsigned thinking sent to Anthropic target: %+v", block)
+		}
+	}
+
+	b, _ = convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 1024, ResolvedModel: "deepseek-chat"})
+	_ = json.Unmarshal(b, &anth)
+	found := false
+	for _, block := range anth.Messages[0].Content {
+		found = found || block.Type == "thinking"
+	}
+	if !found {
+		t.Fatal("DeepSeek target lost its thinking block")
+	}
+}
+
+func TestP1_ReasoningContentGatedByTargetModel(t *testing.T) {
+	body := `{"model":"claude","max_tokens":10,"messages":[
+		{"role":"assistant","content":[{"type":"thinking","thinking":"chain"},{"type":"tool_use","id":"a","name":"f","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"ok"}]}]}`
+
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "gpt-4o"})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	if oai.Messages[0].ReasoningContent != "" {
+		t.Fatalf("gpt-4o received reasoning_content: %q", oai.Messages[0].ReasoningContent)
+	}
+
+	b, _ = convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "deepseek-chat"})
+	_ = json.Unmarshal(b, &oai)
+	if oai.Messages[0].ReasoningContent != "chain" {
+		t.Fatalf("deepseek reasoning = %q, want chain", oai.Messages[0].ReasoningContent)
+	}
+}
+
+func TestP1_DeepSeekPlaceholderOnlyForDeepSeek(t *testing.T) {
+	body := `{"model":"claude","max_tokens":10,"messages":[
+		{"role":"assistant","content":[{"type":"tool_use","id":"a","name":"f","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"ok"}]}]}`
+
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "gpt-4o", ReasoningCache: NewReasoningCache(10)})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	if oai.Messages[0].ReasoningContent != "" {
+		t.Fatalf("non-DeepSeek placeholder: %q", oai.Messages[0].ReasoningContent)
+	}
+
+	b, _ = convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "deepseek-chat", ReasoningCache: NewReasoningCache(10)})
+	_ = json.Unmarshal(b, &oai)
+	if oai.Messages[0].ReasoningContent == "" {
+		t.Fatal("DeepSeek lost its compatibility placeholder")
+	}
+}
+
+func TestP1_EffortRequiresThinking(t *testing.T) {
+	body := `{"model":"claude","max_tokens":10,"output_config":{"effort":"high"},
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "deepseek-chat"})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	if oai.ReasoningEffort != nil {
+		t.Fatalf("effort forwarded without thinking: %v", oai.ReasoningEffort)
+	}
+
+	body = `{"model":"claude","max_tokens":10,"thinking":{"type":"enabled","budget_tokens":1024},
+		"output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"}]}`
+	b, _ = convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "deepseek-chat"})
+	_ = json.Unmarshal(b, &oai)
+	if oai.ReasoningEffort != "high" {
+		t.Fatalf("effort = %v, want high", oai.ReasoningEffort)
+	}
+}
+
+func TestP1_MetadataWhitelist(t *testing.T) {
+	body := `{"model":"gpt-4","user":"u2","metadata":{"user_id":"u1","trace":"x"},
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 10})
+	var anth AnthropicRequest
+	_ = json.Unmarshal(b, &anth)
+	m, _ := anth.Metadata.(map[string]any)
+	if len(m) != 1 || m["user_id"] != "u1" {
+		t.Fatalf("metadata = %+v, want only user_id=u1", anth.Metadata)
+	}
+
+	body = `{"model":"gpt-4","user":"u2","metadata":{"trace":"x"},
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ = convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 10})
+	_ = json.Unmarshal(b, &anth)
+	m, _ = anth.Metadata.(map[string]any)
+	if len(m) != 1 || m["user_id"] != "u2" {
+		t.Fatalf("metadata = %+v, want fallback user_id=u2", anth.Metadata)
+	}
+}
+
+func TestP1_ResponsesUnsignedThinkingAndMetadata(t *testing.T) {
+	body := `{"model":"gpt-4o","metadata":{"user_id":"u1","trace":"x"},"input":[
+		{"type":"reasoning","text":"chain"},
+		{"type":"function_call","call_id":"a","name":"f","arguments":"{}"}]}`
+	b, err := ConvertResponsesToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var anth AnthropicRequest
+	if err := json.Unmarshal(b, &anth); err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range anth.Messages {
+		for _, block := range msg.Content {
+			if block.Type == "thinking" {
+				t.Fatalf("Responses unsigned thinking sent to Anthropic: %+v", block)
+			}
+		}
+	}
+	m, _ := anth.Metadata.(map[string]any)
+	if len(m) != 1 || m["user_id"] != "u1" {
+		t.Fatalf("Responses metadata = %+v, want only user_id=u1", anth.Metadata)
+	}
+}
+```
+
+- [x] **Step 2: Run tests to verify they fail**
+
+Run: `cd llm-api-converter && go test ./convert -run 'TestP1_(UnsignedThinkingDroppedForAnthropic|ReasoningContentGatedByTargetModel|DeepSeekPlaceholderOnlyForDeepSeek|EffortRequiresThinking|MetadataWhitelist)' -v`
+
+Expected: FAIL — unsigned thinking and reasoning_content appear for non-DeepSeek targets; effort is forwarded without thinking; extra metadata keys pass through.
+
+- [x] **Step 3: Implement the gating**
+
+- `replaysReasoning(model)` returns `isDeepSeekModel(model) || isGLMModel(model)`.
+- `anthropicMetadata(metadata any, user string) any` accepts
+  `map[string]any`/`map[string]string`, keeps only `user_id`, falls back to
+  `user`, returns nil when empty.
+- Thread `model` through the converter signatures listed above.
+- In `convertAssistantContent`, only append a `thinking` block when
+  `isDeepSeekModel(model)`.
+- In `convertAnthropicAssistantMessage`, only set `ReasoningContent` when
+  `replaysReasoning(model)`; gate the cache lookup the same way; use
+  `placeholderReasoning` only when `isDeepSeekModel(model)`.
+- In the DeepSeek branch of `convertAnthropicRequestToOpenAI`, assign
+  `ReasoningEffort` only when `req.Thinking != nil && req.Thinking.Type == "enabled"`.
+- Replace the direct `req.Metadata` copies in `convertOpenAIRequestToAnthropic`
+  and `ConvertResponsesToAnthropic` with `anthropicMetadata`.
+
+- [x] **Step 4: Run tests to verify they pass**
+
+Run: `cd llm-api-converter && go test ./convert -run 'TestP1_' -v`
+
+Expected: PASS.
+
+- [x] **Step 5: Run the full suite and commit**
+
+Run: `cd llm-api-converter && go test -count=1 ./... && go vet ./...`
+
+Expected: PASS and clean.
+
+```bash
+git add convert/openai_to_anthropic.go convert/responses.go convert/anthropic_to_openai.go convert/anthropic_openai_p1_test.go docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p1.md
+git commit -m "fix(convert): gate reasoning replay and whitelist metadata"
+```
+
+**Implementation record**
+
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter` @ `d2ec345` (`fix(convert): gate reasoning replay and whitelist metadata`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-2.
+- Files changed:
+  - `convert/anthropic_to_openai.go` — added `replaysReasoning` (DeepSeek or GLM). `convertAnthropicMessage`/`convertAnthropicAssistantMessage` now take the resolved target model; prior thinking/cached reasoning is replayed only when `replaysReasoning` is true, the reasoning-cache lookup is gated the same way, and `placeholderReasoning` is emitted only for DeepSeek. On the DeepSeek branch, `reasoning_effort` is forwarded only when `thinking.type == "enabled"`.
+  - `convert/openai_to_anthropic.go` — added `anthropicMetadata` (keeps only `user_id`, falls back to `user`, returns nil when empty) and replaced the raw metadata copy. `convertMessageContent`/`convertAssistantContent` take the resolved target model and emit an unsigned `thinking` block from `reasoning_content` only for DeepSeek targets.
+  - `convert/responses.go` — `ConvertResponsesToAnthropic` applies `anthropicMetadata` (no `user` fallback) and threads the resolved target model through `convertChatMessageToAnthropic` into the shared assistant-content helper.
+  - `convert/anthropic_openai_p1_test.go` — the six plan tests plus a `replaysReasoning` target table, an `anthropicMetadata` table (including `map[string]string` and the empty result), and a GLM replay/no-placeholder test.
+  - `convert/convert_test.go` — updated three existing tests whose old expectations contradicted P1-7: the thinking round-trip and both reasoning-cache tests now target `deepseek-chat` through the model map.
+  - `convert/anthropic_to_openai_test.go` — updated `TestConvert_DeepSeekAdaptiveThinkingDropped` for P1-8: adaptive thinking no longer forwards `reasoning_effort`.
+- Tests / commands:
+  - RED: `go test ./convert -run 'TestP1_(UnsignedThinkingDroppedForAnthropic|ReasoningContentGatedByTargetModel|DeepSeekPlaceholderOnlyForDeepSeek|EffortRequiresThinking|MetadataWhitelist|ResponsesUnsignedThinkingAndMetadata)' -v` → six failures: unsigned thinking sent to a gpt-4 target; `gpt-4o received reasoning_content: "chain"`; non-DeepSeek placeholder; `effort forwarded without thinking: high`; metadata kept `trace`; Responses unsigned thinking.
+  - GREEN: same command → PASS; `go test ./convert -run 'TestP1_' -v` → PASS (Tasks 1-3 tests).
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `go test -race -count=1 ./...` → PASS.
+  - `go vet ./...` → clean; `git diff --check` → clean.
+- Review findings:
+  - P1-5's plan assertion type-asserts `anth.Metadata.(map[string]any)`, so the helper returns `map[string]any` even for `map[string]string` input.
+  - Four pre-existing tests asserted the old ungated behavior; they were updated rather than weakening the implementation. They now use a DeepSeek model map (thinking round-trip and reasoning-cache tests) or assert the P1-8 effort rule (adaptive thinking).
+  - `convertAnthropicAssistantMessage` still parses thinking blocks for every target but assigns `ReasoningContent` only when replay is allowed; no other content changes.
+  - No third-party dependency, registry/model-map, or same-protocol passthrough changes.
+- Deferred:
+  - Unsigned OpenAI reasoning is still replayed on the OpenAI→Anthropic response path (`convertOpenAIMessageToContent`), which the design explicitly leaves unchanged; only request-history replay is gated.
+  - `replaysReasoning`/`isDeepSeekModel` match bare model prefixes; a `provider/deepseek-*` target string is not detected. This matches the existing DeepSeek checks in the same converter.
+  - The resolved SHA is recorded by the follow-up docs commit and Task 7's status table.
+
+---
+
+### Task 4: Reasoning-model parameters and tool-stop inference
+
+**Files:**
+- Modify: `convert/types.go:219-240`
+- Modify: `convert/anthropic_to_openai.go:193-201`, `:570-590`
+- Modify: `convert/openai_to_anthropic.go:570-575`
+- Modify: `convert/stream.go:248-258`
+- Modify: `convert/stream_anthropic_to_openai.go:245-270`
+- Test: `convert/anthropic_openai_p1_test.go`
+
+**Interfaces:**
+- Produces: `func isOpenAIReasoningModel(model string) bool`
+- `isOpenAIReasoningModel` strips a `provider/` prefix and matches `o1`,
+  `o3`, `o4`, or `gpt-5` prefixes.
+
+- [x] **Step 1: Write the failing tests**
+
+```go
+func TestP1_ReasoningModelUsesMaxCompletionTokens(t *testing.T) {
+	body := `{"model":"claude","max_tokens":100,"temperature":0.5,"top_p":0.9,
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "o3-mini"})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	if oai.MaxCompletionTokens == nil || *oai.MaxCompletionTokens != 100 {
+		t.Fatalf("max_completion_tokens = %v, want 100", oai.MaxCompletionTokens)
+	}
+	if oai.MaxTokens != nil || oai.Temperature != nil || oai.TopP != nil {
+		t.Fatalf("reasoning model kept unsupported params: %s", b)
+	}
+
+	b, _ = convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "gpt-4o"})
+	_ = json.Unmarshal(b, &oai)
+	if oai.MaxTokens == nil || *oai.MaxTokens != 100 {
+		t.Fatalf("non-reasoning max_tokens = %v, want 100", oai.MaxTokens)
+	}
+	if oai.Temperature == nil || oai.TopP == nil {
+		t.Fatalf("non-reasoning sampling params dropped: %s", b)
+	}
+}
+
+func TestP1_NonStreamToolStopInference(t *testing.T) {
+	body := `{"id":"x","model":"gpt-4","choices":[{"index":0,"finish_reason":"stop",
+		"message":{"role":"assistant","tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}`
+	b, _ := convertOpenAIResponseToAnthropic([]byte(body), nil)
+	var anth AnthropicResponse
+	_ = json.Unmarshal(b, &anth)
+	if anth.StopReason == nil || *anth.StopReason != "tool_use" {
+		t.Fatalf("stop_reason = %v, want tool_use", anth.StopReason)
+	}
+
+	body = `{"id":"x","model":"gpt-4","choices":[{"index":0,"finish_reason":"content_filter",
+		"message":{"role":"assistant","tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}`
+	b, _ = convertOpenAIResponseToAnthropic([]byte(body), nil)
+	_ = json.Unmarshal(b, &anth)
+	if anth.StopReason == nil || *anth.StopReason != "end_turn" {
+		t.Fatalf("content_filter stop_reason = %v, want end_turn", anth.StopReason)
+	}
+
+	body = `{"id":"msg_1","model":"claude","stop_reason":"end_turn",
+		"content":[{"type":"tool_use","id":"a","name":"f","input":{}}]}`
+	b, _ = convertAnthropicResponseToOpenAI([]byte(body))
+	var oai OpenAIChatResponse
+	_ = json.Unmarshal(b, &oai)
+	if oai.Choices[0].FinishReason == nil || *oai.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %v, want tool_calls", oai.Choices[0].FinishReason)
+	}
+}
+
+func TestP1_StreamToolStopInference(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":null}]}`))
+	out := string(sc.HandleStreamEnd())
+	if !strings.Contains(out, `"stop_reason":"tool_use"`) {
+		t.Fatalf("OpenAI→Anthropic stop = %s", out)
+	}
+
+	c := NewAnthropicToOpenAIStreamConverter("claude")
+	_, _ = c.HandleChunk([]byte(`{"type":"message_start","message":{"id":"msg_1","model":"claude"}}`))
+	_, _ = c.HandleChunk([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"f"}}`))
+	_, _ = c.HandleChunk([]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`))
+	out = string(c.HandleStreamEnd())
+	if !strings.Contains(out, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("Anthropic→OpenAI finish = %s", out)
+	}
+}
+```
+
+- [x] **Step 2: Run tests to verify they fail**
+
+Run: `cd llm-api-converter && go test ./convert -run 'TestP1_(ReasoningModelUsesMaxCompletionTokens|NonStreamToolStopInference|StreamToolStopInference)' -v`
+
+Expected: FAIL — `max_tokens`/sampling still emitted for `o3`, stop reasons remain `end_turn`/`stop` with tools.
+
+- [x] **Step 3: Implement the mappings**
+
+- Add `isOpenAIReasoningModel`.
+- In `convertAnthropicRequestToOpenAI`, when true, set `MaxCompletionTokens`
+  and skip `MaxTokens`, `Temperature`, `TopP`.
+- Non-stream OpenAI→Anthropic: after building `anth.Content`, if it contains a
+  `tool_use` and the raw `finish_reason` is nil or `"stop"`, set
+  `StopReason = ptr("tool_use")`. Leave `content_filter` alone.
+- Non-stream Anthropic→OpenAI: if `msg.ToolCalls` is non-empty and the raw
+  `stop_reason` is nil or `"end_turn"`, set `FinishReason = ptr("tool_calls")`.
+- Stream OpenAI→Anthropic: if tools were accumulated and the raw
+  `finishReason` is empty or `"stop"`, set `stopReason = "tool_use"`; otherwise
+  map the raw reason as today.
+- Stream Anthropic→OpenAI: if `nextTool > 0` and the raw stop is empty or
+  `"end_turn"`, set the finish chunk reason to `"tool_calls"`.
+
+- [x] **Step 4: Run tests to verify they pass**
+
+Run: `cd llm-api-converter && go test ./convert -run 'TestP1_' -v`
+
+Expected: PASS.
+
+- [x] **Step 5: Run the full suite and commit**
+
+Run: `cd llm-api-converter && go test -count=1 ./... && go vet ./...`
+
+Expected: PASS and clean.
+
+```bash
+git add convert/types.go convert/anthropic_to_openai.go convert/openai_to_anthropic.go convert/stream.go convert/stream_anthropic_to_openai.go convert/anthropic_openai_p1_test.go docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p1.md
+git commit -m "fix(convert): map reasoning-model params and tool stops"
+```
+
+**Implementation record**
+
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter` @ `8d9e8d3` (`fix(convert): map reasoning-model params and tool stops`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-3.
+- Files changed:
+  - `convert/types.go` — added `isOpenAIReasoningModel`: strips a `provider/` prefix with `StripProviderPrefix`, lowercases, and matches the `o1`, `o3`, `o4`, and `gpt-5` prefixes.
+  - `convert/anthropic_to_openai.go` — `convertAnthropicRequestToOpenAI` computes the reasoning-model flag from the resolved output model; reasoning targets emit `max_completion_tokens` and omit `max_tokens`, `temperature`, and `top_p`, while all other targets keep the previous behavior. The Task 3 DeepSeek `thinking`/`reasoning_effort` gating and GLM thinking mapping are untouched. In `convertAnthropicResponseToOpenAI`, the finish reason is inferred from the raw `stop_reason` (nil or `end_turn`) plus emitted `tool_calls` before mapping; explicit reasons still go through `mapFinishReason`.
+  - `convert/openai_to_anthropic.go` — after `anth.Content` is built, a nil or `stop` raw `finish_reason` with a converted `tool_use` block sets `stop_reason: tool_use`. Added `hasAnthropicToolUse` for that check. `content_filter`, `length`, and other explicit reasons keep their existing mapping.
+  - `convert/stream.go` — `HandleStreamEnd` infers `stop_reason: tool_use` from the raw `finish_reason` being empty or `stop` when any tool call was accumulated (including calls held until stream end); explicit reasons still pass through `mapOpenAIStreamFinish`.
+  - `convert/stream_anthropic_to_openai.go` — `finish` infers `finish_reason: tool_calls` when a tool block was emitted and the raw `stop_reason` is empty or `end_turn`; `max_tokens` and other explicit reasons keep their mapping.
+  - `convert/anthropic_openai_p1_test.go` — the three plan tests plus a detection table (provider prefix, case, `o4`/`gpt-5`, non-reasoning names), a provider-prefixed reasoning-parameter test, explicit-stop preservation tests for both non-stream directions, and a stream explicit-stop test.
+- Tests / commands:
+  - RED: `go test ./convert -run 'TestP1_(ReasoningModelUsesMaxCompletionTokens|NonStreamToolStopInference|StreamToolStopInference)' -v` → build failure `undefined: isOpenAIReasoningModel`; with a temporary passthrough stub the three tests failed for the expected reasons: `max_completion_tokens = <nil>, want 100`; `stop_reason = <end_turn>, want tool_use`; OpenAI→Anthropic stream emitted `"stop_reason":"end_turn"` after a tool call. The extra tests separately showed `isOpenAIReasoningModel` returning false for `o1`/`o3`/`o4`/`gpt-5` names, sampling params retained for `openai/gpt-5`, and a nil `finish_reason` left as nil.
+  - GREEN: `go test ./convert -run 'TestP1_' -v` → PASS (all Task 1-4 tests).
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS.
+  - `go vet ./...` → clean; `gofmt -l` on the six changed files → clean; `git diff --check` → clean.
+- Review findings:
+  - The inference reads the raw reason before mapping, as required, so `content_filter` and `length`/`max_tokens` are never rewritten; the explicit-stop tests cover both directions.
+  - Held tool calls are already present in `toolCallByIndex` (the map is only cleared for `heldTools`), so the stream inference naturally counts them; tool calls skipped by the declared-tools restriction are absent and therefore do not force a tool stop.
+  - Reasoning detection uses the resolved output model, not the client model, so a Claude request routed to `o3-mini` gets reasoning parameters.
+  - Task 3's effort gating and GLM thinking mapping were preserved; no dependency, registry/model-map, routing, or same-protocol passthrough changes. No pre-existing test contradicted P1-6/P1-11, so none needed updating.
+- Deferred:
+  - Detection is prefix-based by design, so a hypothetical `gpt-5-chat-*` or `o10` name would be treated as a reasoning model and lose sampling parameters; no such model is in use.
+  - A provider that sends a literal empty-string non-stream `finish_reason` is treated as an explicit reason (the plan and design only specify nil/`stop`); stream handling does treat empty as missing because the accumulated reason is a plain string.
+  - The Anthropic→OpenAI stream inference counts a tool synthesized from a bare `input_json_delta`, because the converter emits a tool-call delta for it.
+  - `gofmt -l convert/` still lists the same eight pre-existing unformatted files noted in Task 1; this task did not touch them.
+  - The resolved SHA is recorded by the follow-up docs commit, matching Tasks 1-3.
+
+---
+
+### Task 5: URL images and structured output
+
+**Files:**
+- Modify: `convert/types.go:11-35`, `:130-133`, `:310-314`
+- Modify: `convert/openai_to_anthropic.go:215-300`, `:419-453`
+- Modify: `convert/anthropic_to_openai.go:193-222`, `:340-365`, `:423-450`
+- Test: `convert/anthropic_openai_p1_test.go`
+
+**Interfaces:**
+- Adds `OpenAIResponseFormat`, `OpenAIJSONSchema`, `AnthropicOutputFormat`,
+  `AnthropicImageSource.URL`.
+- Adds `OpenAIChatRequest.ResponseFormat *OpenAIResponseFormat` and
+  `AnthropicOutputConfig.Format *AnthropicOutputFormat`.
+
+- [x] **Step 1: Write the failing tests**
+
+```go
+func TestP1_OpenAIImageURLPreserved(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":[
+		{"type":"text","text":"see"},{"type":"image_url","image_url":{"url":"https://example.com/cat.png"}}]}]}`
+	b, _ := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 10})
+	var anth AnthropicRequest
+	_ = json.Unmarshal(b, &anth)
+	img := anth.Messages[0].Content[1]
+	if img.Type != "image" || img.Source == nil || img.Source.Type != "url" || img.Source.URL != "https://example.com/cat.png" {
+		t.Fatalf("image = %+v", img)
+	}
+}
+
+func TestP1_AnthropicURLImagePreserved(t *testing.T) {
+	body := `{"model":"claude","max_tokens":10,"messages":[{"role":"user","content":[
+		{"type":"text","text":"see"},{"type":"image","source":{"type":"url","url":"https://example.com/cat.png"}}]}]}`
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "gpt-4o"})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	parts, _ := oai.Messages[0].Content.([]any)
+	if len(parts) != 2 {
+		t.Fatalf("parts = %+v", parts)
+	}
+	img, _ := parts[1].(map[string]any)
+	imageURL, _ := img["image_url"].(map[string]any)
+	if imageURL["url"] != "https://example.com/cat.png" {
+		t.Fatalf("image part = %+v", img)
+	}
+}
+
+func TestP1_StructuredOutputJSONSchemaToAnthropic(t *testing.T) {
+	body := `{"model":"gpt-4","response_format":{"type":"json_schema","json_schema":{
+		"name":"out","schema":{"type":"object","properties":{"a":{"type":"string"}}}}},
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 10})
+	var anth AnthropicRequest
+	_ = json.Unmarshal(b, &anth)
+	if anth.OutputConfig == nil || anth.OutputConfig.Format == nil || anth.OutputConfig.Format.Type != "json_schema" {
+		t.Fatalf("output_config = %+v", anth.OutputConfig)
+	}
+	schema, _ := anth.OutputConfig.Format.Schema.(map[string]any)
+	if schema["type"] != "object" {
+		t.Fatalf("schema = %+v", schema)
+	}
+}
+
+func TestP1_AnthropicStructuredOutputToOpenAI(t *testing.T) {
+	body := `{"model":"claude","max_tokens":10,"output_config":{"format":{
+		"type":"json_schema","schema":{"type":"object","properties":{"a":{"type":"string"}}}}},
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "gpt-4o"})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	if oai.ResponseFormat == nil || oai.ResponseFormat.Type != "json_schema" || oai.ResponseFormat.JSONSchema == nil {
+		t.Fatalf("response_format = %+v", oai.ResponseFormat)
+	}
+	if oai.ResponseFormat.JSONSchema.Name != "response" {
+		t.Fatalf("json_schema.name = %q, want response", oai.ResponseFormat.JSONSchema.Name)
+	}
+}
+
+func TestP1_JSONObjectFallsBackToInstruction(t *testing.T) {
+	body := `{"model":"gpt-4","response_format":{"type":"json_object"},
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 10})
+	var anth AnthropicRequest
+	_ = json.Unmarshal(b, &anth)
+	if anth.OutputConfig != nil && anth.OutputConfig.Format != nil {
+		t.Fatalf("json_object emitted a schema: %+v", anth.OutputConfig)
+	}
+	found := false
+	for _, block := range anth.System {
+		found = found || strings.Contains(strings.ToLower(block.Text), "json")
+	}
+	if !found {
+		t.Fatalf("no JSON instruction in system: %+v", anth.System)
+	}
+}
+```
+
+- [x] **Step 2: Run tests to verify they fail**
+
+Run: `cd llm-api-converter && go test ./convert -run 'TestP1_(OpenAIImageURLPreserved|AnthropicURLImagePreserved|StructuredOutputJSONSchemaToAnthropic|AnthropicStructuredOutputToOpenAI|JSONObjectFallsBackToInstruction)' -v`
+
+Expected: FAIL — URL images are dropped; `response_format`/`output_config.format` are not modeled.
+
+- [x] **Step 3: Implement the mappings**
+
+- Add `URL string json:"url,omitempty"` to `AnthropicImageSource`.
+- `convertImageURL`: for non-data URLs return
+  `AnthropicContent{Type:"image", Source:&AnthropicImageSource{Type:"url", URL:url}}`.
+- Anthropic→OpenAI user content: for `block.Source.Type == "url"` append
+  `{"type":"image_url","image_url":{"url":...}}`. Reuse for tool-result images.
+- Add the response-format types and fields.
+- OpenAI→Anthropic: `json_schema` with a non-empty object schema sets
+  `OutputConfig.Format`; `json_object` appends
+  `"Respond with a JSON object only."` to the system texts.
+- Anthropic→OpenAI: `output_config.format.type == "json_schema"` with a schema
+  sets `ResponseFormat` with name `"response"`; a format without a schema
+  appends the same JSON instruction to the system message.
+- Merge the structured-output instruction with the existing tool-choice
+  instruction using `"\n\n"`.
+
+- [x] **Step 4: Run tests to verify they pass**
+
+Run: `cd llm-api-converter && go test ./convert -run 'TestP1_' -v`
+
+Expected: PASS.
+
+- [x] **Step 5: Run the full suite and commit**
+
+Run: `cd llm-api-converter && go test -count=1 ./... && go vet ./...`
+
+Expected: PASS and clean.
+
+```bash
+git add convert/types.go convert/openai_to_anthropic.go convert/anthropic_to_openai.go convert/anthropic_openai_p1_test.go docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p1.md
+git commit -m "fix(convert): preserve image URLs and structured output"
+```
+
+**Implementation record**
+
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter` @ `1ee9c9f` (`fix(convert): preserve image URLs and structured output`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, the updated existing test, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-4.
+- Files changed:
+  - `convert/types.go` — added `OpenAIChatRequest.ResponseFormat`, `OpenAIResponseFormat`, `OpenAIJSONSchema`, `AnthropicOutputConfig.Format`, `AnthropicOutputFormat`, `AnthropicImageSource.URL`, the shared `jsonOutputInstruction` string, and `jsonSchemaValue` (rejects nil/empty-object schemas). The `media_type`/`data` image-source tags became `omitempty` so URL sources do not serialize empty base64 fields.
+  - `convert/openai_to_anthropic.go` — `convertImageURL` now turns non-data `image_url` values into `AnthropicImageSource{Type:"url"}` while base64 data URIs keep the existing path. `convertOpenAIRequestToAnthropic` maps `json_schema` with a non-empty schema to `output_config.format`, falls back to the JSON instruction for `json_object` and schema-less `json_schema`, and appends that instruction to the collected system texts (never a second system block). Added `openAIResponseFormatToAnthropic`.
+  - `convert/anthropic_to_openai.go` — `convertAnthropicRequestToOpenAI` maps `output_config.format.type == "json_schema"` with a schema to `response_format` (`json_schema.name = "response"`), falls back to the JSON instruction otherwise, and joins it to the DeepSeek tool-choice instruction with `"\n\n"` before the existing single-system-message logic. Normal user images now use `anthropicImageURLPart` (base64 or URL), and JSON-decoded tool-result images (`imageURLPart`) accept URL sources; `dataURIImagePart` delegates to `imageURLPartFromURL`.
+  - `convert/anthropic_openai_p1_test.go` — the five plan tests plus a schema-less `json_schema` fallback test and a tool-choice + structured-output merge test.
+  - `convert/anthropic_to_openai_test.go` — updated `TestConvert_ToolResultContentAlwaysString`: a tool-result URL image is now forwarded as an `image_url` part instead of `[image omitted]`, and an unsupported source type still produces the placeholder.
+- Tests / commands:
+  - RED: `go test ./convert -run 'TestP1_(OpenAIImageURLPreserved|AnthropicURLImagePreserved|StructuredOutputJSONSchemaToAnthropic|AnthropicStructuredOutputToOpenAI|JSONObjectFallsBackToInstruction)' -v` → build failure: `img.Source.URL undefined`, `anth.OutputConfig.Format undefined`, `oai.ResponseFormat undefined`. With the new fields present but no mapping: `TestP1_OpenAIImageURLPreserved` panicked with `index out of range [1] with length 1` (URL image dropped); `AnthropicURLImagePreserved` → `parts = []`; `StructuredOutputJSONSchemaToAnthropic` → `output_config = <nil>`; `AnthropicStructuredOutputToOpenAI` → `response_format = <nil>`; `JSONObjectFallsBackToInstruction` → `no JSON instruction in system: []`.
+  - GREEN: same command → PASS (5/5); `TestP1_(JSONSchemaWithoutSchemaFallsBackToInstruction|StructuredInstructionMergesWithToolChoice)` → PASS; full `go test ./convert -run 'TestP1_' -v` → PASS (38 top-level tests, 48 including subtests).
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS.
+  - `go vet ./...` → clean; `gofmt -l` on the changed files and `git diff --check` → clean.
+- Review findings:
+  - Task 4's `isOpenAIReasoningModel` branch is untouched; `response_format` is set independently, so reasoning targets still get `max_completion_tokens` and lose sampling params.
+  - A valid schema never also appends the JSON instruction, and no empty `output_config`/`response_format` is emitted; schema-less `json_schema` and `json_object` both use the exact `"Respond with a JSON object only."` text.
+  - The Anthropic→OpenAI instruction is merged into `extraInstruction` with `"\n\n"` before the existing system-message branch, so an existing system text produces one system message, not two.
+  - URL images are preserved in normal user content and in tool-result image arrays; base64 conversion is unchanged for valid sources. The only existing expectation that contradicted P1-9 was the tool-result URL case, which was updated.
+  - No dependency, registry/model-map, routing, passthrough, or core-module changes.
+- Deferred:
+  - `OpenAIJSONSchema.Strict` is parsed but not forwarded: Anthropic `output_config.format` has no strict equivalent.
+  - Anthropic `output_config.format` types other than `json_schema` are left untouched because no other type is currently defined.
+  - Non-`data:` OpenAI image URLs are passed through without scheme validation; the converter never fetches them.
+  - The resolved SHA is recorded by the follow-up docs commit, matching Tasks 1-4.
+
+---
+
+### Task 6: Stream errors and `content_block_start` payloads
+
+**Files:**
+- Modify: `convert/types.go:491-498`
+- Modify: `convert/stream.go:112-127`, `:185-285`
+- Modify: `convert/stream_anthropic_to_openai.go:16-45`, `:66-70`, `:110-170`, `:194-206`
+- Modify: `convert/convert.go:1011-1027`, `:1143-1154`
+- Modify: `engine/engine.go:29-35`, `:95-110`
+- Modify: `rewriter/server.go:97-117`
+- Test: `convert/anthropic_openai_p1_test.go`, `engine/engine_test.go`, `rewriter/server_test.go`
+
+**Interfaces:**
+- Adds `OpenAIStreamError{Type, Message, Code string}` and
+  `OpenAIStreamChunk.Error *OpenAIStreamError`.
+- Adds `engine.Meta.StreamError string`.
+- `HandleSSEEvent` end phase emits `EmitError` when `opts.ErrorMsg` is set and
+  the handler is not a `*PassthroughStreamHandler`.
+- Anthropic→OpenAI `content_block_start` consumes `text`, `thinking`, and
+  `input`.
+
+- [x] **Step 1: Write the failing tests**
+
+```go
+func TestP1_OpenAIStreamErrorChunk(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	out, err := sc.HandleChunk([]byte(`{"error":{"type":"server_error","message":"boom \"x\""}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `event: error`) || !strings.Contains(string(out), `boom \"x\"`) {
+		t.Fatalf("error chunk output = %s", out)
+	}
+	if end := sc.HandleStreamEnd(); end != nil {
+		t.Fatalf("normal stop after error: %s", end)
+	}
+}
+
+func TestP1_AnthropicStreamErrorChunk(t *testing.T) {
+	c := NewAnthropicToOpenAIStreamConverter("claude")
+	out, _ := c.HandleChunk([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"boom"}}`))
+	if !strings.Contains(string(out), `"error"`) || !strings.Contains(string(out), `boom`) {
+		t.Fatalf("error output = %s", out)
+	}
+	if end := c.HandleStreamEnd(); end != nil {
+		t.Fatalf("normal finish after error: %s", end)
+	}
+}
+
+func TestP1_EndPhaseStreamErrorEmitsError(t *testing.T) {
+	opts := &ConvertOptions{
+		SessionStore: NewSessionStore(),
+		Direction:    "response",
+		URI:          "/v1/messages",
+		SID:          "s1",
+	}
+	start := []byte(`data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`)
+	if _, err := HandleSSEEvent("s1", "start", 0, start, opts); err != nil {
+		t.Fatal(err)
+	}
+	opts.ErrorMsg = "upstream reset"
+	out, _ := HandleSSEEvent("s1", "end", 0, nil, opts)
+	if !strings.Contains(string(out), `event: error`) || !strings.Contains(string(out), `upstream reset`) {
+		t.Fatalf("end error = %s", out)
+	}
+	if strings.Contains(string(out), `message_stop`) {
+		t.Fatalf("normal stop after error: %s", out)
+	}
+}
+
+func TestP1_PassthroughEndPhaseIgnoresError(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("s2", &Session{StreamHandler: NewPassthroughStreamHandler("claude", ProtocolAnthropic, false)})
+	opts := &ConvertOptions{SessionStore: store, ErrorMsg: "upstream reset"}
+	out, _ := HandleSSEEvent("s2", "end", 0, nil, opts)
+	if out != nil {
+		t.Fatalf("passthrough emitted %s", out)
+	}
+}
+
+func TestP1_AnthropicBlockStartFields(t *testing.T) {
+	c := NewAnthropicToOpenAIStreamConverter("claude")
+	out, _ := c.HandleChunk([]byte(`{"type":"message_start","message":{"id":"msg_1","model":"claude"}}`))
+	out2, _ := c.HandleChunk([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hello"}}`))
+	out3, _ := c.HandleChunk([]byte(`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"a","name":"f","input":{"x":1}}}`))
+	out4, _ := c.HandleChunk([]byte(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"y\":2}"}}`))
+	all := string(out) + string(out2) + string(out3) + string(out4)
+	if !strings.Contains(all, `"content":"hello"`) {
+		t.Fatalf("start text missing: %s", all)
+	}
+	if !strings.Contains(all, `"arguments":"{\"x\":1}"`) {
+		t.Fatalf("start tool input missing: %s", all)
+	}
+	if strings.Contains(all, `{\"y\":2}`) {
+		t.Fatalf("delta duplicated start input: %s", all)
+	}
+}
+```
+
+Add to `engine/engine_test.go`:
+
+```go
+func TestRewriteEndPhaseStreamError(t *testing.T) {
+	e := New(Options{Model: "claude", MaxTokens: 8192})
+	start := []byte(`data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`)
+	if _, err := e.Rewrite(context.Background(), start, Meta{
+		Direction: "response", URI: "/v1/messages", SID: "s1", SSEPhase: "start",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := e.Rewrite(context.Background(), nil, Meta{
+		Direction: "response", URI: "/v1/messages", SID: "s1", SSEPhase: "end",
+		StreamError: "upstream reset",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(res.Data), "event: error") {
+		t.Fatalf("end phase = %s", res.Data)
+	}
+}
+```
+
+Add to `rewriter/server_test.go`:
+
+```go
+func TestMetaFromStreamError(t *testing.T) {
+	m := metaFrom([]byte(`{"stream_error":"upstream reset","sse_phase":"end"}`))
+	if m.StreamError != "upstream reset" {
+		t.Fatalf("stream error = %q", m.StreamError)
+	}
+}
+```
+
+- [x] **Step 2: Run tests to verify they fail**
+
+Run: `cd llm-api-converter && go test ./convert ./engine ./rewriter -run 'TestP1_(OpenAIStreamErrorChunk|AnthropicStreamErrorChunk|EndPhaseStreamErrorEmitsError|PassthroughEndPhaseIgnoresError|AnthropicBlockStartFields)|TestRewriteEndPhaseStreamError|TestMetaFromStreamError' -v`
+
+Expected: FAIL/compile error — `OpenAIStreamChunk.Error`, `StreamError`, and start payload fields do not exist; error chunks are swallowed.
+
+- [x] **Step 3: Implement the error and start-field handling**
+
+- Add `OpenAIStreamError` and `OpenAIStreamChunk.Error`.
+- In `StreamConverter.HandleChunk`, check `chunk.Error` before the
+  `len(chunk.Choices) == 0` branch: emit `sc.EmitError(message)`, set
+  `sc.finalized = true`, return the event. Default the message to
+  `"upstream stream error"` when empty.
+- In `AnthropicToOpenAIStreamConverter.HandleChunk` `case "error"`, set
+  `c.finished = true` after appending the error event.
+- Add `StreamError` to `engine.Meta`, parse `stream_error` in `metaFrom`, and
+  set `ErrorMsg: meta.StreamError` in the `ConvertOptions` built by
+  `Engine.Rewrite`.
+- In `HandleSSEEvent` end phase and the Responses end phase, if
+  `opts.ErrorMsg != ""`:
+  - passthrough handler → return nil;
+  - otherwise → return `handler.EmitError(opts.ErrorMsg)`.
+- Extend the Anthropic start event with `Text`, `Thinking`, `Signature`, and
+  `Input json.RawMessage`. On `content_block_start`:
+  - `text` → emit a text delta;
+  - `thinking` → emit a `reasoning_content` delta;
+  - `tool_use` → emit the start chunk; when `Input` is non-empty and not
+    `{}`/`null`, set `Function.Arguments` to the raw input and mark that block
+    complete. Skip later `input_json_delta` events for that block.
+
+- [x] **Step 4: Run tests to verify they pass**
+
+Run: `cd llm-api-converter && go test ./convert ./engine ./rewriter -run 'TestP1_|TestRewriteEndPhaseStreamError|TestMetaFromStreamError' -v`
+
+Expected: PASS.
+
+- [x] **Step 5: Run the full suite and commit**
+
+Run: `cd llm-api-converter && go test -count=1 ./... && go vet ./...`
+
+Expected: PASS and clean.
+
+```bash
+git add convert/types.go convert/stream.go convert/stream_anthropic_to_openai.go convert/convert.go engine/engine.go rewriter/server.go convert/anthropic_openai_p1_test.go engine/engine_test.go rewriter/server_test.go docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p1.md
+git commit -m "fix(convert): surface stream errors and block-start payloads"
+```
+
+**Implementation record**
+
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter` @ `0f53577` (`fix(convert): surface stream errors and block-start payloads`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-5.
+- Files changed:
+  - `convert/types.go` — added `OpenAIStreamError{Type, Message, Code}` and `OpenAIStreamChunk.Error`.
+  - `convert/stream.go` — `StreamConverter.HandleChunk` checks `chunk.Error` before the no-choices branch: it returns the JSON-safe `EmitError` event (default message `upstream stream error`) and sets `finalized`, so `HandleStreamEnd` emits no `message_delta`/`message_stop`. `SetInterrupted` is not used on this path.
+  - `convert/stream_anthropic_to_openai.go` — the start event now decodes `content_block.text`, `thinking`, `signature`, and `input`. `content_block_start` emits text as a content delta, thinking as `reasoning_content`, and forwards a complete non-empty/non-`{}`/non-`null` tool input as the call's `arguments` while marking that block complete so later `input_json_delta` events are ignored; empty input keeps the delta flow. The `error` case sets `finished` after emitting the OpenAI error object, suppressing the normal finish chunk and `[DONE]`.
+  - `convert/convert.go` — `HandleSSEEvent` and `handleResponsesSSEEvent` end phases return `handler.EmitError(opts.ErrorMsg)` when error metadata is present instead of synthesizing the normal close. The original implementation dispatched this for any non-passthrough handler; fix round 1 (`2de9c52`) scoped the dispatch by concrete handler type to `*StreamConverter`/`*AnthropicToOpenAIStreamConverter` and `*AnthropicStreamConverter`/`*ResponsesStreamConverter`, so passthrough and Gemini handlers keep their previous behavior. The fix-round record below supersedes this bullet.
+  - `engine/engine.go` — added `Meta.StreamError` and set `ConvertOptions.ErrorMsg` from it in `Engine.Rewrite`.
+  - `rewriter/server.go` — `metaFrom` parses `stream_error`.
+  - `convert/anthropic_openai_p1_test.go`, `engine/engine_test.go`, `rewriter/server_test.go` — the plan tests plus regression tests for block-start thinking, empty block-start tool input, and the Responses end-phase error.
+- Tests / commands:
+  - RED: `go test ./convert ./engine ./rewriter -run '<plan pattern>' -v` → `convert` failed: OpenAI error chunk returned no output and the end emitted a normal close; Anthropic error chunk still emitted the normal finish; the end-phase error emitted `content_block_start`/`message_stop`; block-start text and tool input were missing; block-start thinking was missing. `engine`/`rewriter` failed to build: `engine.Meta has no field StreamError`.
+  - GREEN: same targeted command → PASS; `go test ./convert ./engine ./rewriter -run 'TestP1_|TestRewriteEndPhaseStreamError|TestMetaFromStreamError'` → PASS (48 top-level tests).
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS.
+  - `go vet ./...` → clean; `git diff --check` → clean.
+- Review findings:
+  - Error chunks and end-phase `stream_error` are both terminal: they emit one error event and suppress the normal close, and neither path calls `SetInterrupted()`.
+  - Same-protocol passthrough is unchanged: its end phase still returns nil, because `PassthroughStreamHandler.EmitError` always emits an Anthropic frame.
+  - A complete `tool_use.input` in `content_block_start` is emitted once as `arguments`; later `input_json_delta` events for that block are dropped, and the normal `input:{}` + deltas flow is untouched.
+  - Error messages stay JSON-safe because both converters build error payloads with `json.Marshal`.
+  - No registry/model-map, routing, dependency, `core/`, or other-module changes.
+- Deferred:
+  - `content_block.signature` is decoded but dropped, because OpenAI Chat has no equivalent field (signatures are already lossy in this direction).
+  - A relay that sends both start-event text and a following `text_delta` would produce duplicated text; the spec requires emitting start-event text immediately, and real relays use one or the other.
+  - The resolved SHA is recorded by the follow-up docs commit, matching Tasks 1-5.
+
+**Fix round 1** (post-review)
+
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter` @ `2de9c52` (`fix(convert): make stream errors terminal and scope end-phase dispatch`, branch `feat/anthropic-openai-p1`). This docs commit records that SHA.
+- Findings fixed:
+  - Important 1 — `AnthropicToOpenAIStreamConverter.EmitError` is now terminal: it returns nil and keeps the stream finished once a normal `message_stop` or an upstream `error` event has already ended it. `StreamConverter.EmitError` also sets `finalized` itself, so it is terminal without relying on its caller.
+  - Important 2 — end-phase `stream_error` dispatch is scoped by concrete handler type. `HandleSSEEvent` routes only `*StreamConverter` and `*AnthropicToOpenAIStreamConverter`; `handleResponsesSSEEvent` routes only `*AnthropicStreamConverter` and `*ResponsesStreamConverter`. `*PassthroughStreamHandler` and the Gemini converters keep the previous `HandleStreamEnd()`/nil behavior, so `GeminiToAnthropicStreamConverter`'s non-JSON-safe `EmitError` is no longer reachable from the end phase.
+- Files changed: `convert/stream_anthropic_to_openai.go`, `convert/stream.go`, `convert/convert.go`, `convert/anthropic_openai_p1_test.go`.
+- Tests / commands:
+  - RED: `go test ./convert -run 'TestP1_(AnthropicToOpenAIEmitErrorAfterFinish|AnthropicErrorThenEndPhaseOneError|GeminiEndPhaseStreamErrorNotDispatched|StreamConverterEmitErrorIsTerminal)' -v` → all four failed: an error was emitted after `message_stop`; two error objects were produced after an upstream error event; the Gemini handler emitted `event: error` with malformed JSON (`"upstream "reset""`); a second `EmitError`/`HandleStreamEnd` still produced events.
+  - GREEN: same command → PASS (4/4).
+  - `go test ./convert ./engine ./rewriter -run 'TestP1_|TestRewriteEndPhaseStreamError|TestMetaFromStreamError'` → PASS.
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS.
+  - `go vet ./...` → clean; `git diff --check` → clean.
+- Review findings: the fix matches the review ruling; the four new tests cover terminality in both directions and the Gemini exclusion. No new concerns.
+- Deferred: none added by this round.
+
+---
+
+### Task 7: Verification, documentation, and memory
+
+**Files:**
+- Modify: `docs/reviews/2026-11-06-anthropic-openai-chat-review.md`
+- Modify: `docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p1.md`
+- Modify: `/root/code/go-gost/.memory/notes/llm-api-converter-magpie-eval.md`
+- Modify: `/root/code/go-gost/.memory/MEMORY.md` (leave uncommitted if unrelated edits remain)
+
+**Interfaces:**
+- Consumes all previous task commits.
+
+- [x] **Step 1: Run the full verification suite**
+
+Run:
+
+```sh
+cd llm-api-converter
+go test -count=1 ./...
+CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter
+go vet ./...
+git diff --check
+```
+
+Expected: all PASS; `git diff --check` clean.
+
+- [x] **Step 2: Update the review document**
+
+Add a `P1 Status` table after the P0 status table with 15 rows:
+
+| ID | Status | Commit |
+|---|---|---|
+| P1-1 … P1-15 | fixed | the four-to-six task SHAs |
+
+Update the header status to `P0 and P1 fixed and verified; P2 findings remain
+open.` Add one line with the verification commands and the final HEAD SHA.
+
+- [x] **Step 3: Fill all Implementation records**
+
+Ensure Tasks 1–6 have date, repository/commit, files, commands/results,
+review findings, and deferred items. Tick completed checkboxes. Add a
+`Post-review fix wave` record if the final review produced one.
+
+- [x] **Step 4: Update the memory note**
+
+In `/root/code/go-gost/.memory/notes/llm-api-converter-magpie-eval.md`, change
+the 2026-11-06 observation to say P1 is also fixed and list the task SHAs.
+Update the `MEMORY.md` index line path/status. Stage only the note; if
+`MEMORY.md` still has unrelated edits, leave it uncommitted and record that.
+
+- [x] **Step 5: Commit docs and memory**
+
+```bash
+cd /root/code/go-gost/llm-api-converter
+git add docs/reviews/2026-11-06-anthropic-openai-chat-review.md docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p1.md
+git commit -m "docs(convert): record P1 review status"
+
+cd /root/code/go-gost
+git add .memory/notes/llm-api-converter-magpie-eval.md
+git commit -m "docs(memory): record llm-api-converter P1 review"
+```
+
+Record both repository SHAs in the Task 7 Implementation record. If a commit
+cannot contain its own SHA, use the same follow-up docs commit pattern as P0.
+
+**Implementation record**
+
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit:
+  - `llm-api-converter` @ `883896f` (`docs(convert): record P1 review status`, branch `feat/anthropic-openai-p1`).
+  - `/root/code/go-gost` @ `499831b` (`docs(memory): record llm-api-converter P1 review`).
+  - A commit cannot contain its own SHA; both SHAs were added by the follow-up docs commit `docs(convert): record task 7 commit SHAs` in `llm-api-converter`, matching the P0 pattern.
+- Files changed:
+  - `docs/reviews/2026-11-06-anthropic-openai-chat-review.md` — header status changed to “P0 and P1 fixed and verified; P2 findings remain open”; added the `P1 Status` table with P1-1…P1-15 as fixed and the task SHAs (`e534397`, `7620613`, `d2ec345`, `8d9e8d3`, `1ee9c9f`, `0f53577`, fix round `2de9c52`); added the verification commands with the verified HEAD `40e70e9`; updated the P0 note and Follow-up section to include the P1 plan and keep only P2 open.
+  - `docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p1.md` — ticked the completed Task 7 checkboxes, filled this record, and corrected the Task 6 `convert/convert.go` bullet that still described the unscoped end-phase `handler.EmitError` dispatch; the fix-round record supersedes it.
+  - `/root/code/go-gost/.memory/notes/llm-api-converter-magpie-eval.md` — the 2026-11-06 observation now records that P1 is fixed, lists the task SHAs and fix round, and references the review and P1 plan paths.
+  - `/root/code/go-gost/.memory/MEMORY.md` — updated the `llm-api-converter` index line to include P1; left uncommitted because the file already had unrelated edits.
+- Tests / commands:
+  - `cd llm-api-converter && go test -count=1 ./...` → PASS: `convert` 0.047s, `engine` 0.004s, `rewriter` 0.009s, `tests/e2e` 2.377s; `llm-api-converter` and `cmd` have no test files.
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS: `convert` 1.224s, `engine` 1.018s, `rewriter` 1.031s.
+  - `go vet ./...` → clean.
+  - `git diff --check` → clean.
+  - All commands ran at HEAD `40e70e9` (`feat/anthropic-openai-p1`).
+- Review findings:
+  - No production code or tests were changed in this task; the suite result matches the Task 6 fix round.
+  - P1-12 and P1-15 carry both the implementation commit `0f53577` and the post-review fix round `2de9c52`; the status table records both.
+  - All P1 findings map to a merged task commit; P2 findings remain open by design.
+  - The memory note is committed separately in `/root/code/go-gost`; `MEMORY.md` is intentionally uncommitted to avoid sweeping unrelated edits into the memory commit.
+- Deferred:
+  - P2 findings from the review remain open; no task in this plan covers them.
+  - The resolved docs and memory SHAs are recorded by the follow-up docs commit because a commit cannot contain its own SHA.
+
+---
+
+## Self-Review Notes
+
+- The plan covers every P1 finding from the review: P1-1/P1-13/P1-14 in Task 1,
+  P1-2/P1-3 in Task 2, P1-4/P1-5/P1-7/P1-8 in Task 3, P1-6/P1-11 in Task 4,
+  P1-9/P1-10 in Task 5, P1-12/P1-15 in Task 6.
+- The builder-check rulings are reflected: tool results first, trailing open
+  calls closed, passthrough error guard, raw-reason stop inference, Responses
+  shared helpers, and `provider/`-prefix stripping.
+- All new helper names used by later tasks are defined in the `Interfaces`
+  blocks.
+
+---
+
+## Final review fix wave
+
+The final whole-branch review of `feat/anthropic-openai-p1` returned **With
+fixes** at head `68dd7c3`: one Critical and four Important findings.
+
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit:
+  - `llm-api-converter` @ `3425a4e` (`fix(convert): reject truncated tool streams and repair histories`, branch `feat/anthropic-openai-p1`) — code and tests.
+  - The docs commit on the same branch carries this record and the review-doc corrections; its SHA is recorded in the final fix report because a commit cannot contain its own SHA.
+- Files changed:
+  - `convert/stream.go` — `HandleStreamEnd` validates every accumulated tool call (open and held) before the normal close. Empty or whitespace-only arguments are complete; anything else must parse as a JSON object, otherwise the stream returns a terminal `event: error`. An interrupted stream with tool calls returns an error too, leaving the `[stream interrupted]` marker only for no-tool streams. Added `streamToolArgsComplete`.
+  - `convert/stream_anthropic_to_openai.go` — accumulates `input_json_delta` arguments per Anthropic block in a new `toolArgs` map, including a complete start-event input, and validates them in `finish()`. An incomplete block returns only the terminal OpenAI error chunk, with no finish chunk and no `[DONE]`. Added `hasIncompleteToolArgs`.
+  - `convert/message_normalize.go` — merges consecutive same-role messages before tool-pair repair, so adjacent assistant tool-call turns keep their real results instead of synthesizing one for the earlier turn. After the final merge, prepends a minimal user text turn when the history starts with an assistant turn.
+  - `convert/openai_to_anthropic.go` — `convertAssistantContent` and `convertOpenAIMessageToContent` synthesize a `tool_use.id` with `ensureToolID("")` when a legacy `function_call` has none, so the normalizer can pair a synthetic result.
+  - `convert/stream_responses.go` — `ResponsesStreamConverter.HandleChunk` checks `chunk.Error` before the no-choices branch and returns `EmitError`, so an OpenAI error chunk becomes `response.failed` instead of a completed response.
+  - `convert/stream_anthropic.go` — `AnthropicStreamConverter.HandleChunk` handles `type: "error"` through `EmitError`; `isAnthropicStreamEvent` accepts `error`.
+  - `convert/detect.go` — `detectSource` treats a `type: "error"` payload as an Anthropic stream event, so an error as the first event selects the Anthropic converter.
+  - `convert/anthropic_openai_p1_test.go` — new tests `TestP1_TruncatedToolStreamErrors`, `TestP1_CompleteToolStreamsStillInferToolStop`, `TestP1_InterruptedToolStreamErrors`, `TestP1_AssistantFirstHistoryGetsUserTurn`, `TestP1_AdjacentAssistantToolCallsMergeBeforeRepair`, `TestP1_ResponsesErrorEventFromOpenAIChunk`, `TestP1_ResponsesErrorEventFromAnthropicStream`, `TestP1_AnthropicErrorEventDetection`, `TestP1_ResponsesErrorFirstEventSelectsAnthropicConverter`, and `TestP1_LegacyFunctionCallGetsToolID`; updated the assistant-first expectations in `TestP1_SyntheticAndOrphanResultText`, `TestP1_UserRunKeepsResultsFirst`, and `TestP1_UnsignedThinkingDroppedForAnthropic`.
+  - `convert/convert_test.go` — `TestConvert_FunctionCallToToolUse` now asserts a non-empty `tool_use.id`, the trailing synthetic user turn, and a matching `tool_result`.
+- Tests / commands:
+  - RED: `go test -count=1 ./convert -run '<final-wave tests>' -v` → a truncated OpenAI stream ended with `"stop_reason":"tool_use"` and `message_stop`; an interrupted tool stream emitted `[stream interrupted]`, a tool stop, and `message_stop`; an assistant-first history produced one message; adjacent assistant turns produced five messages with a synthetic `"Tool result missing."` and the real `ra` demoted to text; the Responses error chunk and Anthropic error event produced no output; `isAnthropicStreamEvent(error)` was false; the legacy `function_call` produced a `tool_use` without an id; the three updated normalizer tests failed on their old counts and indices.
+  - GREEN: the same targeted command → PASS (including all subtests). `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS.
+  - `go vet ./...` → clean; `git diff --check` → clean.
+- Findings fixed:
+  - Critical 1 — a truncated stream (partial arguments plus a clean EOF) now emits an error in both directions and never a normal tool stop; empty/no-argument calls remain complete and still infer `tool_use`/`tool_calls`.
+  - Important 2 — assistant-first histories get a prepended minimal user turn.
+  - Important 3 — adjacent assistant tool-call messages are merged before repair, so later real results stay `tool_result` blocks.
+  - Important 4 — an OpenAI error chunk and an Anthropic `error` event both produce `response.failed` and suppress `response.completed`; an error first event selects the Anthropic converter.
+  - Important 5 — legacy `function_call` histories get a synthesized `tool_use.id` and a matching synthetic `tool_result`.
+- Deferred:
+  - P2 findings remain open; this wave only addressed the final-review findings above.
+  - The Anthropic→OpenAI half of `TestP1_TruncatedToolStreamErrors` follows the OpenAI→Anthropic half, so its RED capture stopped at the first failure; the code path is covered by the GREEN run.
+  - `isAnthropicStreamEvent`/`detectSource` now classify any `type: "error"` payload as Anthropic, including an OpenAI Responses error event that reuses that type. Such an event is handled by the Anthropic converter, still fails the response, and uses the default message when `error.message` is absent.
+  - `anthropicToolStartInput` still treats any non-`{}`/`null` start input, including malformed JSON, as complete; unchanged from the P1 behaviour and outside this wave.
+
+---
+
+## Post-final-review regression fix
+
+The final scoped re-review of `feat/anthropic-openai-p1` found one new
+Important regression introduced by the final fix wave: `detectSource` now
+classifies every `{"type":"error"}` body as Anthropic, including non-stream
+bodies. `Convert` then dispatched to `convertAnthropicResponseToOpenAI`, which
+ignores `error` and emitted an empty successful ChatCompletion.
+
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit:
+  - `llm-api-converter` @ `f8fc11c` (`fix(convert): pass through non-stream error bodies unchanged`, branch `feat/anthropic-openai-p1`) — code and test.
+  - The docs commit on the same branch carries this record; its SHA is recorded in the post-fix report because a commit cannot contain its own SHA.
+- Files changed:
+  - `convert/convert.go` — in `Convert`, immediately after the existing `raw["error"]` logging block and before `detectSource(raw)`, added an early passthrough: when the top-level `error` field is present and non-nil, return the original body unchanged. This preserves upstream error bodies for every protocol instead of converting them into a successful empty response. `detectSource` and stream error handling are unchanged.
+  - `convert/anthropic_openai_p1_test.go` — added `TestP1_NonStreamErrorBodyPassthrough`, covering an Anthropic `type: "error"` body and a plain OpenAI-style `{"error": ...}` body; both must be returned byte-identical and must not contain `chat.completion`.
+- Tests / commands:
+  - `go test -count=1 -run 'TestP1_NonStreamErrorBodyPassthrough' ./convert -v` → PASS.
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`; `llm-api-converter` and `cmd` have no test files).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS (`convert` 1.226s, `engine` 1.018s, `rewriter` 1.031s).
+  - `go vet ./...` → clean; `git diff --check` → clean.
+- Findings fixed:
+  - Important — non-stream error bodies are passed through unchanged; the Anthropic classification in `detectSource` is still correct for Anthropic stream error events, which remain handled by the stream converters.
+- Deferred:
+  - P2 findings remain open.
+  - The regression is fixed with a guard in `Convert` rather than narrowing `detectSource`, because the Anthropic error-event classification is required for streaming.

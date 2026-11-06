@@ -4,7 +4,7 @@ Date: 2026-11-06
 Reviewed repository: `llm-api-converter`
 Reviewed revision: `e4c7c1a` (`feat(engine): expose the resolved logical model`)
 Comparison implementation: `magpie` at `e17b6ce`
-Status: P0 fixed and verified; P1/P2 findings remain open.
+Status: P0 and P1 fixed and verified; P2 findings remain open.
 
 ## Scope
 
@@ -86,7 +86,42 @@ The implementation plan is `docs/plans/2026-11-06-anthropic-openai-chat-p0.md`.
 P0 was verified on `feat/anthropic-openai-p0` at `4d77eb1` with
 `go test -count=1 ./...` (including a fresh e2e run),
 `CGO_ENABLED=1 go test -race ./convert ./rewriter`, and `go vet ./...`; all
-passed. P1/P2 findings below are unchanged and still open.
+passed. A later fix wave after the final whole-branch review hardened
+additional P0 edge cases at `8eb988a`
+(`fix(convert): harden P0 conversion edge cases`); see the P0 plan's
+Post-review fix wave. P2 findings below are unchanged and still open.
+
+## P1 Status
+
+| ID | Status | Commit |
+|---|---|---|
+| P1-1 Anthropic → OpenAI stream usage | fixed | `e534397` |
+| P1-2 message coalescing/tool-pair repair | fixed | `7620613` |
+| P1-3 history tools without declarations | fixed | `7620613` |
+| P1-4 unsigned thinking replay | fixed | `d2ec345` |
+| P1-5 metadata pass-through | fixed | `d2ec345` |
+| P1-6 OpenAI reasoning-model parameters | fixed | `8d9e8d3` |
+| P1-7 unconditional `reasoning_content` | fixed | `d2ec345` |
+| P1-8 effort without thinking | fixed | `d2ec345` |
+| P1-9 URL images dropped | fixed | `1ee9c9f` |
+| P1-10 structured output lost | fixed | `1ee9c9f` |
+| P1-11 no tool-stop inference | fixed | `8d9e8d3` |
+| P1-12 upstream stream errors swallowed | fixed | `0f53577`, fix round `2de9c52` |
+| P1-13 unescaped error messages | fixed | `e534397` |
+| P1-14 typed `delta.content` | fixed | `e534397` |
+| P1-15 `content_block_start` payload fields | fixed | `0f53577`, fix round `2de9c52` |
+
+P1 was verified on `feat/anthropic-openai-p1` at `40e70e9` with
+`go test -count=1 ./...`,
+`CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter`,
+`go vet ./...`, and `git diff --check`; all passed. The implementation plan is
+`docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p1.md`.
+
+A final whole-branch review at `68dd7c3` returned **With fixes** (one Critical,
+four Important). The fixes are `3425a4e`
+(`fix(convert): reject truncated tool streams and repair histories`); the
+same verification commands pass at that revision. See the P1 plan's Final
+review fix wave record.
 
 ## P0 findings
 
@@ -319,10 +354,10 @@ Magpie preserves URLs (`internal/gateway/chat.go:239-248`, `:282-287`).
 
 Location: `convert/types.go` (missing fields), both request directions
 
-OpenAI `response_format` and Anthropic `output_config.format` are not modeled
-and are silently dropped. This is already listed as P1 in
-`docs/MAGPIE_EVALUATION.md`; it remains unfixed. Magpie normalizes the field
-(`internal/gateway/format.go`).
+OpenAI `response_format` and Anthropic `output_config.format` were not modeled
+and were silently dropped. This is also listed as P1 in
+`docs/MAGPIE_EVALUATION.md`; it was fixed by `1ee9c9f` (see the P1 Status
+table). Magpie normalizes the field (`internal/gateway/format.go`).
 
 ### P1-11: No tool-stop inference
 
@@ -430,8 +465,8 @@ handles initial text/thinking and `fullInput` (`internal/gateway/anthropic.go:12
 | URL images | dropped | preserved | P1 bug |
 | Stream error chunks | swallowed | explicit error | P1 bug |
 
-> Historical findings: the P0 rows above describe the reviewed revision; all
-> four were fixed at `4d77eb1`.
+> Historical findings: the P0 and P1 rows above describe the reviewed revision;
+> all were fixed by the P0/P1 plans; see the P0 Status and P1 Status tables.
 
 ## What is already good
 
@@ -450,6 +485,9 @@ handles initial text/thinking and `fullInput` (`internal/gateway/anthropic.go:12
 P0 implementation plan:
 `docs/plans/2026-11-06-anthropic-openai-chat-p0.md`
 
-P1/P2 work is intentionally not scheduled in that plan. See
-`docs/MAGPIE_EVALUATION.md` for the previously known structured-output and
-thinking-signature gaps.
+P1 implementation plan:
+`docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p1.md`
+
+P2 work is intentionally not scheduled in either plan. See
+`docs/MAGPIE_EVALUATION.md` for the previously known thinking-signature gap;
+the structured-output gap noted there was fixed by `1ee9c9f` (P1-10).

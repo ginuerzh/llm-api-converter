@@ -91,7 +91,7 @@ func isAnthropicStreamEvent(data []byte) bool {
 	}
 	switch raw.Type {
 	case "message_start", "content_block_start", "content_block_delta",
-		"content_block_stop", "message_delta", "message_stop", "ping":
+		"content_block_stop", "message_delta", "message_stop", "ping", "error":
 		return true
 	}
 	return false
@@ -123,6 +123,18 @@ func (sc *AnthropicStreamConverter) HandleChunk(data []byte) ([]byte, error) {
 		return sc.handleMessageDelta(data)
 	case "message_stop":
 		return nil, nil
+	case "error":
+		var e struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(data, &e)
+		msg := e.Error.Message
+		if msg == "" {
+			msg = "upstream stream error"
+		}
+		return sc.EmitError(msg), nil
 	case "ping":
 		return nil, nil
 	default:

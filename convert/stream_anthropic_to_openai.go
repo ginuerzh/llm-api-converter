@@ -1,6 +1,7 @@
 package convert
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"time"
@@ -29,14 +30,22 @@ type AnthropicToOpenAIStreamConverter struct {
 	// Anthropic content block index -> OpenAI tool_calls index.
 	toolByBlock map[int]int
 	nextTool    int
+	// Accumulated arguments per Anthropic tool block; used to reject a
+	// truncated stream instead of finishing it as a successful tool call.
+	toolArgs map[int]string
+	// Blocks whose tool input arrived complete in content_block_start; later
+	// input_json_delta events for those blocks are ignored.
+	toolInputComplete map[int]bool
 }
 
 func NewAnthropicToOpenAIStreamConverter(model string, opts ...*ConvertOptions) *AnthropicToOpenAIStreamConverter {
 	c := &AnthropicToOpenAIStreamConverter{
-		model:       model,
-		id:          "chatcmpl-" + randHex(16),
-		created:     time.Now().Unix(),
-		toolByBlock: make(map[int]int),
+		model:             model,
+		id:                "chatcmpl-" + randHex(16),
+		created:           time.Now().Unix(),
+		toolByBlock:       make(map[int]int),
+		toolArgs:          make(map[int]string),
+		toolInputComplete: make(map[int]bool),
 	}
 	if len(opts) > 0 {
 		c.opts = opts[0]
@@ -64,9 +73,13 @@ func (c *AnthropicToOpenAIStreamConverter) HandleChunk(data []byte) ([]byte, err
 			} `json:"usage"`
 		} `json:"message"`
 		ContentBlock struct {
-			Type string `json:"type"`
-			ID   string `json:"id,omitempty"`
-			Name string `json:"name,omitempty"`
+			Type      string          `json:"type"`
+			ID        string          `json:"id,omitempty"`
+			Name      string          `json:"name,omitempty"`
+			Text      string          `json:"text,omitempty"`
+			Thinking  string          `json:"thinking,omitempty"`
+			Signature string          `json:"signature,omitempty"`
+			Input     json.RawMessage `json:"input,omitempty"`
 		} `json:"content_block"`
 		Delta struct {
 			Type        string `json:"type"`
@@ -111,10 +124,33 @@ func (c *AnthropicToOpenAIStreamConverter) HandleChunk(data []byte) ([]byte, err
 		if !c.started {
 			c.emitRole(&events)
 		}
-		if evt.ContentBlock.Type == "tool_use" {
+		switch evt.ContentBlock.Type {
+		case "text":
+			// Some Anthropic-compatible relays put the first text in the start
+			// event instead of a following text_delta.
+			if evt.ContentBlock.Text != "" {
+				emit(OpenAIStreamChunk{
+					ID: c.id, Object: "chat.completion.chunk", Created: c.created, Model: c.model,
+					Choices: []OpenAIStreamChoice{{Delta: OpenAIDelta{Content: evt.ContentBlock.Text}}},
+				})
+			}
+		case "thinking":
+			if evt.ContentBlock.Thinking != "" {
+				emit(OpenAIStreamChunk{
+					ID: c.id, Object: "chat.completion.chunk", Created: c.created, Model: c.model,
+					Choices: []OpenAIStreamChoice{{Delta: OpenAIDelta{ReasoningContent: evt.ContentBlock.Thinking}}},
+				})
+			}
+		case "tool_use":
 			idx := c.nextTool
 			c.nextTool++
 			c.toolByBlock[evt.Index] = idx
+			args := ""
+			if anthropicToolStartInput(evt.ContentBlock.Input) {
+				args = string(evt.ContentBlock.Input)
+				c.toolInputComplete[evt.Index] = true
+				c.toolArgs[evt.Index] = args
+			}
 			emit(OpenAIStreamChunk{
 				ID:      c.id,
 				Object:  "chat.completion.chunk",
@@ -127,7 +163,8 @@ func (c *AnthropicToOpenAIStreamConverter) HandleChunk(data []byte) ([]byte, err
 						ID:    evt.ContentBlock.ID,
 						Type:  "function",
 						Function: OpenAIFunctionCall{
-							Name: evt.ContentBlock.Name,
+							Name:      evt.ContentBlock.Name,
+							Arguments: args,
 						},
 					}}},
 				}},
@@ -154,12 +191,16 @@ func (c *AnthropicToOpenAIStreamConverter) HandleChunk(data []byte) ([]byte, err
 				})
 			}
 		case "input_json_delta":
+			if c.toolInputComplete[evt.Index] {
+				break
+			}
 			idx, ok := c.toolByBlock[evt.Index]
 			if !ok {
 				idx = c.nextTool
 				c.nextTool++
 				c.toolByBlock[evt.Index] = idx
 			}
+			c.toolArgs[evt.Index] += evt.Delta.PartialJSON
 			emit(OpenAIStreamChunk{
 				ID: c.id, Object: "chat.completion.chunk", Created: c.created, Model: c.model,
 				Choices: []OpenAIStreamChoice{{Delta: OpenAIDelta{ToolCalls: []OpenAIDeltaToolCall{{
@@ -203,6 +244,9 @@ func (c *AnthropicToOpenAIStreamConverter) HandleChunk(data []byte) ([]byte, err
 			"type": e.Error.Type, "message": e.Error.Message,
 		}})
 		events = append(events, []byte("data: "+string(b)+"\n\n"))
+		// An upstream error is terminal: suppress the normal finish chunk and
+		// [DONE] so the client sees the error instead of a successful finish.
+		c.finished = true
 	}
 
 	return joinSSE(events), nil
@@ -215,22 +259,42 @@ func (c *AnthropicToOpenAIStreamConverter) HandleStreamEnd() []byte {
 	return joinSSE(c.finish())
 }
 
+// EmitError returns an OpenAI-formatted error chunk and marks the stream
+// finished. It is terminal: once a normal finish or an upstream error has
+// ended the stream it returns nil, so a late end-phase error cannot follow a
+// completed response.
 func (c *AnthropicToOpenAIStreamConverter) EmitError(message string) []byte {
+	if c.finished {
+		return nil
+	}
+	c.finished = true
 	b, _ := json.Marshal(map[string]any{"error": map[string]any{
 		"type": "stream_error", "message": message,
 	}})
 	return []byte("data: " + string(b) + "\n\n")
 }
 
+// setUsage merges the usage fields reported by one Anthropic stream event.
+// Providers spread usage across message_start (input and cache counts) and
+// message_delta (output count), and often omit fields in later events, so each
+// field is updated only when the new value is non-zero. Zero means "not
+// reported here", not "reset to zero".
 func (c *AnthropicToOpenAIStreamConverter) setUsage(input, output, cacheRead, cacheCreate int) {
-	if input == 0 && output == 0 && cacheRead == 0 && cacheCreate == 0 {
-		return
+	if input > 0 {
+		c.usage.InputTokens = input
 	}
-	c.usage.InputTokens = input
-	c.usage.OutputTokens = output
-	c.usage.CacheReadInputTokens = cacheRead
-	c.usage.CacheCreationInputTokens = cacheCreate
-	c.hasUsage = true
+	if output > 0 {
+		c.usage.OutputTokens = output
+	}
+	if cacheRead > 0 {
+		c.usage.CacheReadInputTokens = cacheRead
+	}
+	if cacheCreate > 0 {
+		c.usage.CacheCreationInputTokens = cacheCreate
+	}
+	if input > 0 || output > 0 || cacheRead > 0 || cacheCreate > 0 {
+		c.hasUsage = true
+	}
 }
 
 func (c *AnthropicToOpenAIStreamConverter) emitRole(events *[][]byte) {
@@ -246,9 +310,17 @@ func (c *AnthropicToOpenAIStreamConverter) emitRole(events *[][]byte) {
 }
 
 // finish emits the finish chunk, the usage chunk (when the upstream reported
-// usage) and [DONE].
+// usage) and [DONE]. A truncated tool block is terminal instead: the client
+// gets an error event and no finish chunk, so a partial argument object is
+// never reported as a successful tool call.
 func (c *AnthropicToOpenAIStreamConverter) finish() [][]byte {
 	if c.finished {
+		return nil
+	}
+	if c.hasIncompleteToolArgs() {
+		if errEvent := c.EmitError("stream ended with incomplete tool call arguments"); errEvent != nil {
+			return [][]byte{errEvent}
+		}
 		return nil
 	}
 	c.finished = true
@@ -257,7 +329,14 @@ func (c *AnthropicToOpenAIStreamConverter) finish() [][]byte {
 	if !c.started {
 		c.emitRole(&events)
 	}
+	// Anthropic-compatible upstreams sometimes end a tool-calling turn with
+	// end_turn (or omit the stop reason). OpenAI clients only run tools when
+	// finish_reason is tool_calls, so infer it from the emitted calls while
+	// preserving explicit reasons such as max_tokens.
 	fr := mapAnthropicStopToOpenAI(c.stop)
+	if c.nextTool > 0 && (c.stop == "" || c.stop == "end_turn") {
+		fr = "tool_calls"
+	}
 	b, _ := json.Marshal(OpenAIStreamChunk{
 		ID: c.id, Object: "chat.completion.chunk", Created: c.created, Model: c.model,
 		Choices: []OpenAIStreamChoice{{Delta: OpenAIDelta{}, FinishReason: &fr}},
@@ -276,6 +355,30 @@ func (c *AnthropicToOpenAIStreamConverter) finish() [][]byte {
 
 	events = append(events, []byte("data: [DONE]\n\n"))
 	return events
+}
+
+// hasIncompleteToolArgs reports whether any tool block's accumulated arguments
+// are not a complete JSON object. Empty arguments mean a no-argument tool call
+// and are complete.
+func (c *AnthropicToOpenAIStreamConverter) hasIncompleteToolArgs() bool {
+	for blockIndex := range c.toolByBlock {
+		if !streamToolArgsComplete(c.toolArgs[blockIndex]) {
+			return true
+		}
+	}
+	return false
+}
+
+// anthropicToolStartInput reports whether a content_block_start tool_use input
+// already carries the complete arguments object. Anthropic normally sends {}
+// and streams the arguments in later input_json_delta events, but some relays
+// put the full input in the start event.
+func anthropicToolStartInput(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return false
+	}
+	return !bytes.Equal(trimmed, []byte("{}")) && !bytes.Equal(trimmed, []byte("null"))
 }
 
 func mapAnthropicStopToOpenAI(s string) string {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // StreamConverter converts OpenAI streaming delta chunks into the proper
@@ -118,6 +119,18 @@ func (sc *StreamConverter) HandleChunk(data []byte) ([]byte, error) {
 	if err := json.Unmarshal(data, &chunk); err != nil {
 		return nil, fmt.Errorf("unmarshal stream chunk: %w", err)
 	}
+
+	// An error chunk is terminal: emit the Anthropic error event and suppress
+	// the normal closing sequence (message_delta/message_stop), so a failed
+	// upstream is never reported as a successful empty response.
+	if chunk.Error != nil {
+		msg := chunk.Error.Message
+		if msg == "" {
+			msg = "upstream stream error"
+		}
+		return sc.EmitError(msg), nil
+	}
+
 	if len(chunk.Choices) == 0 {
 		// Check for usage-only chunk (no choices, just usage).
 		if chunk.Usage != nil {
@@ -186,6 +199,20 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 	if sc.finalized {
 		return nil
 	}
+
+	// A clean EOF in the middle of tool arguments is not a successful tool
+	// turn: the client cannot parse the arguments and would still run the
+	// call. An interrupted stream with tool calls is a failure for the same
+	// reason. EmitError marks the stream finalized.
+	if sc.streamInterrupted && len(sc.toolCallByIndex) > 0 {
+		return sc.EmitError("stream interrupted before tool calls completed")
+	}
+	for _, state := range sc.toolCallByIndex {
+		if !streamToolArgsComplete(state.Arguments) {
+			return sc.EmitError("stream ended with incomplete tool call arguments")
+		}
+	}
+
 	sc.finalized = true
 
 	var events [][]byte
@@ -245,16 +272,16 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 		events = append(events, sc.contentBlockStop())
 	}
 
-	// message_delta with stop_reason.
+	// message_delta with stop_reason. When tools were emitted, an empty or
+	// "stop" upstream finish reason is ambiguous: OpenAI-compatible backends
+	// often report it for a tool-calling turn, so infer tool_use. Explicit
+	// reasons such as length or content_filter are preserved.
 	stopReason := "end_turn"
-	if sc.finishReason != "" {
-		stopReason = sc.finishReason
-		// If the upstream said "stop" but we accumulated tool calls, override
-		// to "tool_calls" so Claude Code knows tools were requested.
-		if stopReason == "stop" && len(sc.toolCallByIndex) > 0 {
-			stopReason = "tool_calls"
-		}
-		stopReason = mapOpenAIStreamFinish(stopReason)
+	switch {
+	case len(sc.toolCallByIndex) > 0 && (sc.finishReason == "" || sc.finishReason == "stop"):
+		stopReason = "tool_use"
+	case sc.finishReason != "":
+		stopReason = mapOpenAIStreamFinish(sc.finishReason)
 	}
 	usageMap := map[string]any{
 		"output_tokens": 0,
@@ -289,15 +316,20 @@ func (sc *StreamConverter) SetInterrupted() {
 	sc.streamInterrupted = true
 }
 
-// EmitError returns an Anthropic-formatted error SSE event.
+// EmitError returns an Anthropic-formatted error SSE event and marks the
+// stream finalized. It is terminal: a stream that already closed (normally or
+// with an error) returns nil. The payload is JSON-encoded so quotes, newlines,
+// and backslashes in the message cannot corrupt the event.
 func (sc *StreamConverter) EmitError(message string) []byte {
 	if sc.finalized {
 		return nil
 	}
-	return []byte(fmt.Sprintf(
-		`event: error`+"\n"+`data: {"type":"error","error":{"type":"stream_error","message":"%s"}}`,
-		message,
-	))
+	sc.finalized = true
+	b, _ := json.Marshal(map[string]any{
+		"type":  "error",
+		"error": map[string]any{"type": "stream_error", "message": message},
+	})
+	return []byte("event: error\ndata: " + string(b))
 }
 
 // ensureBlock transitions to a new content block if needed.
@@ -455,6 +487,13 @@ func (sc *StreamConverter) toolIndex(tc OpenAIDeltaToolCall) int {
 func toolArgsComplete(args string) bool {
 	var v map[string]any
 	return json.Unmarshal([]byte(args), &v) == nil
+}
+
+// streamToolArgsComplete reports whether accumulated tool arguments can close
+// a tool_use block. Empty arguments mean a no-argument tool call and are
+// complete; anything else must parse as a JSON object.
+func streamToolArgsComplete(args string) bool {
+	return strings.TrimSpace(args) == "" || toolArgsComplete(args)
 }
 
 func (sc *StreamConverter) handleToolCallDelta(tc OpenAIDeltaToolCall) [][]byte {

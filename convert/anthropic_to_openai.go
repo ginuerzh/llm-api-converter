@@ -10,6 +10,12 @@ import (
 
 const placeholderReasoning = "Compatibility bridge placeholder reasoning for prior assistant history."
 
+// replaysReasoning reports whether the target model accepts reasoning_content
+// replay. Only the vendors that require it get prior reasoning attached.
+func replaysReasoning(model string) bool {
+	return isDeepSeekModel(model) || isGLMModel(model)
+}
+
 // currentToolContextParts extracts the tool call/result context from the most
 // recent tool-calling turn in the message list. Returns the signature parts
 // for the latest turn (empty if no tool call turn found).
@@ -184,6 +190,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 		outputModel = resolveModelTarget(req.Model, opts.ModelMap)
 	}
 	profile := classifyModel(outputModel)
+	reasoningModel := isOpenAIReasoningModel(outputModel)
 
 	oai := OpenAIChatRequest{
 		Model:  outputModel,
@@ -191,13 +198,22 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	}
 
 	if req.MaxTokens > 0 {
-		oai.MaxTokens = &req.MaxTokens
+		if reasoningModel {
+			// OpenAI reasoning models reject max_tokens and require
+			// max_completion_tokens instead.
+			oai.MaxCompletionTokens = &req.MaxTokens
+		} else {
+			oai.MaxTokens = &req.MaxTokens
+		}
 	}
-	if req.Temperature != nil {
-		oai.Temperature = req.Temperature
-	}
-	if req.TopP != nil {
-		oai.TopP = req.TopP
+	if !reasoningModel {
+		// Reasoning models reject sampling parameters; other models keep them.
+		if req.Temperature != nil {
+			oai.Temperature = req.Temperature
+		}
+		if req.TopP != nil {
+			oai.TopP = req.TopP
+		}
 	}
 	// Anthropic metadata (user_id etc.) is NOT forwarded: most OpenAI-compatible
 	// endpoints reject unknown params ("Invalid API parameter").
@@ -216,13 +232,42 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	// Thinking config → model-specific OpenAI thinking field.
 	if profile.isDeepSeek {
 		oai.Thinking = thinkingToOpenAi(req.Thinking)
-		oai.ReasoningEffort = reasoningEffortToOpenAi(req.OutputConfig)
+		// Effort must not re-enable reasoning on requests that did not ask
+		// for thinking (for example title and classifier calls).
+		if req.Thinking != nil && req.Thinking.Type == "enabled" {
+			oai.ReasoningEffort = reasoningEffortToOpenAi(req.OutputConfig)
+		}
 	} else if isGLMModel(outputModel) {
 		oai.Thinking = thinkingToOpenAiGLM(req.Thinking)
 	}
 
+	// Structured output: a schema maps to response_format, while a
+	// json_schema format without a schema falls back to a system instruction.
+	var structuredInstruction string
+	if req.OutputConfig != nil && req.OutputConfig.Format != nil &&
+		req.OutputConfig.Format.Type == "json_schema" {
+		if schema := jsonSchemaValue(req.OutputConfig.Format.Schema); schema != nil {
+			oai.ResponseFormat = &OpenAIResponseFormat{
+				Type: "json_schema",
+				JSONSchema: &OpenAIJSONSchema{
+					Name:   "response",
+					Schema: schema,
+				},
+			}
+		} else {
+			structuredInstruction = jsonOutputInstruction
+		}
+	}
+
 	// Tool choice instruction for DeepSeek (softened to system instruction).
 	extraInstruction := toolChoiceInstruction(req.ToolChoice, outputModel)
+	if structuredInstruction != "" {
+		if extraInstruction != "" {
+			extraInstruction += "\n\n" + structuredInstruction
+		} else {
+			extraInstruction = structuredInstruction
+		}
+	}
 
 	// Top-level system → prepend as system message.
 	if len(req.System) > 0 {
@@ -249,7 +294,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 
 	// Messages.
 	for _, msg := range req.Messages {
-		oai.Messages = append(oai.Messages, convertAnthropicMessage(msg, opts, ctxParts)...)
+		oai.Messages = append(oai.Messages, convertAnthropicMessage(msg, opts, outputModel, ctxParts)...)
 	}
 
 	// Message sequence sanitization: coalesce adjacent tool calls, pair
@@ -295,12 +340,12 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	return json.Marshal(oai)
 }
 
-func convertAnthropicMessage(msg AnthropicMessage, opts *ConvertOptions, ctxParts []string) []OpenAIMessage {
+func convertAnthropicMessage(msg AnthropicMessage, opts *ConvertOptions, model string, ctxParts []string) []OpenAIMessage {
 	switch msg.Role {
 	case "user":
 		return convertAnthropicUserMessage(msg)
 	case "assistant":
-		return []OpenAIMessage{convertAnthropicAssistantMessage(msg, opts, ctxParts)}
+		return []OpenAIMessage{convertAnthropicAssistantMessage(msg, opts, model, ctxParts)}
 	default:
 		return []OpenAIMessage{{Role: "user", Content: extractTextContent(msg.Content)}}
 	}
@@ -355,8 +400,8 @@ func convertAnthropicUserMessage(msg AnthropicMessage) []OpenAIMessage {
 				})
 			}
 		case "image":
-			if block.Source != nil && block.Source.Type == "base64" {
-				parts = append(parts, dataURIImagePart(block.Source.MediaType, block.Source.Data))
+			if part := anthropicImageURLPart(block.Source); part != nil {
+				parts = append(parts, part)
 			}
 		}
 	}
@@ -420,36 +465,69 @@ func toolResultContent(content any) (string, []map[string]any) {
 	}
 }
 
+// anthropicImageURLPart converts a typed Anthropic image source into an OpenAI
+// image_url content part. Unsupported or incomplete sources return nil.
+func anthropicImageURLPart(src *AnthropicImageSource) map[string]any {
+	if src == nil {
+		return nil
+	}
+	switch src.Type {
+	case "base64":
+		if src.MediaType == "" || src.Data == "" {
+			return nil
+		}
+		return dataURIImagePart(src.MediaType, src.Data)
+	case "url":
+		if src.URL == "" {
+			return nil
+		}
+		return imageURLPartFromURL(src.URL)
+	}
+	return nil
+}
+
 // imageURLPart converts a JSON-decoded Anthropic image block into an OpenAI
-// image_url content part. Only base64 data sources convert; anything else
+// image_url content part. Both base64 and URL sources convert; anything else
 // returns nil.
 func imageURLPart(m map[string]any) map[string]any {
 	src, ok := m["source"].(map[string]any)
 	if !ok {
 		return nil
 	}
-	if t, _ := src["type"].(string); t != "base64" {
-		return nil
+	switch t, _ := src["type"].(string); t {
+	case "base64":
+		mediaType, _ := src["media_type"].(string)
+		data, _ := src["data"].(string)
+		if mediaType == "" || data == "" {
+			return nil
+		}
+		return dataURIImagePart(mediaType, data)
+	case "url":
+		u, _ := src["url"].(string)
+		if u == "" {
+			return nil
+		}
+		return imageURLPartFromURL(u)
 	}
-	mediaType, _ := src["media_type"].(string)
-	data, _ := src["data"].(string)
-	if mediaType == "" || data == "" {
-		return nil
-	}
-	return dataURIImagePart(mediaType, data)
+	return nil
 }
 
-// dataURIImagePart builds an OpenAI image_url content part from base64 image data.
-func dataURIImagePart(mediaType, data string) map[string]any {
+// imageURLPartFromURL builds an OpenAI image_url content part from a URL.
+func imageURLPartFromURL(url string) map[string]any {
 	return map[string]any{
 		"type": "image_url",
 		"image_url": map[string]any{
-			"url": "data:" + mediaType + ";base64," + data,
+			"url": url,
 		},
 	}
 }
 
-func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions, ctxParts []string) OpenAIMessage {
+// dataURIImagePart builds an OpenAI image_url content part from base64 image data.
+func dataURIImagePart(mediaType, data string) map[string]any {
+	return imageURLPartFromURL("data:" + mediaType + ";base64," + data)
+}
+
+func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions, model string, ctxParts []string) OpenAIMessage {
 	var textParts []string
 	var reasoning string
 	var toolCalls []OpenAIToolCall
@@ -481,7 +559,7 @@ func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions
 	}
 
 	oaiMsg := OpenAIMessage{Role: "assistant"}
-	if reasoning != "" {
+	if replaysReasoning(model) && reasoning != "" {
 		oaiMsg.ReasoningContent = reasoning
 	}
 	content := strings.Join(textParts, "")
@@ -498,8 +576,9 @@ func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions
 	}
 
 	// If reasoning is empty but tool_calls exist (Claude Code compressed thinking),
-	// try to restore reasoning_content from cache (multi-tier).
-	if oaiMsg.ReasoningContent == "" && len(oaiMsg.ToolCalls) > 0 && opts != nil && opts.ReasoningCache != nil {
+	// try to restore reasoning_content from cache (multi-tier). Only targets that
+	// replay reasoning get anything attached.
+	if oaiMsg.ReasoningContent == "" && len(oaiMsg.ToolCalls) > 0 && replaysReasoning(model) && opts != nil && opts.ReasoningCache != nil {
 		ids := make([]string, len(oaiMsg.ToolCalls))
 		for i, tc := range oaiMsg.ToolCalls {
 			ids[i] = tc.ID
@@ -507,7 +586,7 @@ func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions
 		content := extractTextContent(oaiMsg.Content)
 		if cached := opts.ReasoningCache.GetBest(ids, ctxParts, content); cached != "" {
 			oaiMsg.ReasoningContent = cached
-		} else {
+		} else if isDeepSeekModel(model) {
 			// Placeholder fallback — DeepSeek requires reasoning_content
 			// when tool_calls are present, even if cache is empty.
 			oaiMsg.ReasoningContent = placeholderReasoning
@@ -578,11 +657,20 @@ func convertAnthropicResponseToOpenAI(body []byte) ([]byte, error) {
 		msg.Content = strings.Join(textParts, "")
 	}
 
+	finishReason := mapFinishReason(resp.StopReason)
+	// Some Anthropic-compatible upstreams end a tool-calling turn with
+	// end_turn (or omit stop_reason). OpenAI clients only run tools when
+	// finish_reason is tool_calls, so infer it from the emitted calls while
+	// leaving explicit reasons alone.
+	if len(msg.ToolCalls) > 0 && (resp.StopReason == nil || *resp.StopReason == "end_turn") {
+		finishReason = &strToolCalls
+	}
+
 	openai.Choices = []OpenAIChoice{
 		{
 			Index:        0,
 			Message:      msg,
-			FinishReason: mapFinishReason(resp.StopReason),
+			FinishReason: finishReason,
 		},
 	}
 

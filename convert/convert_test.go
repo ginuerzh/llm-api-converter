@@ -732,20 +732,32 @@ func TestConvert_FunctionCallToToolUse(t *testing.T) {
 	if err := json.Unmarshal(b, &a); err != nil {
 		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
 	}
-	if len(a.Messages) != 2 {
-		t.Fatalf("want 2 messages, got %d", len(a.Messages))
+	if len(a.Messages) != 3 {
+		t.Fatalf("want user, assistant tool_use, synthetic user result; got %d messages", len(a.Messages))
 	}
 	if a.Messages[1].Role != "assistant" {
 		t.Fatalf("messages[1] role: want assistant, got %q", a.Messages[1].Role)
 	}
-	toolUseFound := false
+	toolUseID := ""
 	for _, c := range a.Messages[1].Content {
 		if c.Type == "tool_use" && c.Name == "get_weather" {
-			toolUseFound = true
+			toolUseID = c.ID
 		}
 	}
-	if !toolUseFound {
-		t.Fatal("expected tool_use block for function_call")
+	if toolUseID == "" {
+		t.Fatalf("legacy function_call tool_use has no id: %s", b)
+	}
+	if a.Messages[2].Role != "user" {
+		t.Fatalf("messages[2] role: want user, got %q", a.Messages[2].Role)
+	}
+	foundResult := false
+	for _, c := range a.Messages[2].Content {
+		if c.Type == "tool_result" && c.ToolUseID == toolUseID {
+			foundResult = true
+		}
+	}
+	if !foundResult {
+		t.Fatalf("no tool_result pairs with tool_use id %q: %s", toolUseID, b)
 	}
 }
 
@@ -987,9 +999,9 @@ func TestConvertViaAutoDetection_PlainJSON(t *testing.T) {
 
 func TestDetectSource_AnthropicRequestMarkers(t *testing.T) {
 	tests := []struct {
-		name    string
-		json    string
-		want    Protocol
+		name string
+		json string
+		want Protocol
 	}{
 		{
 			name: "anthropic with thinking block",
@@ -1353,7 +1365,10 @@ func TestConvert_AnthropicReqToOpenAIReq_WithSystem(t *testing.T) {
 
 func TestConvert_AnthropicReqToOpenAIReq_Thinking(t *testing.T) {
 	body := `{"model":"claude","max_tokens":8192,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"assistant","content":[{"type":"thinking","thinking":"thinking steps..."},{"type":"text","text":"answer"}]}]}`
-	b, err := Convert([]byte(body), anthropicOpts())
+	opts := anthropicOpts()
+	// P1-7: reasoning_content is replayed only to models that require it.
+	opts.ModelMap = ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat", Protocol: "openai"}}
+	b, err := Convert([]byte(body), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1972,6 +1987,8 @@ func TestConvert_ReasoningCache_StoreInject(t *testing.T) {
 	// Step 2: Anthropic Request (tool_use, no thinking)
 	opts2 := &ConvertOptions{
 		ReasoningCache: rc,
+		// P1-7: reasoning replay is gated on DeepSeek/GLM targets.
+		ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat", Protocol: "openai"}},
 	}
 	anthReq := `{
 		"model":"claude-sonnet-4-20250514","max_tokens":8192,"messages":[
@@ -2007,6 +2024,8 @@ func TestConvert_ReasoningCache_Miss(t *testing.T) {
 
 	opts := &ConvertOptions{
 		ReasoningCache: rc, // empty cache → miss
+		// P1-7: the DeepSeek placeholder is only emitted for DeepSeek targets.
+		ModelMap: ModelMap{{SourcePrefix: "claude", TargetModel: "deepseek-chat", Protocol: "openai"}},
 	}
 	anthReq := `{
 		"model":"claude-sonnet-4-20250514","max_tokens":8192,"messages":[

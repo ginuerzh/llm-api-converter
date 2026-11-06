@@ -12,26 +12,27 @@ type OpenAIChatRequest struct {
 	Model    string          `json:"model"`
 	Messages []OpenAIMessage `json:"messages"`
 
-	MaxTokens            *int         `json:"max_tokens,omitempty"`
-	MaxCompletionTokens  *int         `json:"max_completion_tokens,omitempty"`
-	Temperature          *float64     `json:"temperature,omitempty"`
-	TopP                 *float64     `json:"top_p,omitempty"`
-	TopK                 *int         `json:"top_k,omitempty"` // x Groq
-	Stop                 any          `json:"stop,omitempty"`  // string or []string
-	Stream               *bool        `json:"stream,omitempty"`
-	StreamOptions        any          `json:"stream_options,omitempty"`
-	Tools                []OpenAITool `json:"tools,omitempty"`
-	ToolChoice           any          `json:"tool_choice,omitempty"`
-	Thinking             any          `json:"thinking,omitempty"`          // DeepSeek extended thinking
-	ReasoningEffort      any          `json:"reasoning_effort,omitempty"`  // DeepSeek reasoning effort
-	ThinkingBudget       *int         `json:"thinking_budget,omitempty"`   // DeepSeek thinking budget
-	OpenAIPromptCacheKey string       `json:"prompt_cache_key,omitempty"`  // upstream prompt cache key
-	FrequencyPenalty     *float64     `json:"frequency_penalty,omitempty"` // ignored
-	PresencePenalty      *float64     `json:"presence_penalty,omitempty"`  // ignored
-	N                    *int         `json:"n,omitempty"`                 // ignored
-	LogitBias            any          `json:"logit_bias,omitempty"`        // ignored
-	User                 string       `json:"user,omitempty"`              // ignored
-	Metadata             any          `json:"metadata,omitempty"`
+	MaxTokens            *int                  `json:"max_tokens,omitempty"`
+	MaxCompletionTokens  *int                  `json:"max_completion_tokens,omitempty"`
+	Temperature          *float64              `json:"temperature,omitempty"`
+	TopP                 *float64              `json:"top_p,omitempty"`
+	TopK                 *int                  `json:"top_k,omitempty"` // x Groq
+	Stop                 any                   `json:"stop,omitempty"`  // string or []string
+	Stream               *bool                 `json:"stream,omitempty"`
+	StreamOptions        any                   `json:"stream_options,omitempty"`
+	Tools                []OpenAITool          `json:"tools,omitempty"`
+	ToolChoice           any                   `json:"tool_choice,omitempty"`
+	ResponseFormat       *OpenAIResponseFormat `json:"response_format,omitempty"`
+	Thinking             any                   `json:"thinking,omitempty"`          // DeepSeek extended thinking
+	ReasoningEffort      any                   `json:"reasoning_effort,omitempty"`  // DeepSeek reasoning effort
+	ThinkingBudget       *int                  `json:"thinking_budget,omitempty"`   // DeepSeek thinking budget
+	OpenAIPromptCacheKey string                `json:"prompt_cache_key,omitempty"`  // upstream prompt cache key
+	FrequencyPenalty     *float64              `json:"frequency_penalty,omitempty"` // ignored
+	PresencePenalty      *float64              `json:"presence_penalty,omitempty"`  // ignored
+	N                    *int                  `json:"n,omitempty"`                 // ignored
+	LogitBias            any                   `json:"logit_bias,omitempty"`        // ignored
+	User                 string                `json:"user,omitempty"`              // ignored
+	Metadata             any                   `json:"metadata,omitempty"`
 }
 
 type OpenAIMessage struct {
@@ -76,6 +77,36 @@ type OpenAIFunction struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Parameters  any    `json:"parameters"`
+}
+
+// OpenAIResponseFormat is the OpenAI structured-output configuration.
+type OpenAIResponseFormat struct {
+	Type       string            `json:"type"` // "text", "json_object", or "json_schema"
+	JSONSchema *OpenAIJSONSchema `json:"json_schema,omitempty"`
+}
+
+// OpenAIJSONSchema describes a structured-output schema.
+type OpenAIJSONSchema struct {
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	Schema      any    `json:"schema,omitempty"`
+	Strict      bool   `json:"strict,omitempty"`
+}
+
+// jsonOutputInstruction is the system fallback for schema-less structured
+// output, for protocols that accept a schema but not a bare JSON mode.
+const jsonOutputInstruction = "Respond with a JSON object only."
+
+// jsonSchemaValue returns schema when it carries content and nil otherwise.
+// An empty object has no structured-output meaning and is treated as absent.
+func jsonSchemaValue(schema any) any {
+	if schema == nil {
+		return nil
+	}
+	if m, ok := schema.(map[string]any); ok && len(m) == 0 {
+		return nil
+	}
+	return schema
 }
 
 // -------- OpenAI Chat Completions (Response) --------
@@ -129,7 +160,14 @@ type AnthropicThinking struct {
 
 // AnthropicOutputConfig is the output configuration block (e.g. effort).
 type AnthropicOutputConfig struct {
-	Effort string `json:"effort,omitempty"` // "low"|"medium"|"high"|"max"
+	Effort string                 `json:"effort,omitempty"` // "low"|"medium"|"high"|"max"
+	Format *AnthropicOutputFormat `json:"format,omitempty"`
+}
+
+// AnthropicOutputFormat is the structured-output format configuration.
+type AnthropicOutputFormat struct {
+	Type   string `json:"type"` // "json_schema"
+	Schema any    `json:"schema,omitempty"`
 }
 
 type AnthropicRequest struct {
@@ -242,6 +280,20 @@ func isOpenAIStyleModel(model string) bool {
 	return false
 }
 
+// isOpenAIReasoningModel reports whether model is an OpenAI reasoning model.
+// These models reject max_tokens, temperature, and top_p, and require
+// max_completion_tokens instead. A provider/ prefix is ignored.
+func isOpenAIReasoningModel(model string) bool {
+	ml := strings.ToLower(StripProviderPrefix(model))
+	prefixes := []string{"o1", "o3", "o4", "gpt-5"}
+	for _, p := range prefixes {
+		if strings.HasPrefix(ml, p) {
+			return true
+		}
+	}
+	return false
+}
+
 type AnthropicMessage struct {
 	Role    string             `json:"role"`
 	Content []AnthropicContent `json:"content"`
@@ -308,9 +360,10 @@ type AnthropicTextBlock struct {
 }
 
 type AnthropicImageSource struct {
-	Type      string `json:"type"`       // "base64"
-	MediaType string `json:"media_type"` // e.g. "image/jpeg"
-	Data      string `json:"data"`
+	Type      string `json:"type"`                 // "base64" or "url"
+	MediaType string `json:"media_type,omitempty"` // e.g. "image/jpeg"
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 type AnthropicToolChoice struct {
@@ -487,6 +540,14 @@ type ConvertOptions struct {
 
 // -------- OpenAI Streaming Types --------
 
+// OpenAIStreamError is an error payload in a streaming chunk. OpenAI-compatible
+// upstreams send it as {"error":{...}} instead of a regular delta chunk.
+type OpenAIStreamError struct {
+	Type    string `json:"type,omitempty"`
+	Message string `json:"message,omitempty"`
+	Code    string `json:"code,omitempty"`
+}
+
 // OpenAIStreamChunk is an OpenAI /v1/chat/completions streaming response chunk.
 type OpenAIStreamChunk struct {
 	ID      string               `json:"id,omitempty"`
@@ -495,6 +556,7 @@ type OpenAIStreamChunk struct {
 	Model   string               `json:"model,omitempty"`
 	Choices []OpenAIStreamChoice `json:"choices"`
 	Usage   *OpenAIUsage         `json:"usage,omitempty"`
+	Error   *OpenAIStreamError   `json:"error,omitempty"`
 }
 
 // OpenAIStreamChoice is a single choice in a streaming chunk (delta instead of message).
@@ -511,6 +573,58 @@ type OpenAIDelta struct {
 	ReasoningContent string                `json:"reasoning_content,omitempty"`
 	ToolCalls        []OpenAIDeltaToolCall `json:"tool_calls,omitempty"`
 	FunctionCall     *OpenAIFunctionCall   `json:"function_call,omitempty"`
+}
+
+// UnmarshalJSON accepts delta content as either a plain string or an array of
+// typed content parts. Some providers stream content as
+// [{"type":"text","text":"..."}]; only "text" parts are joined, and any other
+// shape is treated as empty content so one variant cannot fail the stream.
+func (d *OpenAIDelta) UnmarshalJSON(data []byte) error {
+	// Shadow type mirroring OpenAIDelta with Content kept raw; keep in sync
+	// when fields are added to the struct.
+	var aux struct {
+		Role             string                `json:"role,omitempty"`
+		Content          json.RawMessage       `json:"content,omitempty"`
+		ReasoningContent string                `json:"reasoning_content,omitempty"`
+		ToolCalls        []OpenAIDeltaToolCall `json:"tool_calls,omitempty"`
+		FunctionCall     *OpenAIFunctionCall   `json:"function_call,omitempty"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	d.Role = aux.Role
+	d.Content = joinOpenAIDeltaContent(aux.Content)
+	d.ReasoningContent = aux.ReasoningContent
+	d.ToolCalls = aux.ToolCalls
+	d.FunctionCall = aux.FunctionCall
+	return nil
+}
+
+// joinOpenAIDeltaContent decodes a delta content value. A string is returned
+// as-is, an array contributes only its "text" parts, and anything else (null,
+// objects, malformed shapes) yields an empty string.
+func joinOpenAIDeltaContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, part := range parts {
+		if part.Type == "text" {
+			b.WriteString(part.Text)
+		}
+	}
+	return b.String()
 }
 
 // OpenAIDeltaToolCall is a tool call entry inside a streaming delta.

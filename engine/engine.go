@@ -27,11 +27,12 @@ type Options struct {
 
 // Meta carries the per-call metadata supplied by the proxy.
 type Meta struct {
-	SID        string
-	Direction  string // "request" or "response"
-	URI        string
-	SSEPhase   string
-	EventIndex int
+	SID         string
+	Direction   string // "request" or "response"
+	URI         string
+	SSEPhase    string
+	EventIndex  int
+	StreamError string // upstream stream error reported by the proxy
 }
 
 // Result is the converted payload plus the model/effort facts observed on the
@@ -104,6 +105,7 @@ func (e *Engine) Rewrite(ctx context.Context, data []byte, meta Meta) (Result, e
 		SSEPhase:               meta.SSEPhase,
 		Direction:              meta.Direction,
 		URI:                    meta.URI,
+		ErrorMsg:               meta.StreamError,
 	}
 
 	// Resolve the original model before mapping for the safety classifier.
