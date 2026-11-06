@@ -1092,7 +1092,7 @@ git commit -m "fix(convert): surface stream errors and block-start payloads"
   - `convert/types.go` — added `OpenAIStreamError{Type, Message, Code}` and `OpenAIStreamChunk.Error`.
   - `convert/stream.go` — `StreamConverter.HandleChunk` checks `chunk.Error` before the no-choices branch: it returns the JSON-safe `EmitError` event (default message `upstream stream error`) and sets `finalized`, so `HandleStreamEnd` emits no `message_delta`/`message_stop`. `SetInterrupted` is not used on this path.
   - `convert/stream_anthropic_to_openai.go` — the start event now decodes `content_block.text`, `thinking`, `signature`, and `input`. `content_block_start` emits text as a content delta, thinking as `reasoning_content`, and forwards a complete non-empty/non-`{}`/non-`null` tool input as the call's `arguments` while marking that block complete so later `input_json_delta` events are ignored; empty input keeps the delta flow. The `error` case sets `finished` after emitting the OpenAI error object, suppressing the normal finish chunk and `[DONE]`.
-  - `convert/convert.go` — `HandleSSEEvent` and `handleResponsesSSEEvent` end phases now return `handler.EmitError(opts.ErrorMsg)` when error metadata is present (nil for `*PassthroughStreamHandler`) instead of synthesizing the normal close, so partial tool arguments are never reported as a successful `tool_use`.
+  - `convert/convert.go` — `HandleSSEEvent` and `handleResponsesSSEEvent` end phases return `handler.EmitError(opts.ErrorMsg)` when error metadata is present instead of synthesizing the normal close. The original implementation dispatched this for any non-passthrough handler; fix round 1 (`2de9c52`) scoped the dispatch by concrete handler type to `*StreamConverter`/`*AnthropicToOpenAIStreamConverter` and `*AnthropicStreamConverter`/`*ResponsesStreamConverter`, so passthrough and Gemini handlers keep their previous behavior. The fix-round record below supersedes this bullet.
   - `engine/engine.go` — added `Meta.StreamError` and set `ConvertOptions.ErrorMsg` from it in `Engine.Rewrite`.
   - `rewriter/server.go` — `metaFrom` parses `stream_error`.
   - `convert/anthropic_openai_p1_test.go`, `engine/engine_test.go`, `rewriter/server_test.go` — the plan tests plus regression tests for block-start thinking, empty block-start tool input, and the Responses end-phase error.
@@ -1145,7 +1145,7 @@ git commit -m "fix(convert): surface stream errors and block-start payloads"
 **Interfaces:**
 - Consumes all previous task commits.
 
-- [ ] **Step 1: Run the full verification suite**
+- [x] **Step 1: Run the full verification suite**
 
 Run:
 
@@ -1159,7 +1159,7 @@ git diff --check
 
 Expected: all PASS; `git diff --check` clean.
 
-- [ ] **Step 2: Update the review document**
+- [x] **Step 2: Update the review document**
 
 Add a `P1 Status` table after the P0 status table with 15 rows:
 
@@ -1170,13 +1170,13 @@ Add a `P1 Status` table after the P0 status table with 15 rows:
 Update the header status to `P0 and P1 fixed and verified; P2 findings remain
 open.` Add one line with the verification commands and the final HEAD SHA.
 
-- [ ] **Step 3: Fill all Implementation records**
+- [x] **Step 3: Fill all Implementation records**
 
 Ensure Tasks 1–6 have date, repository/commit, files, commands/results,
 review findings, and deferred items. Tick completed checkboxes. Add a
 `Post-review fix wave` record if the final review produced one.
 
-- [ ] **Step 4: Update the memory note**
+- [x] **Step 4: Update the memory note**
 
 In `/root/code/go-gost/.memory/notes/llm-api-converter-magpie-eval.md`, change
 the 2026-11-06 observation to say P1 is also fixed and list the task SHAs.
@@ -1200,13 +1200,31 @@ cannot contain its own SHA, use the same follow-up docs commit pattern as P0.
 
 **Implementation record**
 
-- Status: Pending
-- Date:
+- Status: Complete
+- Date: 2026-11-06
 - Repository / commit:
+  - `llm-api-converter` @ `DOCS_SHA_PENDING` (`docs(convert): record P1 review status`, branch `feat/anthropic-openai-p1`).
+  - `/root/code/go-gost` @ `MEMORY_SHA_PENDING` (`docs(memory): record llm-api-converter P1 review`).
+  - A commit cannot contain its own SHA; both SHAs were filled in by the follow-up docs commit `docs(convert): record task 7 commit SHAs` in `llm-api-converter`, matching the P0 pattern.
 - Files changed:
+  - `docs/reviews/2026-11-06-anthropic-openai-chat-review.md` — header status changed to “P0 and P1 fixed and verified; P2 findings remain open”; added the `P1 Status` table with P1-1…P1-15 as fixed and the task SHAs (`e534397`, `7620613`, `d2ec345`, `8d9e8d3`, `1ee9c9f`, `0f53577`, fix round `2de9c52`); added the verification commands with the verified HEAD `40e70e9`; updated the P0 note and Follow-up section to include the P1 plan and keep only P2 open.
+  - `docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p1.md` — ticked the completed Task 7 checkboxes, filled this record, and corrected the Task 6 `convert/convert.go` bullet that still described the unscoped end-phase `handler.EmitError` dispatch; the fix-round record supersedes it.
+  - `/root/code/go-gost/.memory/notes/llm-api-converter-magpie-eval.md` — the 2026-11-06 observation now records that P1 is fixed, lists the task SHAs and fix round, and references the review and P1 plan paths.
+  - `/root/code/go-gost/.memory/MEMORY.md` — updated the `llm-api-converter` index line to include P1; left uncommitted because the file already had unrelated edits.
 - Tests / commands:
+  - `cd llm-api-converter && go test -count=1 ./...` → PASS: `convert` 0.047s, `engine` 0.004s, `rewriter` 0.009s, `tests/e2e` 2.377s; `llm-api-converter` and `cmd` have no test files.
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS: `convert` 1.224s, `engine` 1.018s, `rewriter` 1.031s.
+  - `go vet ./...` → clean.
+  - `git diff --check` → clean.
+  - All commands ran at HEAD `40e70e9` (`feat/anthropic-openai-p1`).
 - Review findings:
+  - No production code or tests were changed in this task; the suite result matches the Task 6 fix round.
+  - P1-12 and P1-15 carry both the implementation commit `0f53577` and the post-review fix round `2de9c52`; the status table records both.
+  - All P1 findings map to a merged task commit; P2 findings remain open by design.
+  - The memory note is committed separately in `/root/code/go-gost`; `MEMORY.md` is intentionally uncommitted to avoid sweeping unrelated edits into the memory commit.
 - Deferred:
+  - P2 findings from the review remain open; no task in this plan covers them.
+  - The resolved docs and memory SHAs are recorded by the follow-up docs commit because a commit cannot contain its own SHA.
 
 ---
 
