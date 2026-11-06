@@ -875,7 +875,7 @@ git commit -m "fix(convert): preserve image URLs and structured output"
 
 - Status: Complete
 - Date: 2026-11-06
-- Repository / commit: `llm-api-converter` @ `pending` (`fix(convert): preserve image URLs and structured output`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, the updated existing test, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-4.
+- Repository / commit: `llm-api-converter` @ `1ee9c9f` (`fix(convert): preserve image URLs and structured output`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, the updated existing test, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-4.
 - Files changed:
   - `convert/types.go` — added `OpenAIChatRequest.ResponseFormat`, `OpenAIResponseFormat`, `OpenAIJSONSchema`, `AnthropicOutputConfig.Format`, `AnthropicOutputFormat`, `AnthropicImageSource.URL`, the shared `jsonOutputInstruction` string, and `jsonSchemaValue` (rejects nil/empty-object schemas). The `media_type`/`data` image-source tags became `omitempty` so URL sources do not serialize empty base64 fields.
   - `convert/openai_to_anthropic.go` — `convertImageURL` now turns non-data `image_url` values into `AnthropicImageSource{Type:"url"}` while base64 data URIs keep the existing path. `convertOpenAIRequestToAnthropic` maps `json_schema` with a non-empty schema to `output_config.format`, falls back to the JSON instruction for `json_object` and schema-less `json_schema`, and appends that instruction to the collected system texts (never a second system block). Added `openAIResponseFormatToAnthropic`.
