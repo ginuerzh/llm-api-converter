@@ -1,6 +1,6 @@
 package main
 
-import "llm-api-converter/cmd"
+import "github.com/ginuerzh/llm-api-converter/cmd"
 
 func main() {
 	cmd.Execute()

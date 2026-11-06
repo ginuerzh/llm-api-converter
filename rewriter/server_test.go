@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"llm-api-converter/convert"
+	"github.com/ginuerzh/llm-api-converter/convert"
 )
 
 func TestRewriteEndpoint_OpenAIRequest(t *testing.T) {
@@ -298,17 +298,18 @@ func TestSSELifecyclePhases(t *testing.T) {
 		}
 	})
 
-		t.Run("nil data without SSE phase passes through empty data", func(t *testing.T) {
-			reqBody := rewriteRequest{}
-			resp := doPost(t, ts.URL, reqBody)
-			if !resp.OK {
-				t.Fatal("expected ok=true for empty data pass-through")
-			}
-			if len(resp.Data) != 0 {
-				t.Fatalf("expected empty data, got %d bytes", len(resp.Data))
-			}
-		})
+	t.Run("nil data without SSE phase passes through empty data", func(t *testing.T) {
+		reqBody := rewriteRequest{}
+		resp := doPost(t, ts.URL, reqBody)
+		if !resp.OK {
+			t.Fatal("expected ok=true for empty data pass-through")
+		}
+		if len(resp.Data) != 0 {
+			t.Fatalf("expected empty data, got %d bytes", len(resp.Data))
+		}
+	})
 }
+
 // -- parseModelMap tests ------------------------------------------
 
 func TestParseModelMap_WithProtocol(t *testing.T) {

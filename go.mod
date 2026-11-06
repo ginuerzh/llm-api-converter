@@ -1,4 +1,4 @@
-module llm-api-converter
+module github.com/ginuerzh/llm-api-converter
 
 go 1.26.4
 
