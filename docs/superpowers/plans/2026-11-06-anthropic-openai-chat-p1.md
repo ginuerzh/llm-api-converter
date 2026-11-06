@@ -749,7 +749,7 @@ git commit -m "fix(convert): map reasoning-model params and tool stops"
 - Adds `OpenAIChatRequest.ResponseFormat *OpenAIResponseFormat` and
   `AnthropicOutputConfig.Format *AnthropicOutputFormat`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestP1_OpenAIImageURLPreserved(t *testing.T) {
@@ -831,13 +831,13 @@ func TestP1_JSONObjectFallsBackToInstruction(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP1_(OpenAIImageURLPreserved|AnthropicURLImagePreserved|StructuredOutputJSONSchemaToAnthropic|AnthropicStructuredOutputToOpenAI|JSONObjectFallsBackToInstruction)' -v`
 
 Expected: FAIL — URL images are dropped; `response_format`/`output_config.format` are not modeled.
 
-- [ ] **Step 3: Implement the mappings**
+- [x] **Step 3: Implement the mappings**
 
 - Add `URL string json:"url,omitempty"` to `AnthropicImageSource`.
 - `convertImageURL`: for non-data URLs return
@@ -854,13 +854,13 @@ Expected: FAIL — URL images are dropped; `response_format`/`output_config.form
 - Merge the structured-output instruction with the existing tool-choice
   instruction using `"\n\n"`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP1_' -v`
 
 Expected: PASS.
 
-- [ ] **Step 5: Run the full suite and commit**
+- [x] **Step 5: Run the full suite and commit**
 
 Run: `cd llm-api-converter && go test -count=1 ./... && go vet ./...`
 
@@ -873,13 +873,32 @@ git commit -m "fix(convert): preserve image URLs and structured output"
 
 **Implementation record**
 
-- Status: Pending
-- Date:
-- Repository / commit:
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter` @ `pending` (`fix(convert): preserve image URLs and structured output`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, the updated existing test, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-4.
 - Files changed:
+  - `convert/types.go` — added `OpenAIChatRequest.ResponseFormat`, `OpenAIResponseFormat`, `OpenAIJSONSchema`, `AnthropicOutputConfig.Format`, `AnthropicOutputFormat`, `AnthropicImageSource.URL`, the shared `jsonOutputInstruction` string, and `jsonSchemaValue` (rejects nil/empty-object schemas). The `media_type`/`data` image-source tags became `omitempty` so URL sources do not serialize empty base64 fields.
+  - `convert/openai_to_anthropic.go` — `convertImageURL` now turns non-data `image_url` values into `AnthropicImageSource{Type:"url"}` while base64 data URIs keep the existing path. `convertOpenAIRequestToAnthropic` maps `json_schema` with a non-empty schema to `output_config.format`, falls back to the JSON instruction for `json_object` and schema-less `json_schema`, and appends that instruction to the collected system texts (never a second system block). Added `openAIResponseFormatToAnthropic`.
+  - `convert/anthropic_to_openai.go` — `convertAnthropicRequestToOpenAI` maps `output_config.format.type == "json_schema"` with a schema to `response_format` (`json_schema.name = "response"`), falls back to the JSON instruction otherwise, and joins it to the DeepSeek tool-choice instruction with `"\n\n"` before the existing single-system-message logic. Normal user images now use `anthropicImageURLPart` (base64 or URL), and JSON-decoded tool-result images (`imageURLPart`) accept URL sources; `dataURIImagePart` delegates to `imageURLPartFromURL`.
+  - `convert/anthropic_openai_p1_test.go` — the five plan tests plus a schema-less `json_schema` fallback test and a tool-choice + structured-output merge test.
+  - `convert/anthropic_to_openai_test.go` — updated `TestConvert_ToolResultContentAlwaysString`: a tool-result URL image is now forwarded as an `image_url` part instead of `[image omitted]`, and an unsupported source type still produces the placeholder.
 - Tests / commands:
+  - RED: `go test ./convert -run 'TestP1_(OpenAIImageURLPreserved|AnthropicURLImagePreserved|StructuredOutputJSONSchemaToAnthropic|AnthropicStructuredOutputToOpenAI|JSONObjectFallsBackToInstruction)' -v` → build failure: `img.Source.URL undefined`, `anth.OutputConfig.Format undefined`, `oai.ResponseFormat undefined`. With the new fields present but no mapping: `TestP1_OpenAIImageURLPreserved` panicked with `index out of range [1] with length 1` (URL image dropped); `AnthropicURLImagePreserved` → `parts = []`; `StructuredOutputJSONSchemaToAnthropic` → `output_config = <nil>`; `AnthropicStructuredOutputToOpenAI` → `response_format = <nil>`; `JSONObjectFallsBackToInstruction` → `no JSON instruction in system: []`.
+  - GREEN: same command → PASS (5/5); `TestP1_(JSONSchemaWithoutSchemaFallsBackToInstruction|StructuredInstructionMergesWithToolChoice)` → PASS; full `go test ./convert -run 'TestP1_' -v` → PASS (38 top-level tests, 48 including subtests).
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS.
+  - `go vet ./...` → clean; `gofmt -l` on the changed files and `git diff --check` → clean.
 - Review findings:
+  - Task 4's `isOpenAIReasoningModel` branch is untouched; `response_format` is set independently, so reasoning targets still get `max_completion_tokens` and lose sampling params.
+  - A valid schema never also appends the JSON instruction, and no empty `output_config`/`response_format` is emitted; schema-less `json_schema` and `json_object` both use the exact `"Respond with a JSON object only."` text.
+  - The Anthropic→OpenAI instruction is merged into `extraInstruction` with `"\n\n"` before the existing system-message branch, so an existing system text produces one system message, not two.
+  - URL images are preserved in normal user content and in tool-result image arrays; base64 conversion is unchanged for valid sources. The only existing expectation that contradicted P1-9 was the tool-result URL case, which was updated.
+  - No dependency, registry/model-map, routing, passthrough, or core-module changes.
 - Deferred:
+  - `OpenAIJSONSchema.Strict` is parsed but not forwarded: Anthropic `output_config.format` has no strict equivalent.
+  - Anthropic `output_config.format` types other than `json_schema` are left untouched because no other type is currently defined.
+  - Non-`data:` OpenAI image URLs are passed through without scheme validation; the converter never fetches them.
+  - The resolved SHA is recorded by the follow-up docs commit, matching Tasks 1-4.
 
 ---
 

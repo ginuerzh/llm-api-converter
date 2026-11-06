@@ -241,8 +241,33 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 		oai.Thinking = thinkingToOpenAiGLM(req.Thinking)
 	}
 
+	// Structured output: a schema maps to response_format, while a
+	// json_schema format without a schema falls back to a system instruction.
+	var structuredInstruction string
+	if req.OutputConfig != nil && req.OutputConfig.Format != nil &&
+		req.OutputConfig.Format.Type == "json_schema" {
+		if schema := jsonSchemaValue(req.OutputConfig.Format.Schema); schema != nil {
+			oai.ResponseFormat = &OpenAIResponseFormat{
+				Type: "json_schema",
+				JSONSchema: &OpenAIJSONSchema{
+					Name:   "response",
+					Schema: schema,
+				},
+			}
+		} else {
+			structuredInstruction = jsonOutputInstruction
+		}
+	}
+
 	// Tool choice instruction for DeepSeek (softened to system instruction).
 	extraInstruction := toolChoiceInstruction(req.ToolChoice, outputModel)
+	if structuredInstruction != "" {
+		if extraInstruction != "" {
+			extraInstruction += "\n\n" + structuredInstruction
+		} else {
+			extraInstruction = structuredInstruction
+		}
+	}
 
 	// Top-level system → prepend as system message.
 	if len(req.System) > 0 {
@@ -375,8 +400,8 @@ func convertAnthropicUserMessage(msg AnthropicMessage) []OpenAIMessage {
 				})
 			}
 		case "image":
-			if block.Source != nil && block.Source.Type == "base64" {
-				parts = append(parts, dataURIImagePart(block.Source.MediaType, block.Source.Data))
+			if part := anthropicImageURLPart(block.Source); part != nil {
+				parts = append(parts, part)
 			}
 		}
 	}
@@ -440,33 +465,66 @@ func toolResultContent(content any) (string, []map[string]any) {
 	}
 }
 
+// anthropicImageURLPart converts a typed Anthropic image source into an OpenAI
+// image_url content part. Unsupported or incomplete sources return nil.
+func anthropicImageURLPart(src *AnthropicImageSource) map[string]any {
+	if src == nil {
+		return nil
+	}
+	switch src.Type {
+	case "base64":
+		if src.MediaType == "" || src.Data == "" {
+			return nil
+		}
+		return dataURIImagePart(src.MediaType, src.Data)
+	case "url":
+		if src.URL == "" {
+			return nil
+		}
+		return imageURLPartFromURL(src.URL)
+	}
+	return nil
+}
+
 // imageURLPart converts a JSON-decoded Anthropic image block into an OpenAI
-// image_url content part. Only base64 data sources convert; anything else
+// image_url content part. Both base64 and URL sources convert; anything else
 // returns nil.
 func imageURLPart(m map[string]any) map[string]any {
 	src, ok := m["source"].(map[string]any)
 	if !ok {
 		return nil
 	}
-	if t, _ := src["type"].(string); t != "base64" {
-		return nil
+	switch t, _ := src["type"].(string); t {
+	case "base64":
+		mediaType, _ := src["media_type"].(string)
+		data, _ := src["data"].(string)
+		if mediaType == "" || data == "" {
+			return nil
+		}
+		return dataURIImagePart(mediaType, data)
+	case "url":
+		u, _ := src["url"].(string)
+		if u == "" {
+			return nil
+		}
+		return imageURLPartFromURL(u)
 	}
-	mediaType, _ := src["media_type"].(string)
-	data, _ := src["data"].(string)
-	if mediaType == "" || data == "" {
-		return nil
+	return nil
+}
+
+// imageURLPartFromURL builds an OpenAI image_url content part from a URL.
+func imageURLPartFromURL(url string) map[string]any {
+	return map[string]any{
+		"type": "image_url",
+		"image_url": map[string]any{
+			"url": url,
+		},
 	}
-	return dataURIImagePart(mediaType, data)
 }
 
 // dataURIImagePart builds an OpenAI image_url content part from base64 image data.
 func dataURIImagePart(mediaType, data string) map[string]any {
-	return map[string]any{
-		"type": "image_url",
-		"image_url": map[string]any{
-			"url": "data:" + mediaType + ";base64," + data,
-		},
-	}
+	return imageURLPartFromURL("data:" + mediaType + ";base64," + data)
 }
 
 func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions, model string, ctxParts []string) OpenAIMessage {

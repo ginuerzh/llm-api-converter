@@ -12,26 +12,27 @@ type OpenAIChatRequest struct {
 	Model    string          `json:"model"`
 	Messages []OpenAIMessage `json:"messages"`
 
-	MaxTokens            *int         `json:"max_tokens,omitempty"`
-	MaxCompletionTokens  *int         `json:"max_completion_tokens,omitempty"`
-	Temperature          *float64     `json:"temperature,omitempty"`
-	TopP                 *float64     `json:"top_p,omitempty"`
-	TopK                 *int         `json:"top_k,omitempty"` // x Groq
-	Stop                 any          `json:"stop,omitempty"`  // string or []string
-	Stream               *bool        `json:"stream,omitempty"`
-	StreamOptions        any          `json:"stream_options,omitempty"`
-	Tools                []OpenAITool `json:"tools,omitempty"`
-	ToolChoice           any          `json:"tool_choice,omitempty"`
-	Thinking             any          `json:"thinking,omitempty"`          // DeepSeek extended thinking
-	ReasoningEffort      any          `json:"reasoning_effort,omitempty"`  // DeepSeek reasoning effort
-	ThinkingBudget       *int         `json:"thinking_budget,omitempty"`   // DeepSeek thinking budget
-	OpenAIPromptCacheKey string       `json:"prompt_cache_key,omitempty"`  // upstream prompt cache key
-	FrequencyPenalty     *float64     `json:"frequency_penalty,omitempty"` // ignored
-	PresencePenalty      *float64     `json:"presence_penalty,omitempty"`  // ignored
-	N                    *int         `json:"n,omitempty"`                 // ignored
-	LogitBias            any          `json:"logit_bias,omitempty"`        // ignored
-	User                 string       `json:"user,omitempty"`              // ignored
-	Metadata             any          `json:"metadata,omitempty"`
+	MaxTokens            *int                  `json:"max_tokens,omitempty"`
+	MaxCompletionTokens  *int                  `json:"max_completion_tokens,omitempty"`
+	Temperature          *float64              `json:"temperature,omitempty"`
+	TopP                 *float64              `json:"top_p,omitempty"`
+	TopK                 *int                  `json:"top_k,omitempty"` // x Groq
+	Stop                 any                   `json:"stop,omitempty"`  // string or []string
+	Stream               *bool                 `json:"stream,omitempty"`
+	StreamOptions        any                   `json:"stream_options,omitempty"`
+	Tools                []OpenAITool          `json:"tools,omitempty"`
+	ToolChoice           any                   `json:"tool_choice,omitempty"`
+	ResponseFormat       *OpenAIResponseFormat `json:"response_format,omitempty"`
+	Thinking             any                   `json:"thinking,omitempty"`          // DeepSeek extended thinking
+	ReasoningEffort      any                   `json:"reasoning_effort,omitempty"`  // DeepSeek reasoning effort
+	ThinkingBudget       *int                  `json:"thinking_budget,omitempty"`   // DeepSeek thinking budget
+	OpenAIPromptCacheKey string                `json:"prompt_cache_key,omitempty"`  // upstream prompt cache key
+	FrequencyPenalty     *float64              `json:"frequency_penalty,omitempty"` // ignored
+	PresencePenalty      *float64              `json:"presence_penalty,omitempty"`  // ignored
+	N                    *int                  `json:"n,omitempty"`                 // ignored
+	LogitBias            any                   `json:"logit_bias,omitempty"`        // ignored
+	User                 string                `json:"user,omitempty"`              // ignored
+	Metadata             any                   `json:"metadata,omitempty"`
 }
 
 type OpenAIMessage struct {
@@ -76,6 +77,36 @@ type OpenAIFunction struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Parameters  any    `json:"parameters"`
+}
+
+// OpenAIResponseFormat is the OpenAI structured-output configuration.
+type OpenAIResponseFormat struct {
+	Type       string            `json:"type"` // "text", "json_object", or "json_schema"
+	JSONSchema *OpenAIJSONSchema `json:"json_schema,omitempty"`
+}
+
+// OpenAIJSONSchema describes a structured-output schema.
+type OpenAIJSONSchema struct {
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	Schema      any    `json:"schema,omitempty"`
+	Strict      bool   `json:"strict,omitempty"`
+}
+
+// jsonOutputInstruction is the system fallback for schema-less structured
+// output, for protocols that accept a schema but not a bare JSON mode.
+const jsonOutputInstruction = "Respond with a JSON object only."
+
+// jsonSchemaValue returns schema when it carries content and nil otherwise.
+// An empty object has no structured-output meaning and is treated as absent.
+func jsonSchemaValue(schema any) any {
+	if schema == nil {
+		return nil
+	}
+	if m, ok := schema.(map[string]any); ok && len(m) == 0 {
+		return nil
+	}
+	return schema
 }
 
 // -------- OpenAI Chat Completions (Response) --------
@@ -129,7 +160,14 @@ type AnthropicThinking struct {
 
 // AnthropicOutputConfig is the output configuration block (e.g. effort).
 type AnthropicOutputConfig struct {
-	Effort string `json:"effort,omitempty"` // "low"|"medium"|"high"|"max"
+	Effort string                 `json:"effort,omitempty"` // "low"|"medium"|"high"|"max"
+	Format *AnthropicOutputFormat `json:"format,omitempty"`
+}
+
+// AnthropicOutputFormat is the structured-output format configuration.
+type AnthropicOutputFormat struct {
+	Type   string `json:"type"` // "json_schema"
+	Schema any    `json:"schema,omitempty"`
 }
 
 type AnthropicRequest struct {
@@ -322,9 +360,10 @@ type AnthropicTextBlock struct {
 }
 
 type AnthropicImageSource struct {
-	Type      string `json:"type"`       // "base64"
-	MediaType string `json:"media_type"` // e.g. "image/jpeg"
-	Data      string `json:"data"`
+	Type      string `json:"type"`                 // "base64" or "url"
+	MediaType string `json:"media_type,omitempty"` // e.g. "image/jpeg"
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 type AnthropicToolChoice struct {

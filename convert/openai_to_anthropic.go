@@ -214,6 +214,22 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 	}
 	anthropic.Metadata = anthropicMetadata(req.Metadata, req.User)
 
+	// Structured output: a schema maps to output_config.format, while
+	// schema-less JSON modes fall back to a system instruction.
+	var structuredInstruction string
+	if req.ResponseFormat != nil {
+		switch req.ResponseFormat.Type {
+		case "json_schema":
+			if format := openAIResponseFormatToAnthropic(req.ResponseFormat); format != nil {
+				anthropic.OutputConfig = &AnthropicOutputConfig{Format: format}
+			} else {
+				structuredInstruction = jsonOutputInstruction
+			}
+		case "json_object":
+			structuredInstruction = jsonOutputInstruction
+		}
+	}
+
 	// Stop sequences.
 	if req.Stop != nil {
 		switch v := req.Stop.(type) {
@@ -293,7 +309,11 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 		stubHistoryTools(&anthropic, anthropic.Messages)
 	}
 
-	// Top-level system field.
+	// Top-level system field. The structured-output instruction is appended as
+	// one more system text so it never becomes a second system message.
+	if structuredInstruction != "" {
+		systemTexts = append(systemTexts, structuredInstruction)
+	}
 	anthropic.System = anthropicSystemBlocks(systemTexts)
 
 	// Edge case: if messages ended up empty after filtering (e.g. only system),
@@ -370,6 +390,20 @@ func anthropicSystemBlocks(texts []string) []AnthropicTextBlock {
 		return nil
 	}
 	return []AnthropicTextBlock{{Type: "text", Text: strings.Join(parts, "\n")}}
+}
+
+// openAIResponseFormatToAnthropic maps an OpenAI response_format to Anthropic's
+// output_config.format. It returns nil when no usable schema is present; the
+// caller then falls back to a system instruction.
+func openAIResponseFormatToAnthropic(rf *OpenAIResponseFormat) *AnthropicOutputFormat {
+	if rf == nil || rf.Type != "json_schema" || rf.JSONSchema == nil {
+		return nil
+	}
+	schema := jsonSchemaValue(rf.JSONSchema.Schema)
+	if schema == nil {
+		return nil
+	}
+	return &AnthropicOutputFormat{Type: "json_schema", Schema: schema}
 }
 
 // flattenContentForGLM flattens multi-part content arrays to plain strings.
@@ -479,9 +513,20 @@ func convertImageURL(m map[string]any) *AnthropicContent {
 		return nil
 	}
 
-	// Only support data URIs with base64 encoding.
+	// Remote URLs pass through as Anthropic URL image sources.
+	if !strings.HasPrefix(url, "data:") {
+		return &AnthropicContent{
+			Type: "image",
+			Source: &AnthropicImageSource{
+				Type: "url",
+				URL:  url,
+			},
+		}
+	}
+
+	// Only support base64 data URIs.
 	if !strings.HasPrefix(url, "data:image/") {
-		slog.Debug("skipping non-data-URI image URL")
+		slog.Debug("skipping non-image data URI")
 		return nil
 	}
 

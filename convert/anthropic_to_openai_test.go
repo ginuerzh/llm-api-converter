@@ -152,6 +152,7 @@ func TestConvert_StopSequencesAlwaysArray(t *testing.T) {
 		}
 	}
 }
+
 // Claude Code sends tool_result content as a block array when the tool output
 // contains an image (Read on a PNG, screenshots). The OpenAI tool role requires
 // string content; strict upstreams reject arrays with
@@ -165,13 +166,15 @@ func TestConvert_ToolResultContentAlwaysString(t *testing.T) {
 		content  string
 		want     string
 		wantImgs int
+		wantURL  string
 	}{
-		{"string content", `"plain output"`, "plain output", 0},
-		{"text and image", `[{"type":"text","text":"screenshot below"},` + img + `]`, "screenshot below", 1},
-		{"image only", `[` + img + `]`, "", 1},
-		{"empty array", `[]`, "", 0},
-		{"non-base64 image", `[{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}]`, "[image omitted]", 0},
-		{"document block", `[{"type":"text","text":"pdf attached"},{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0="}}]`, "pdf attached\n[document omitted]", 0},
+		{"string content", `"plain output"`, "plain output", 0, ""},
+		{"text and image", `[{"type":"text","text":"screenshot below"},` + img + `]`, "screenshot below", 1, ""},
+		{"image only", `[` + img + `]`, "", 1, ""},
+		{"url image", `[{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}]`, "", 1, "https://example.com/a.png"},
+		{"empty array", `[]`, "", 0, ""},
+		{"unsupported image source", `[{"type":"image","source":{"type":"file","file_id":"f1"}}]`, "[image omitted]", 0, ""},
+		{"document block", `[{"type":"text","text":"pdf attached"},{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0="}}]`, "pdf attached\n[document omitted]", 0, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			body := `{"model":"claude","max_tokens":8192,"system":"sys","messages":[` +
@@ -222,9 +225,13 @@ func TestConvert_ToolResultContentAlwaysString(t *testing.T) {
 						continue
 					}
 					gotImgs++
+					wantURL := tt.wantURL
+					if wantURL == "" {
+						wantURL = imgURL
+					}
 					iu, _ := pm["image_url"].(map[string]any)
-					if u, _ := iu["url"].(string); u != imgURL {
-						t.Fatalf("image url: want %q, got %q", imgURL, u)
+					if u, _ := iu["url"].(string); u != wantURL {
+						t.Fatalf("image url: want %q, got %q", wantURL, u)
 					}
 				}
 			}

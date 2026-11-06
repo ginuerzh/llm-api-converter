@@ -685,3 +685,124 @@ func TestP1_StreamToolStopExplicitReasonsPreserved(t *testing.T) {
 		t.Fatalf("max_tokens stream finish = %s", out)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// P1-9/P1-10: URL images and structured output
+// ---------------------------------------------------------------------------
+
+func TestP1_OpenAIImageURLPreserved(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":[
+		{"type":"text","text":"see"},{"type":"image_url","image_url":{"url":"https://example.com/cat.png"}}]}]}`
+	b, _ := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 10})
+	var anth AnthropicRequest
+	_ = json.Unmarshal(b, &anth)
+	img := anth.Messages[0].Content[1]
+	if img.Type != "image" || img.Source == nil || img.Source.Type != "url" || img.Source.URL != "https://example.com/cat.png" {
+		t.Fatalf("image = %+v", img)
+	}
+}
+
+func TestP1_AnthropicURLImagePreserved(t *testing.T) {
+	body := `{"model":"claude","max_tokens":10,"messages":[{"role":"user","content":[
+		{"type":"text","text":"see"},{"type":"image","source":{"type":"url","url":"https://example.com/cat.png"}}]}]}`
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "gpt-4o"})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	parts, _ := oai.Messages[0].Content.([]any)
+	if len(parts) != 2 {
+		t.Fatalf("parts = %+v", parts)
+	}
+	img, _ := parts[1].(map[string]any)
+	imageURL, _ := img["image_url"].(map[string]any)
+	if imageURL["url"] != "https://example.com/cat.png" {
+		t.Fatalf("image part = %+v", img)
+	}
+}
+
+func TestP1_StructuredOutputJSONSchemaToAnthropic(t *testing.T) {
+	body := `{"model":"gpt-4","response_format":{"type":"json_schema","json_schema":{
+		"name":"out","schema":{"type":"object","properties":{"a":{"type":"string"}}}}},
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 10})
+	var anth AnthropicRequest
+	_ = json.Unmarshal(b, &anth)
+	if anth.OutputConfig == nil || anth.OutputConfig.Format == nil || anth.OutputConfig.Format.Type != "json_schema" {
+		t.Fatalf("output_config = %+v", anth.OutputConfig)
+	}
+	schema, _ := anth.OutputConfig.Format.Schema.(map[string]any)
+	if schema["type"] != "object" {
+		t.Fatalf("schema = %+v", schema)
+	}
+}
+
+func TestP1_AnthropicStructuredOutputToOpenAI(t *testing.T) {
+	body := `{"model":"claude","max_tokens":10,"output_config":{"format":{
+		"type":"json_schema","schema":{"type":"object","properties":{"a":{"type":"string"}}}}},
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "gpt-4o"})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	if oai.ResponseFormat == nil || oai.ResponseFormat.Type != "json_schema" || oai.ResponseFormat.JSONSchema == nil {
+		t.Fatalf("response_format = %+v", oai.ResponseFormat)
+	}
+	if oai.ResponseFormat.JSONSchema.Name != "response" {
+		t.Fatalf("json_schema.name = %q, want response", oai.ResponseFormat.JSONSchema.Name)
+	}
+}
+
+func TestP1_JSONObjectFallsBackToInstruction(t *testing.T) {
+	body := `{"model":"gpt-4","response_format":{"type":"json_object"},
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 10})
+	var anth AnthropicRequest
+	_ = json.Unmarshal(b, &anth)
+	if anth.OutputConfig != nil && anth.OutputConfig.Format != nil {
+		t.Fatalf("json_object emitted a schema: %+v", anth.OutputConfig)
+	}
+	found := false
+	for _, block := range anth.System {
+		found = found || strings.Contains(strings.ToLower(block.Text), "json")
+	}
+	if !found {
+		t.Fatalf("no JSON instruction in system: %+v", anth.System)
+	}
+}
+
+func TestP1_JSONSchemaWithoutSchemaFallsBackToInstruction(t *testing.T) {
+	body := `{"model":"gpt-4","response_format":{"type":"json_schema","json_schema":{"name":"out"}},
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 10})
+	var anth AnthropicRequest
+	_ = json.Unmarshal(b, &anth)
+	if anth.OutputConfig != nil {
+		t.Fatalf("schema-less json_schema emitted output_config: %+v", anth.OutputConfig)
+	}
+	if len(anth.System) != 1 || !strings.Contains(anth.System[0].Text, jsonOutputInstruction) {
+		t.Fatalf("system = %+v, want the JSON instruction", anth.System)
+	}
+}
+
+func TestP1_StructuredInstructionMergesWithToolChoice(t *testing.T) {
+	body := `{"model":"claude","max_tokens":10,"system":"be brief",
+		"tools":[{"name":"f","input_schema":{"type":"object"}}],
+		"tool_choice":{"type":"any"},
+		"output_config":{"format":{"type":"json_schema"}},
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "deepseek-chat"})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	var systems []string
+	for _, msg := range oai.Messages {
+		if msg.Role == "system" {
+			text, _ := msg.Content.(string)
+			systems = append(systems, text)
+		}
+	}
+	if len(systems) != 1 {
+		t.Fatalf("system messages = %+v, want exactly one", systems)
+	}
+	want := "be brief\n\nThe caller requires a tool call for this turn. Call one of the available tools instead of answering directly.\n\n" + jsonOutputInstruction
+	if systems[0] != want {
+		t.Fatalf("system text = %q, want %q", systems[0], want)
+	}
+}
