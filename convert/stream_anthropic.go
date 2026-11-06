@@ -42,6 +42,9 @@ type AnthropicStreamConverter struct {
 
 	contentBlockTypes map[int]string // Anthropic block index → "text", "tool_use", "thinking"
 	toolCallByIndex   map[int]*fcState
+	// Blocks whose tool input arrived complete in content_block_start; later
+	// input_json_delta events for those blocks are ignored.
+	toolInputComplete map[int]bool
 }
 
 // NewAnthropicStreamConverter creates a new converter for Anthropic SSE →
@@ -58,6 +61,7 @@ func NewAnthropicStreamConverter(model string) *AnthropicStreamConverter {
 		},
 		contentBlockTypes: make(map[int]string),
 		toolCallByIndex:   make(map[int]*fcState),
+		toolInputComplete: make(map[int]bool),
 		textItemIx:        -1,
 		textPartIx:        -1,
 		reasonItemIx:      -1,
@@ -284,10 +288,12 @@ func (sc *AnthropicStreamConverter) handleContentBlockStart(data []byte) ([]byte
 	var evt struct {
 		Index        int `json:"index"`
 		ContentBlock struct {
-			Type     string `json:"type"` // "text", "tool_use", "thinking"
-			ID       string `json:"id,omitempty"`
-			Name     string `json:"name,omitempty"`
-			Thinking string `json:"thinking,omitempty"`
+			Type     string          `json:"type"` // "text", "tool_use", "thinking"
+			ID       string          `json:"id,omitempty"`
+			Name     string          `json:"name,omitempty"`
+			Thinking string          `json:"thinking,omitempty"`
+			Text     string          `json:"text,omitempty"`
+			Input    json.RawMessage `json:"input,omitempty"`
 		} `json:"content_block"`
 	}
 	if err := json.Unmarshal(data, &evt); err != nil {
@@ -312,6 +318,11 @@ func (sc *AnthropicStreamConverter) handleContentBlockStart(data []byte) ([]byte
 		events = append(events, eventBytes(ResponseOutputItemAdded, string(evt1)))
 		evt2, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseContentPartAdded, ItemID: fmt.Sprintf("%s.msg", sc.response.ID), PartIndex: &sc.textPartIx})
 		events = append(events, eventBytes(ResponseContentPartAdded, string(evt2)))
+		if evt.ContentBlock.Text != "" {
+			sc.accText += evt.ContentBlock.Text
+			evt3, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputTextDelta, ItemID: fmt.Sprintf("%s.msg", sc.response.ID), Delta: evt.ContentBlock.Text})
+			events = append(events, eventBytes(ResponseOutputTextDelta, string(evt3)))
+		}
 
 	case "tool_use":
 		sc.itemIndex++
@@ -319,8 +330,13 @@ func (sc *AnthropicStreamConverter) handleContentBlockStart(data []byte) ([]byte
 		if toolID == "" {
 			toolID = ensureToolID("")
 		}
+		args := ""
+		if anthropicToolStartInput(evt.ContentBlock.Input) {
+			args = canonicalJSONString(string(evt.ContentBlock.Input))
+			sc.toolInputComplete[evt.Index] = true
+		}
 		sc.toolCallByIndex[evt.Index] = &fcState{
-			ID: toolID, Name: evt.ContentBlock.Name, ItemIx: sc.itemIndex,
+			ID: toolID, Name: evt.ContentBlock.Name, ItemIx: sc.itemIndex, Arguments: args,
 		}
 		item := ResponsesOutputItem{
 			ID: toolID, Type: "function_call", Status: "in_progress",
@@ -329,6 +345,10 @@ func (sc *AnthropicStreamConverter) handleContentBlockStart(data []byte) ([]byte
 		sc.response.Output = append(sc.response.Output, item)
 		evt1, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseOutputItemAdded, Item: &item})
 		events = append(events, eventBytes(ResponseOutputItemAdded, string(evt1)))
+		if args != "" {
+			evt2, _ := json.Marshal(ResponsesStreamEvent{Type: ResponseFunctionCallArgumentsDelta, ItemID: toolID, Arguments: args})
+			events = append(events, eventBytes(ResponseFunctionCallArgumentsDelta, string(evt2)))
+		}
 
 	case "thinking":
 		sc.itemIndex++
@@ -399,6 +419,9 @@ func (sc *AnthropicStreamConverter) handleContentBlockDelta(data []byte) ([]byte
 		return eventBytes(ResponseOutputTextDelta, string(evtBytes)), nil
 
 	case "tool_use":
+		if sc.toolInputComplete[evt.Index] {
+			return nil, nil
+		}
 		var delta struct {
 			Type        string `json:"type"` // "input_json_delta"
 			PartialJSON string `json:"partial_json"`

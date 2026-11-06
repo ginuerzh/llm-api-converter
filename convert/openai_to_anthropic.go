@@ -673,7 +673,7 @@ func convertOpenAIResponseToAnthropic(body []byte, opts *ConvertOptions) ([]byte
 			stopReason := "tool_use"
 			anth.StopReason = &stopReason
 		}
-		if msg.Refusal != "" && len(msg.ToolCalls) == 0 &&
+		if msg.Refusal != "" && !hasAnthropicToolUse(anth.Content) &&
 			(choice.FinishReason == nil || *choice.FinishReason == "stop") {
 			stopReason := "refusal"
 			anth.StopReason = &stopReason

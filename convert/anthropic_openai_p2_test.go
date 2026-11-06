@@ -827,10 +827,10 @@ func TestP2_GeminiEndPhaseStreamErrorDispatched(t *testing.T) {
 		wantError  string
 		normalMark string
 	}{
-		{"gemini to openai", NewGeminiToOpenAIStreamConverter("gemini-2.5-flash"), "data: ", `[DONE]`},
-		{"gemini to anthropic", NewGeminiToAnthropicStreamConverter("claude"), "event: error", "message_stop"},
-		{"anthropic to gemini", NewAnthropicToGeminiStreamConverter("gemini-2.5-flash"), "data: ", "finishReason"},
-		{"openai to gemini", NewOpenAIToGeminiStreamConverter("gemini-2.5-flash"), "data: ", "finishReason"},
+		{"gemini to openai", NewGeminiToOpenAIStreamConverter("gemini-2.5-flash"), "error", `[DONE]`},
+		{"gemini to anthropic", NewGeminiToAnthropicStreamConverter("claude"), "error", "message_stop"},
+		{"anthropic to gemini", NewAnthropicToGeminiStreamConverter("gemini-2.5-flash"), "error", "finishReason"},
+		{"openai to gemini", NewOpenAIToGeminiStreamConverter("gemini-2.5-flash"), "error", "finishReason"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -848,5 +848,141 @@ func TestP2_GeminiEndPhaseStreamErrorDispatched(t *testing.T) {
 				t.Fatalf("normal close followed the error: %s", out)
 			}
 		})
+	}
+}
+
+func TestP2_InterleavedHeaderOnlyToolArguments(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	var all string
+	for _, chunk := range []string{
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"f","arguments":""}}]},"finish_reason":null}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"b","type":"function","function":{"name":"g","arguments":""}}]},"finish_reason":null}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"a\":1}"}}]},"finish_reason":null}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"b\":2}"}}]},"finish_reason":null}]}`,
+	} {
+		out, err := sc.HandleChunk([]byte(chunk))
+		if err != nil {
+			t.Fatal(err)
+		}
+		all += string(out)
+	}
+	all += string(sc.HandleStreamEnd())
+	if !strings.Contains(all, `"partial_json":"{\"a\":1}"`) {
+		t.Fatalf("call 0 arguments lost: %s", all)
+	}
+	if !strings.Contains(all, `"partial_json":"{\"b\":2}"`) {
+		t.Fatalf("call 1 arguments lost: %s", all)
+	}
+	if strings.Contains(all, `"partial_json":"{}"`) {
+		t.Fatalf("empty-object fallback used for a non-empty call: %s", all)
+	}
+}
+
+func TestP2_RefusalWithLegacyFunctionCallKeepsToolStop(t *testing.T) {
+	body := `{"id":"x","model":"gpt-4","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":null,"refusal":"no","function_call":{"name":"f","arguments":"{}"}}}]}`
+	out, err := convertOpenAIResponseToAnthropic([]byte(body), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp AnthropicResponse
+	if err := json.Unmarshal(out, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !hasAnthropicToolUse(resp.Content) {
+		t.Fatalf("content = %+v, want a tool_use block", resp.Content)
+	}
+	if resp.StopReason == nil || *resp.StopReason != "tool_use" {
+		t.Fatalf("stop_reason = %v, want tool_use", resp.StopReason)
+	}
+}
+
+func TestP2_NullToolArgumentsRejected(t *testing.T) {
+	t.Run("chat to anthropic", func(t *testing.T) {
+		sc := NewStreamConverter("claude", nil, nil)
+		sc.HandleStreamStart()
+		_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"f","arguments":"null"}}]},"finish_reason":null}]}`))
+		end := string(sc.HandleStreamEnd())
+		if !strings.Contains(end, "event: error") || !strings.Contains(end, "incomplete tool call arguments") {
+			t.Fatalf("null arguments closed normally: %s", end)
+		}
+	})
+
+	t.Run("chat to responses", func(t *testing.T) {
+		sc := NewResponsesStreamConverter("gpt-4o")
+		sc.HandleStreamStart()
+		_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"f","arguments":"null"}}]},"finish_reason":null}]}`))
+		end := string(sc.HandleStreamEnd())
+		if !strings.Contains(end, "response.failed") || !strings.Contains(end, "incomplete tool call arguments") {
+			t.Fatalf("null arguments closed normally: %s", end)
+		}
+	})
+
+	t.Run("anthropic to responses", func(t *testing.T) {
+		sc := NewAnthropicStreamConverter("claude")
+		sc.HandleStreamStart()
+		_, _ = sc.HandleChunk([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"f","input":{}}}`))
+		_, _ = sc.HandleChunk([]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"null"}}`))
+		end := string(sc.HandleStreamEnd())
+		if !strings.Contains(end, "response.failed") || !strings.Contains(end, "incomplete tool call arguments") {
+			t.Fatalf("null arguments closed normally: %s", end)
+		}
+	})
+}
+
+func TestP2_AnthropicToResponsesStartPayloads(t *testing.T) {
+	t.Run("text", func(t *testing.T) {
+		sc := NewAnthropicStreamConverter("claude")
+		sc.HandleStreamStart()
+		out, err := sc.HandleChunk([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hello"}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), `"delta":"hello"`) {
+			t.Fatalf("start text not emitted: %s", out)
+		}
+	})
+
+	t.Run("tool input", func(t *testing.T) {
+		sc := NewAnthropicStreamConverter("claude")
+		sc.HandleStreamStart()
+		out, err := sc.HandleChunk([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"f","input":{"x":1}}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), `"arguments":"{\"x\":1}"`) {
+			t.Fatalf("start tool input not emitted: %s", out)
+		}
+		end := string(sc.HandleStreamEnd())
+		if !strings.Contains(end, `"arguments":"{\"x\":1}"`) {
+			t.Fatalf("start tool input lost at finalize: %s", end)
+		}
+	})
+}
+
+func TestP2_GeminiBlockedResponseTerminal(t *testing.T) {
+	c := NewGeminiToOpenAIStreamConverter("gemini-2.5-flash")
+	out, err := c.HandleChunk([]byte(`{"candidates":[],"promptFeedback":{"blockReason":"SAFETY"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "content_filter") {
+		t.Fatalf("blocked error = %s, want content_filter", out)
+	}
+	if end := c.HandleStreamEnd(); end != nil {
+		t.Fatalf("normal close after blocked response = %s", end)
+	}
+}
+
+func TestP2_ParallelToolCallsWithoutToolsIgnored(t *testing.T) {
+	body := `{"model":"gpt-4","parallel_tool_calls":false,"messages":[{"role":"user","content":"hi"}]}`
+	out, err := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{ResolvedModel: "claude-sonnet"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req AnthropicRequest
+	_ = json.Unmarshal(out, &req)
+	if req.ToolChoice != nil {
+		t.Fatalf("tool_choice = %+v, want nil when no tools are declared", req.ToolChoice)
 	}
 }

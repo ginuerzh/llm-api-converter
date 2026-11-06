@@ -518,10 +518,15 @@ func (sc *StreamConverter) toolIndex(tc OpenAIDeltaToolCall) int {
 	return sc.lastToolIndex
 }
 
-// toolArgsComplete reports whether args is a complete JSON object.
+// toolArgsComplete reports whether args is a complete JSON object. JSON null,
+// arrays, and scalars are not valid tool input objects.
 func toolArgsComplete(args string) bool {
-	var v map[string]any
-	return json.Unmarshal([]byte(args), &v) == nil
+	var v any
+	if err := json.Unmarshal([]byte(args), &v); err != nil {
+		return false
+	}
+	_, ok := v.(map[string]any)
+	return ok
 }
 
 // streamToolArgsComplete reports whether accumulated tool arguments can close
@@ -578,7 +583,7 @@ func (sc *StreamConverter) handleToolCallDelta(tc OpenAIDeltaToolCall) [][]byte 
 	// block yet, because doing so would send its fragments to the open
 	// block's index. Hold it and release it when the stream ends.
 	if sc.curBlockType == "tool_use" && sc.openToolIndex >= 0 {
-		if open := sc.toolCallByIndex[sc.openToolIndex]; open != nil && !streamToolArgsComplete(open.Arguments) {
+		if open := sc.toolCallByIndex[sc.openToolIndex]; open != nil && !toolArgsComplete(open.Arguments) {
 			sc.toolCallByIndex[idx] = state
 			sc.heldTools[idx] = state
 			return nil
