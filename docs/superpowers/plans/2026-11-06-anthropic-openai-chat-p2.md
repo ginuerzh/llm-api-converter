@@ -163,7 +163,7 @@ git commit -m "fix(convert): make reasoning cache concurrency-safe"
 - Produces: `var strContentFilter = "content_filter"`
 - Behavior: Anthropic responses with no choices serialize `"content":[]` and `stop_reason:"end_turn"`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `convert/anthropic_openai_p2_test.go`:
 
@@ -341,13 +341,13 @@ func TestP2_EmptyChoicesContentArray(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests and capture RED**
+- [x] **Step 2: Run the tests and capture RED**
 
 Run: `go test -count=1 -run 'TestP2_(OpenAIStopReasonNormalization|StreamStopReasonNormalization|AnthropicStopReasonNormalization|OpenAIRefusalText|StreamRefusalDelta|EmptyChoicesContentArray)' ./convert`
 
 Expected: failures for `function_call`, `content_filter`, unknown/missing reasons, refusal text, stream refusal, and `content:null`.
 
-- [ ] **Step 3: Implement normalization and refusal handling**
+- [x] **Step 3: Implement normalization and refusal handling**
 
 In `convert/openai_to_anthropic.go`, add:
 
@@ -476,7 +476,7 @@ Update `convert/anthropic_openai_p1_test.go` in `TestP1_NonStreamToolStopInferen
 
 Update `convert/convert_test.go` in `TestConvert_ContentFilterFinishReason`: Anthropic `content_filter` now maps to OpenAI `content_filter`, matching the stream path, not `stop`.
 
-- [ ] **Step 4: Run the focused and full tests**
+- [x] **Step 4: Run the focused and full tests**
 
 Run: `go test -count=1 -run 'TestP2_|TestP1_NonStreamToolStopInference' ./convert`
 
@@ -486,7 +486,7 @@ Run: `go test -count=1 ./...`
 
 Expected: all packages PASS. If the contract validator rejects `refusal`, confirm it is in the allowed stop-reason list; it is.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/types.go convert/openai_to_anthropic.go convert/convert.go convert/stream.go convert/anthropic_to_openai.go convert/anthropic_openai_p1_test.go convert/convert_test.go convert/anthropic_openai_p2_test.go
@@ -494,12 +494,12 @@ git commit -m "fix(convert): normalize stop reasons and refusal content"
 ```
 
 **Implementation record:**
-- Date/status:
-- Repository/commit:
-- Files changed:
-- Tests/commands/results:
-- Review findings/fixes:
-- Deferred/limitations:
+- Date/status: 2026-11-06 / complete
+- Repository/commit: `llm-api-converter` `ae8391a`
+- Files changed: `convert/types.go`, `convert/openai_to_anthropic.go`, `convert/convert.go`, `convert/stream.go`, `convert/anthropic_to_openai.go`, `convert/anthropic_openai_p1_test.go`, `convert/convert_test.go`, `convert/anthropic_openai_p2_test.go`
+- Tests/commands/results: RED focused run failed on `function_call`, `content_filter`, unknown/missing reasons, refusal text, stream refusal, and `content:null`; GREEN `go test -count=1 -run 'TestP2_|TestP1_NonStreamToolStopInference|TestConvert_ContentFilterFinishReason' ./convert` → PASS; `go test -count=1 ./...` → all packages PASS; `go vet ./...` and `git diff --check` clean.
+- Review findings/fixes: existing `TestP1_NonStreamToolStopInference` and `TestConvert_ContentFilterFinishReason` expectations updated to the new consistent mapping.
+- Deferred/limitations: annotations remain deferred; empty choices intentionally serialize `[]` rather than inventing text.
 
 ---
 
