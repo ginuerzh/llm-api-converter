@@ -369,4 +369,3 @@ these are the rulings, now reflected above:
    apply to Responses → Anthropic as well, through the shared helpers.
 6. **Reasoning-model parameters:** model detection strips a `provider/` prefix
    before matching `o1`/`o3`/`o4`/`gpt-5`.
-
