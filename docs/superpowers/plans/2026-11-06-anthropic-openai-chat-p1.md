@@ -196,7 +196,7 @@ git commit -m "fix(convert): merge stream usage and accept typed deltas"
   `{"type":"object","properties":{}}`, then sets
   `req.ToolChoice = &AnthropicToolChoice{Type:"none"}`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestP1_ParallelToolResultsCoalesce(t *testing.T) {
@@ -283,13 +283,13 @@ func TestP1_HistoryToolsGetStubDeclarations(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP1_(ParallelToolResultsCoalesce|UnansweredToolUseGetsSyntheticResult|OrphanToolResultBecomesText|TrailingToolUseGetsSyntheticUserResult|HistoryToolsGetStubDeclarations)' -v`
 
 Expected: FAIL — parallel results are separate user messages, no synthetic result, orphan result stays a `tool_result`, no stub tools.
 
-- [ ] **Step 3: Implement the normalizer and stubs**
+- [x] **Step 3: Implement the normalizer and stubs**
 
 Create `convert/message_normalize.go`. Algorithm:
 
@@ -318,13 +318,13 @@ the message loop and before the empty-history fallback. Then call
 Apply the same two calls in `ConvertResponsesToAnthropic` after its message
 loop and tool mapping, using the same `len(anth.Tools) == 0` condition.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP1_' -v`
 
 Expected: PASS.
 
-- [ ] **Step 5: Run the full suite and commit**
+- [x] **Step 5: Run the full suite and commit**
 
 Run: `cd llm-api-converter && go test -count=1 ./... && go vet ./...`
 
@@ -337,13 +337,22 @@ git commit -m "fix(convert): normalize Anthropic tool histories"
 
 **Implementation record**
 
-- Status: Pending
-- Date:
-- Repository / commit:
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter` @ `<resolved by the follow-up docs commit that carries this line>` (`fix(convert): normalize Anthropic tool histories`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA is added by the follow-up docs commit, matching Task 1.
 - Files changed:
+  - `convert/message_normalize.go` — new: `normalizeAnthropicMessages` processes each run of consecutive user messages as one turn (so parallel tool results coalesce and all `tool_result` blocks precede text/image blocks), keeps results whose ID is open and unanswered, converts orphan/duplicate results to text (`"Tool result received."` when empty), appends synthetic `is_error` results (`"Tool result missing."`) for unanswered calls, closes a trailing open exchange, and merges consecutive same-role messages. `stubHistoryTools` adds one deduplicated stub declaration per distinct history `tool_use` name (description `"Tool from earlier conversation. Do not call."`, schema `{"type":"object","properties":{}}`) and sets `tool_choice: {"type":"none"}`; it is a no-op when tools are already declared or no history names exist.
+  - `convert/openai_to_anthropic.go` — calls the normalizer after the message loop and before the empty-history fallback; calls `stubHistoryTools` when no tools are declared.
+  - `convert/responses.go` — applies the same normalizer/stub calls in `ConvertResponsesToAnthropic` after the message loop and tool mapping, when `len(anth.Tools) == 0`.
+  - `convert/anthropic_openai_p1_test.go` — the five plan tests, a sixth Responses-path test, and three edge tests covering the exact synthetic/orphan text, stub schema/dedup/declared-tools guard, and results-first ordering across a user run.
 - Tests / commands:
-- Review findings:
-- Deferred:
+  - RED: `go test ./convert -run 'TestP1_(ParallelToolResultsCoalesce|UnansweredToolUseGetsSyntheticResult|OrphanToolResultBecomesText|TrailingToolUseGetsSyntheticUserResult|HistoryToolsGetStubDeclarations|ResponsesToolHistoryNormalized)' -v` → build failure `undefined: normalizeAnthropicMessages`; with a temporary passthrough stub all six failed for the expected reasons: `messages = 5, want 3`; `blocks = [text continue], want synthetic tool_result first`; orphan stayed `{Type:tool_result ...}`; `messages = 2, want trailing synthetic user`; `tools = [], want one lookup stub`; Responses `messages = 4, want 3`.
+  - GREEN: `cd llm-api-converter && go test ./convert -run 'TestP1_' -v` → PASS (9 new Task 2 tests plus Task 1 tests).
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS.
+  - `go vet ./...` → clean; `git diff --check` → clean.
+- Review findings: Self-review found no functional defects. Tool-use IDs are tracked only when non-empty: a legacy OpenAI `function_call` has no ID, so synthesizing a `tool_result` with an empty `tool_use_id` would be invalid; this also preserves `TestConvert_FunctionCallToToolUse` (its name still gets a stub). User runs are grouped before partitioning so a later result cannot end up after earlier text (`TestP1_UserRunKeepsResultsFirst`). Merging drops empty-content messages (Anthropic rejects empty arrays) and copies blocks instead of appending into the input's backing array. The normalizer/stub calls are guarded so declared tools, the pairwise converter registry/model map, and same-protocol passthrough are unchanged; no dependencies were added and no helper signatures were changed.
+- Deferred: Distinct stub tools are emitted in history order rather than sorted; no ordering requirement exists and output is deterministic for a given input. An orphan tool result containing only image blocks falls back to `"Tool result received."`, losing the image; no known client sends image-only tool results. A history `tool_use` with an empty ID remains unpaired because Anthropic has no valid result ID to use. The resolved SHA is recorded by the follow-up docs commit, matching Task 1.
 
 ---
 

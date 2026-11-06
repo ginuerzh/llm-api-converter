@@ -344,6 +344,14 @@ func ConvertResponsesToAnthropic(body []byte, opts *ConvertOptions) ([]byte, err
 		}
 	}
 
+	// Repair tool_use/tool_result pairing and coalesce same-role turns.
+	anth.Messages = normalizeAnthropicMessages(anth.Messages)
+	// History may reference tools the request no longer declares (including
+	// Responses tools that were filtered as non-function).
+	if len(anth.Tools) == 0 {
+		stubHistoryTools(&anth, anth.Messages)
+	}
+
 	// Edge case: Anthropic requires at least one message.
 	if len(anth.Messages) == 0 {
 		anth.Messages = []AnthropicMessage{

@@ -287,6 +287,14 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 		anthropic.Messages = append(anthropic.Messages, am)
 	}
 
+	// Repair tool_use/tool_result pairing and coalesce same-role turns.
+	anthropic.Messages = normalizeAnthropicMessages(anthropic.Messages)
+	// History may reference tools the request no longer declares; Anthropic
+	// requires every tool_use to have a declaration.
+	if len(anthropic.Tools) == 0 {
+		stubHistoryTools(&anthropic, anthropic.Messages)
+	}
+
 	// Top-level system field.
 	anthropic.System = anthropicSystemBlocks(systemTexts)
 
