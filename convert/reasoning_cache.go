@@ -233,15 +233,19 @@ func newMemoryStore(maxSize int) *memoryStore {
 func (ms *memoryStore) Get(key string) *cacheEntry {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
-	return ms.entries[key]
+	entry := ms.entries[key]
+	if entry == nil {
+		return nil
+	}
+	copied := *entry
+	return &copied
 }
 
 func (ms *memoryStore) Set(key string, entry *cacheEntry) {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
-	if existing, ok := ms.entries[key]; ok {
-		existing.Reasoning = entry.Reasoning
-		existing.AddedAt = entry.AddedAt
+	if _, ok := ms.entries[key]; ok {
+		ms.entries[key] = entry
 		return
 	}
 	if len(ms.entries) >= ms.maxSize {
@@ -311,9 +315,9 @@ type fileStore struct {
 }
 
 type fileStorePersisted struct {
-	Version   int                    `json:"version"`
-	UpdatedAt int64                  `json:"updated_at"`
-	Entries   map[string]cacheEntry  `json:"entries"`
+	Version   int                   `json:"version"`
+	UpdatedAt int64                 `json:"updated_at"`
+	Entries   map[string]cacheEntry `json:"entries"`
 }
 
 func newFileStore(path string, maxSize int) *fileStore {
