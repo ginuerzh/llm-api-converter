@@ -1109,10 +1109,28 @@ git commit -m "fix(convert): surface stream errors and block-start payloads"
   - Error messages stay JSON-safe because both converters build error payloads with `json.Marshal`.
   - No registry/model-map, routing, dependency, `core/`, or other-module changes.
 - Deferred:
-  - `AnthropicToOpenAIStreamConverter.EmitError` has no `finished` guard: if a stream already emitted an error chunk and the end phase also reports `stream_error`, a second error object is emitted (never a normal finish). `StreamConverter`, `ResponsesStreamConverter`, and `AnthropicStreamConverter` already guard this.
   - `content_block.signature` is decoded but dropped, because OpenAI Chat has no equivalent field (signatures are already lossy in this direction).
   - A relay that sends both start-event text and a following `text_delta` would produce duplicated text; the spec requires emitting start-event text immediately, and real relays use one or the other.
   - The resolved SHA is recorded by the follow-up docs commit, matching Tasks 1-5.
+
+**Fix round 1** (post-review)
+
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter` @ `2de9c52` (`fix(convert): make stream errors terminal and scope end-phase dispatch`, branch `feat/anthropic-openai-p1`). This docs commit records that SHA.
+- Findings fixed:
+  - Important 1 — `AnthropicToOpenAIStreamConverter.EmitError` is now terminal: it returns nil and keeps the stream finished once a normal `message_stop` or an upstream `error` event has already ended it. `StreamConverter.EmitError` also sets `finalized` itself, so it is terminal without relying on its caller.
+  - Important 2 — end-phase `stream_error` dispatch is scoped by concrete handler type. `HandleSSEEvent` routes only `*StreamConverter` and `*AnthropicToOpenAIStreamConverter`; `handleResponsesSSEEvent` routes only `*AnthropicStreamConverter` and `*ResponsesStreamConverter`. `*PassthroughStreamHandler` and the Gemini converters keep the previous `HandleStreamEnd()`/nil behavior, so `GeminiToAnthropicStreamConverter`'s non-JSON-safe `EmitError` is no longer reachable from the end phase.
+- Files changed: `convert/stream_anthropic_to_openai.go`, `convert/stream.go`, `convert/convert.go`, `convert/anthropic_openai_p1_test.go`.
+- Tests / commands:
+  - RED: `go test ./convert -run 'TestP1_(AnthropicToOpenAIEmitErrorAfterFinish|AnthropicErrorThenEndPhaseOneError|GeminiEndPhaseStreamErrorNotDispatched|StreamConverterEmitErrorIsTerminal)' -v` → all four failed: an error was emitted after `message_stop`; two error objects were produced after an upstream error event; the Gemini handler emitted `event: error` with malformed JSON (`"upstream "reset""`); a second `EmitError`/`HandleStreamEnd` still produced events.
+  - GREEN: same command → PASS (4/4).
+  - `go test ./convert ./engine ./rewriter -run 'TestP1_|TestRewriteEndPhaseStreamError|TestMetaFromStreamError'` → PASS.
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS.
+  - `go vet ./...` → clean; `git diff --check` → clean.
+- Review findings: the fix matches the review ruling; the four new tests cover terminality in both directions and the Gemini exclusion. No new concerns.
+- Deferred: none added by this round.
 
 ---
 
