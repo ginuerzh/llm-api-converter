@@ -239,11 +239,14 @@ func TestConvert_AssistantToolCalls(t *testing.T) {
 	if a.Messages[1].Role != "assistant" {
 		t.Fatalf("messages[1] role: want assistant, got %q", a.Messages[1].Role)
 	}
-	if len(a.Messages[1].Content) != 2 { // empty text + tool_use
-		t.Fatalf("assistant content: want 2 blocks, got %d", len(a.Messages[1].Content))
+	if len(a.Messages[1].Content) != 1 { // tool_use only, no empty text
+		t.Fatalf("assistant content: want 1 block, got %d: %+v", len(a.Messages[1].Content), a.Messages[1].Content)
 	}
 	toolUseFound := false
 	for _, c := range a.Messages[1].Content {
+		if c.Type == "text" && strings.TrimSpace(c.Text) == "" {
+			t.Fatalf("empty text block in assistant content: %+v", c)
+		}
 		if c.Type == "tool_use" && c.ID == "call_1" && c.Name == "get_weather" {
 			toolUseFound = true
 		}
@@ -636,7 +639,7 @@ func TestConvert_ToolChoiceSpecificFunction(t *testing.T) {
 	}
 }
 
-func TestConvert_NoToolsSetsToolChoiceNone(t *testing.T) {
+func TestConvert_NoToolsNoToolChoice(t *testing.T) {
 	body := `{
 		"model":"gpt-4",
 		"messages":[{"role":"user","content":"hi"}]
@@ -649,8 +652,8 @@ func TestConvert_NoToolsSetsToolChoiceNone(t *testing.T) {
 	if err := json.Unmarshal(b, &a); err != nil {
 		t.Fatal(err)
 	}
-	if a.ToolChoice == nil || a.ToolChoice.Type != "none" {
-		t.Fatalf("tool_choice: want none (no tools), got %+v", a.ToolChoice)
+	if a.ToolChoice != nil {
+		t.Fatalf("tool_choice: want nil (no tools), got %+v", a.ToolChoice)
 	}
 }
 

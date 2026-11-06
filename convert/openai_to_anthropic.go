@@ -264,10 +264,6 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 				}
 			}
 		}
-	} else {
-		// No tools declared — explicitly disable tool choice to prevent
-		// upstream models from hallucinating tool calls.
-		anthropic.ToolChoice = &AnthropicToolChoice{Type: "none"}
 	}
 
 	// Messages.
@@ -283,15 +279,16 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 			am.Role = "user"
 		}
 		am.Content = convertMessageContent(m)
+		// Anthropic rejects empty content arrays, so messages that produced
+		// no valid blocks are dropped instead of being sent as-is.
+		if len(am.Content) == 0 {
+			continue
+		}
 		anthropic.Messages = append(anthropic.Messages, am)
 	}
 
 	// Top-level system field.
-	if len(systemTexts) > 0 {
-		anthropic.System = []AnthropicTextBlock{
-			{Type: "text", Text: strings.Join(systemTexts, "\n")},
-		}
-	}
+	anthropic.System = anthropicSystemBlocks(systemTexts)
 
 	// Edge case: if messages ended up empty after filtering (e.g. only system),
 	// inject a minimal user message — Anthropic requires at least one message.
@@ -342,6 +339,33 @@ func extractTextContent(content any) string {
 	return fmt.Sprintf("%v", content)
 }
 
+// appendTextBlock appends a text block only when text has non-whitespace
+// content. Anthropic rejects empty and whitespace-only text blocks.
+func appendTextBlock(blocks []AnthropicContent, text string) []AnthropicContent {
+	if strings.TrimSpace(text) == "" {
+		return blocks
+	}
+	return append(blocks, AnthropicContent{Type: "text", Text: text})
+}
+
+// anthropicSystemBlocks builds the Anthropic top-level system field from the
+// collected system texts. Whitespace-only texts are dropped, and nil is
+// returned when nothing meaningful remains, so the omitempty system field is
+// omitted entirely. Anthropic rejects empty and whitespace-only text blocks.
+func anthropicSystemBlocks(texts []string) []AnthropicTextBlock {
+	parts := make([]string, 0, len(texts))
+	for _, text := range texts {
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		parts = append(parts, text)
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return []AnthropicTextBlock{{Type: "text", Text: strings.Join(parts, "\n")}}
+}
+
 // flattenContentForGLM flattens multi-part content arrays to plain strings.
 // GLM API does not support array-typed content (text + image_url parts).
 func flattenContentForGLM(msgs []OpenAIMessage) {
@@ -382,18 +406,18 @@ func convertMessageContent(msg OpenAIMessage) []AnthropicContent {
 
 func convertUserContent(content any) []AnthropicContent {
 	if content == nil {
-		return []AnthropicContent{{Type: "text", Text: ""}}
+		return nil
 	}
 
 	// Simple string.
 	if s, ok := content.(string); ok {
-		return []AnthropicContent{{Type: "text", Text: s}}
+		return appendTextBlock(nil, s)
 	}
 
 	// Array of content parts (text + image_url).
 	parts, ok := content.([]any)
 	if !ok {
-		return []AnthropicContent{{Type: "text", Text: fmt.Sprintf("%v", content)}}
+		return appendTextBlock(nil, fmt.Sprintf("%v", content))
 	}
 
 	var blocks []AnthropicContent
@@ -405,7 +429,7 @@ func convertUserContent(content any) []AnthropicContent {
 		switch m["type"] {
 		case "text":
 			txt, _ := m["text"].(string)
-			blocks = append(blocks, AnthropicContent{Type: "text", Text: txt})
+			blocks = appendTextBlock(blocks, txt)
 		case "image_url":
 			img := convertImageURL(m)
 			if img != nil {
@@ -472,17 +496,13 @@ func convertAssistantContent(msg OpenAIMessage) []AnthropicContent {
 				Thinking: msg.ReasoningContent,
 			})
 		}
-		blocks = append(blocks, AnthropicContent{Type: "text", Text: extractTextContent(msg.Content)})
+		blocks = appendTextBlock(blocks, extractTextContent(msg.Content))
 		for _, tc := range toolCalls {
-			var input any
-			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &input)
-			}
 			blocks = append(blocks, AnthropicContent{
 				Type:  "tool_use",
 				ID:    tc.ID, // preserve original ID — client uses it for tool_result matching
 				Name:  tc.Function.Name,
-				Input: input,
+				Input: anthropicToolInput(tc.Function.Arguments),
 			})
 		}
 		return blocks
@@ -490,15 +510,14 @@ func convertAssistantContent(msg OpenAIMessage) []AnthropicContent {
 
 	// Reasoning content without tools — single thinking + text.
 	if msg.ReasoningContent != "" {
-		return []AnthropicContent{
+		blocks := []AnthropicContent{
 			{Type: "thinking", Thinking: msg.ReasoningContent},
-			{Type: "text", Text: extractTextContent(msg.Content)},
 		}
+		return appendTextBlock(blocks, extractTextContent(msg.Content))
 	}
 
 	// Plain text.
-	text := extractTextContent(msg.Content)
-	return []AnthropicContent{{Type: "text", Text: text}}
+	return appendTextBlock(nil, extractTextContent(msg.Content))
 }
 
 func convertToolResultContent(msg OpenAIMessage) []AnthropicContent {
@@ -626,15 +645,11 @@ func convertOpenAIMessageToContent(msg OpenAIMessage) []AnthropicContent {
 			blocks = append(blocks, AnthropicContent{Type: "text", Text: text})
 		}
 		for _, tc := range calls {
-			var input any
-			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &input)
-			}
 			blocks = append(blocks, AnthropicContent{
 				Type:  "tool_use",
 				ID:    tc.ID,
 				Name:  tc.Function.Name,
-				Input: input,
+				Input: anthropicToolInput(tc.Function.Arguments),
 			})
 		}
 	} else {

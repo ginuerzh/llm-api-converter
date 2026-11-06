@@ -529,9 +529,10 @@ type OpenAIDeltaToolCall struct {
 
 // streamToolState tracks partial tool call state across deltas.
 type streamToolState struct {
-	ID        string
-	Name      string
-	Arguments string
+	ID         string
+	Name       string
+	Arguments  string
+	BlockIndex int // Anthropic content block index, valid once the block opens
 }
 
 // StreamPhase describes the SSE stream lifecycle phase.
