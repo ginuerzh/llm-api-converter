@@ -147,7 +147,7 @@ func (sc *StreamConverter) HandleChunk(data []byte) ([]byte, error) {
 	if delta.Content != "" {
 		sc.accumulatedText += delta.Content
 		sc.stopThinkingBlock()
-		events = append(events, sc.ensureBlock("text", "")...)
+		events = append(events, sc.ensureBlock("text", "", "")...)
 		events = append(events, sc.textDelta(delta.Content)...)
 	}
 
@@ -155,7 +155,7 @@ func (sc *StreamConverter) HandleChunk(data []byte) ([]byte, error) {
 	if delta.ReasoningContent != "" {
 		sc.accumulatedReasoning += delta.ReasoningContent
 		if !sc.thinkingBlockStopped {
-			events = append(events, sc.ensureBlock("thinking", "")...)
+			events = append(events, sc.ensureBlock("thinking", "", "")...)
 			events = append(events, sc.thinkingDelta(delta.ReasoningContent)...)
 		}
 	}
@@ -231,7 +231,7 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 
 	// Stream interrupted marker.
 	if sc.streamInterrupted {
-		events = append(events, sc.ensureBlock("text", "")...)
+		events = append(events, sc.ensureBlock("text", "", "")...)
 		events = append(events, sc.textDelta("\n\n[stream interrupted]")...)
 	}
 
@@ -240,7 +240,7 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 	// block but no text, leaving the final content array empty. Claude Code's
 	// safety classifier cannot parse an empty/no-content response.
 	if sc.accumulatedText == "" && len(sc.toolCallByIndex) == 0 {
-		events = append(events, sc.ensureBlock("text", "")...)
+		events = append(events, sc.ensureBlock("text", "", "")...)
 		events = append(events, sc.textDelta(" ")...)
 		events = append(events, sc.contentBlockStop())
 	}
@@ -303,8 +303,9 @@ func (sc *StreamConverter) EmitError(message string) []byte {
 // ensureBlock transitions to a new content block if needed.
 // If the current block type differs from the requested type, the current
 // block is stopped and a new content_block_start is emitted.
+// toolID and toolName are only used when blockType is "tool_use".
 // Returns the events (may be empty if already on the right block type).
-func (sc *StreamConverter) ensureBlock(blockType, toolMeta string) [][]byte {
+func (sc *StreamConverter) ensureBlock(blockType, toolID, toolName string) [][]byte {
 	var events [][]byte
 
 	if sc.curBlockType == blockType {
@@ -330,18 +331,43 @@ func (sc *StreamConverter) ensureBlock(blockType, toolMeta string) [][]byte {
 	sc.curBlockType = blockType
 	sc.curBlockIndex = idx
 
+	if blockType == "tool_use" {
+		events = append(events, toolUseBlockStart(idx, toolID, toolName))
+		return events
+	}
+
 	startPayload := fmt.Sprintf(
-		`data: {"type":"content_block_start","index":%d,"content_block":{"type":"%s"`,
+		`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":%d,"content_block":{"type":"%s"}}`,
 		idx, blockType,
 	)
-	if toolMeta != "" {
-		startPayload += "," + toolMeta
-	}
-	startPayload += `}}`
-
-	events = append(events, []byte("event: content_block_start\n"+startPayload))
+	events = append(events, []byte(startPayload))
 
 	return events
+}
+
+// toolUseBlockStart returns a content_block_start event for a tool_use block.
+// id and name are JSON-encoded so provider-supplied values cannot corrupt the
+// SSE payload. input is always an empty object; argument fragments follow in
+// input_json_delta events.
+func toolUseBlockStart(index int, id, name string) []byte {
+	block, err := json.Marshal(struct {
+		Type  string         `json:"type"`
+		ID    string         `json:"id"`
+		Name  string         `json:"name"`
+		Input map[string]any `json:"input"`
+	}{
+		Type:  "tool_use",
+		ID:    id,
+		Name:  name,
+		Input: map[string]any{},
+	})
+	if err != nil {
+		block = []byte(`{"type":"tool_use","id":"","name":"","input":{}}`)
+	}
+	return []byte(fmt.Sprintf(
+		`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":%d,"content_block":%s}`,
+		index, block,
+	))
 }
 
 // stopThinkingBlock sends a thinking block signature_delta + stop if the
@@ -453,9 +479,10 @@ func (sc *StreamConverter) handleToolCallDelta(tc OpenAIDeltaToolCall) [][]byte 
 	existing, seen := sc.toolCallByIndex[idx]
 
 	if seen {
-		// Fragments only reach the wire for the currently open block. A
-		// call that is held (or whose block already closed) keeps
-		// accumulating silently until the stream ends.
+		// Fragments reach the wire only for the currently open block. A held
+		// call keeps accumulating silently and is released at stream end; a
+		// call whose block already closed keeps accumulating but is never
+		// re-emitted.
 		existing.Arguments += tc.Function.Arguments
 		if idx != sc.openToolIndex || sc.curBlockType != "tool_use" {
 			return nil
@@ -489,8 +516,6 @@ func (sc *StreamConverter) handleToolCallDelta(tc OpenAIDeltaToolCall) [][]byte 
 
 	sc.toolCallByIndex[idx] = state
 
-	meta := fmt.Sprintf(`"id":"%s","name":"%s"`, toolID, name)
-
 	// If we're in a thinking block, stop it before tool_use.
 	var events [][]byte
 	if sc.curBlockType == "thinking" {
@@ -507,7 +532,7 @@ func (sc *StreamConverter) handleToolCallDelta(tc OpenAIDeltaToolCall) [][]byte 
 		sc.openToolIndex = -1
 	}
 
-	events = append(events, sc.ensureBlock("tool_use", meta)...)
+	events = append(events, sc.ensureBlock("tool_use", toolID, name)...)
 	state.BlockIndex = sc.curBlockIndex
 	sc.openToolIndex = idx
 
@@ -538,12 +563,9 @@ func (sc *StreamConverter) releaseHeldTools() [][]byte {
 		state := sc.heldTools[idx]
 		blockIndex := sc.nextBlockIndex
 		sc.nextBlockIndex++
+		state.BlockIndex = blockIndex
 
-		start := fmt.Sprintf(
-			`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":%d,"content_block":{"type":"tool_use","id":"%s","name":"%s","input":{}}}`,
-			blockIndex, state.ID, state.Name,
-		)
-		events = append(events, []byte(start))
+		events = append(events, toolUseBlockStart(blockIndex, state.ID, state.Name))
 
 		args := state.Arguments
 		if args == "" {

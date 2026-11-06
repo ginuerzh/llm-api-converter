@@ -306,11 +306,7 @@ func ConvertResponsesToAnthropic(body []byte, opts *ConvertOptions) ([]byte, err
 			result.systemTexts = append(result.systemTexts, instrText)
 		}
 	}
-	if len(result.systemTexts) > 0 {
-		anth.System = []AnthropicTextBlock{
-			{Type: "text", Text: strings.Join(result.systemTexts, "\n")},
-		}
-	}
+	anth.System = anthropicSystemBlocks(result.systemTexts)
 
 	// Convert OpenAI messages → Anthropic messages.
 	for _, msg := range result.messages {
@@ -339,7 +335,11 @@ func ConvertResponsesToAnthropic(body []byte, opts *ConvertOptions) ([]byte, err
 			})
 		}
 		sortAnthropicTools(anth.Tools)
-		if req.ToolChoice != nil {
+		// Non-function tools are skipped above, so req.Tools can be non-empty
+		// while anth.Tools is empty. Only map tool_choice when at least one
+		// Anthropic tool survived filtering; Anthropic rejects tool_choice
+		// without tools.
+		if len(anth.Tools) > 0 && req.ToolChoice != nil {
 			anth.ToolChoice = mapResponsesToolChoiceAnthropic(req.ToolChoice)
 		}
 	}
@@ -506,7 +506,7 @@ func parseResponsesInput(input json.RawMessage) responsesInputParseResult {
 			// Developer/system → system texts.
 			if role == "developer" || role == "system" {
 				systemText := responsesRawText(item.Content)
-				if systemText != "" {
+				if strings.TrimSpace(systemText) != "" {
 					result.systemTexts = append(result.systemTexts, systemText)
 				}
 				continue

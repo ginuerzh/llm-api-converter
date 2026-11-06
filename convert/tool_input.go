@@ -15,7 +15,7 @@ func anthropicToolInput(arguments string) any {
 	}
 	var v any
 	if err := json.Unmarshal([]byte(s), &v); err != nil {
-		return map[string]any{"input": arguments}
+		return map[string]any{"input": s}
 	}
 	if v == nil {
 		return map[string]any{}

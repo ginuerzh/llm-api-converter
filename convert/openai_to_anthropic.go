@@ -288,11 +288,7 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 	}
 
 	// Top-level system field.
-	if len(systemTexts) > 0 {
-		anthropic.System = []AnthropicTextBlock{
-			{Type: "text", Text: strings.Join(systemTexts, "\n")},
-		}
-	}
+	anthropic.System = anthropicSystemBlocks(systemTexts)
 
 	// Edge case: if messages ended up empty after filtering (e.g. only system),
 	// inject a minimal user message — Anthropic requires at least one message.
@@ -350,6 +346,24 @@ func appendTextBlock(blocks []AnthropicContent, text string) []AnthropicContent 
 		return blocks
 	}
 	return append(blocks, AnthropicContent{Type: "text", Text: text})
+}
+
+// anthropicSystemBlocks builds the Anthropic top-level system field from the
+// collected system texts. Whitespace-only texts are dropped, and nil is
+// returned when nothing meaningful remains, so the omitempty system field is
+// omitted entirely. Anthropic rejects empty and whitespace-only text blocks.
+func anthropicSystemBlocks(texts []string) []AnthropicTextBlock {
+	parts := make([]string, 0, len(texts))
+	for _, text := range texts {
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		parts = append(parts, text)
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return []AnthropicTextBlock{{Type: "text", Text: strings.Join(parts, "\n")}}
 }
 
 // flattenContentForGLM flattens multi-part content arrays to plain strings.

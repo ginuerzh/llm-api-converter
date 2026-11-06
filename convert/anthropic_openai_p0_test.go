@@ -48,7 +48,11 @@ func TestP0_OpenAIToAnthropicEmptyUserMessageDropped(t *testing.T) {
 	if err := json.Unmarshal(b, &a); err != nil {
 		t.Fatal(err)
 	}
-	if len(a.Messages) != 1 || a.Messages[0].Content[0].Text != "hi" {
+	if len(a.Messages) != 1 {
+		t.Fatalf("want 1 message, got %d: %s", len(a.Messages), b)
+	}
+	if a.Messages[0].Role != "user" || len(a.Messages[0].Content) != 1 ||
+		a.Messages[0].Content[0].Type != "text" || a.Messages[0].Content[0].Text != "hi" {
 		t.Fatalf("empty user message not dropped: %s", b)
 	}
 }
@@ -65,6 +69,9 @@ func TestP0_OpenAIToAnthropicAllEmptyMessagesStillHaveUser(t *testing.T) {
 	}
 	if len(a.Messages) != 1 || a.Messages[0].Role != "user" || len(a.Messages[0].Content) == 0 {
 		t.Fatalf("empty request not repaired: %s", b)
+	}
+	if a.Messages[0].Content[0].Type != "text" || strings.TrimSpace(a.Messages[0].Content[0].Text) == "" {
+		t.Fatalf("repaired message has no non-empty text: %s", b)
 	}
 }
 
@@ -104,6 +111,149 @@ func TestP0_ResponsesToAnthropicNoToolsNoToolChoice(t *testing.T) {
 	}
 }
 
+func TestP0_OpenAIToAnthropicEmptySystemOmitted(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "empty",
+			body: `{"model":"gpt-4","messages":[
+				{"role":"system","content":""},
+				{"role":"user","content":"hi"}
+			]}`,
+		},
+		{
+			name: "whitespace",
+			body: `{"model":"gpt-4","messages":[
+				{"role":"system","content":"   \n\t"},
+				{"role":"user","content":"hi"}
+			]}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := Convert([]byte(tc.body), opts())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(b, []byte(`"system"`)) {
+				t.Fatalf("empty system emitted: %s", b)
+			}
+			var a AnthropicRequest
+			if err := json.Unmarshal(b, &a); err != nil {
+				t.Fatal(err)
+			}
+			if len(a.System) != 0 {
+				t.Fatalf("system = %+v, want empty", a.System)
+			}
+		})
+	}
+}
+
+func TestP0_OpenAIToAnthropicSystemKeepsNonWhitespaceText(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[
+		{"role":"system","content":"   "},
+		{"role":"system","content":"be brief"},
+		{"role":"user","content":"hi"}
+	]}`
+	b, err := Convert([]byte(body), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a AnthropicRequest
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.System) != 1 || a.System[0].Text != "be brief" {
+		t.Fatalf("system = %+v, want one 'be brief' block: %s", a.System, b)
+	}
+}
+
+func TestP0_ResponsesToAnthropicEmptySystemOmitted(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "empty instructions",
+			body: `{"model":"gpt-4o","instructions":"","input":"hi"}`,
+		},
+		{
+			name: "whitespace instructions",
+			body: `{"model":"gpt-4o","instructions":"   ","input":"hi"}`,
+		},
+		{
+			name: "billing header leaves whitespace",
+			body: `{"model":"gpt-4o","instructions":"x-anthropic-billing-header: abc\n   ","input":"hi"}`,
+		},
+		{
+			name: "whitespace system item",
+			body: `{"model":"gpt-4o","input":[
+				{"type":"message","role":"system","content":"  "},
+				{"type":"message","role":"user","content":"hi"}
+			]}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := ConvertResponsesToAnthropic([]byte(tc.body), &ConvertOptions{Model: "claude", MaxTokens: 8192})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(b, []byte(`"system"`)) {
+				t.Fatalf("empty system emitted: %s", b)
+			}
+			var a AnthropicRequest
+			if err := json.Unmarshal(b, &a); err != nil {
+				t.Fatal(err)
+			}
+			if len(a.System) != 0 {
+				t.Fatalf("system = %+v, want empty", a.System)
+			}
+		})
+	}
+}
+
+func TestP0_ResponsesToAnthropicSystemKeepsNonWhitespaceText(t *testing.T) {
+	body := `{"model":"gpt-4o","instructions":"x-anthropic-billing-header: abc\n   ","input":[
+		{"type":"message","role":"system","content":"be brief"},
+		{"type":"message","role":"user","content":"hi"}
+	]}`
+	b, err := ConvertResponsesToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 8192})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a AnthropicRequest
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.System) != 1 || a.System[0].Text != "be brief" {
+		t.Fatalf("system = %+v, want one 'be brief' block: %s", a.System, b)
+	}
+}
+
+func TestP0_ResponsesToAnthropicNonFunctionToolsNoToolChoice(t *testing.T) {
+	body := `{"model":"gpt-4o","input":"hello","tools":[{"type":"web_search"}],"tool_choice":"auto"}`
+	b, err := ConvertResponsesToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 8192})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(b, []byte(`"tool_choice"`)) {
+		t.Fatalf("tool_choice emitted without tools after filtering: %s", b)
+	}
+	var a AnthropicRequest
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.ToolChoice != nil {
+		t.Fatalf("tool_choice = %+v, want nil", a.ToolChoice)
+	}
+	if len(a.Tools) != 0 {
+		t.Fatalf("tools = %+v, want empty", a.Tools)
+	}
+}
+
 func TestP0_ResponsesToAnthropicToolOnlyAssistantHasNoEmptyText(t *testing.T) {
 	body := `{"model":"gpt-5","instructions":"be brief","input":[
 		{"type":"message","role":"user","content":"weather?"},
@@ -118,6 +268,33 @@ func TestP0_ResponsesToAnthropicToolOnlyAssistantHasNoEmptyText(t *testing.T) {
 	}
 	if bytes.Contains(b, []byte(`{"type":"text"}`)) {
 		t.Fatalf("empty text block leaked from Responses path: %s", b)
+	}
+	var a AnthropicRequest
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	var sawToolUse bool
+	for _, m := range a.Messages {
+		for _, c := range m.Content {
+			if c.Type == "text" && strings.TrimSpace(c.Text) == "" {
+				t.Fatalf("empty text block: %+v\nbody: %s", m, b)
+			}
+			if c.Type == "tool_use" && c.ID == "call_1" {
+				if m.Role != "assistant" {
+					t.Fatalf("tool_use role = %q, want assistant", m.Role)
+				}
+				if c.Name != "get_weather" {
+					t.Fatalf("tool_use name = %q, want get_weather", c.Name)
+				}
+				if _, ok := c.Input.(map[string]any); !ok {
+					t.Fatalf("tool_use input type = %T, want object", c.Input)
+				}
+				sawToolUse = true
+			}
+		}
+	}
+	if !sawToolUse {
+		t.Fatalf("assistant tool_use block missing from Responses output: %s", b)
 	}
 }
 
@@ -246,21 +423,87 @@ func TestP0_StreamHeldToolCallsReleaseInIndexOrder(t *testing.T) {
 	}
 	end := string(sc.HandleStreamEnd())
 
-	call1 := strings.Index(end, `"id":"call_1"`)
-	call2 := strings.Index(end, `"id":"call_2"`)
-	if call1 < 0 || call2 < 0 {
-		t.Fatalf("held calls not released:\n%s", end)
+	events := parseP0SSEEvents(t, end)
+	type releasedCall struct {
+		id    string
+		index int
 	}
-	if call1 > call2 {
-		t.Fatalf("held calls released out of index order:\n%s", end)
+	var released []releasedCall
+	deltas := map[int]string{}
+	stops := map[int]int{}
+	for _, evt := range events {
+		switch evt.Type {
+		case "content_block_start":
+			if evt.ContentBlock.Type != "tool_use" {
+				t.Fatalf("unexpected start block type %q:\n%s", evt.ContentBlock.Type, end)
+			}
+			if evt.ContentBlock.Input == nil || len(evt.ContentBlock.Input) != 0 {
+				t.Fatalf("start %s input = %#v, want empty object:\n%s", evt.ContentBlock.ID, evt.ContentBlock.Input, end)
+			}
+			released = append(released, releasedCall{id: evt.ContentBlock.ID, index: evt.Index})
+		case "content_block_delta":
+			deltas[evt.Index] += evt.Delta.PartialJSON
+		case "content_block_stop":
+			stops[evt.Index]++
+		}
 	}
-	if !strings.Contains(end, `"type":"tool_use","id":"call_1","name":"g","input":{}`) {
-		t.Fatalf("call_1 start missing empty input object:\n%s", end)
+
+	if len(released) != 2 {
+		t.Fatalf("got %d released calls, want 2:\n%s", len(released), end)
 	}
-	if !strings.Contains(end, `"partial_json":"{}"`) {
-		t.Fatalf("call_1 empty arguments not released as an object:\n%s", end)
+	if released[0].id != "call_1" || released[1].id != "call_2" {
+		t.Fatalf("released %q then %q, want call_1 then call_2:\n%s", released[0].id, released[1].id, end)
 	}
-	if !strings.Contains(end, `"partial_json":"{\"c\":3}"`) {
-		t.Fatalf("call_2 arguments wrong:\n%s", end)
+	seen := map[int]bool{}
+	for i, call := range released {
+		if seen[call.index] {
+			t.Fatalf("block index %d reused:\n%s", call.index, end)
+		}
+		seen[call.index] = true
+		if i > 0 && released[i-1].index >= call.index {
+			t.Fatalf("block indices not ascending: %d then %d:\n%s", released[i-1].index, call.index, end)
+		}
+		if stops[call.index] != 1 {
+			t.Fatalf("call %s block %d has %d stops, want 1:\n%s", call.id, call.index, stops[call.index], end)
+		}
 	}
+	if got := deltas[released[0].index]; got != "{}" {
+		t.Fatalf("call_1 arguments = %q, want {}:\n%s", got, end)
+	}
+	if got := deltas[released[1].index]; got != `{"c":3}` {
+		t.Fatalf("call_2 arguments = %q, want {\"c\":3}:\n%s", got, end)
+	}
+}
+
+type p0SSEEvent struct {
+	Type         string `json:"type"`
+	Index        int    `json:"index"`
+	ContentBlock struct {
+		Type  string         `json:"type"`
+		ID    string         `json:"id"`
+		Name  string         `json:"name"`
+		Input map[string]any `json:"input"`
+	} `json:"content_block"`
+	Delta struct {
+		Type        string `json:"type"`
+		PartialJSON string `json:"partial_json"`
+	} `json:"delta"`
+}
+
+// parseP0SSEEvents decodes the data lines of an Anthropic SSE payload.
+func parseP0SSEEvents(t *testing.T, s string) []p0SSEEvent {
+	t.Helper()
+	var events []p0SSEEvent
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var evt p0SSEEvent
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &evt); err != nil {
+			t.Fatalf("parse SSE event %q: %v", line, err)
+		}
+		events = append(events, evt)
+	}
+	return events
 }
