@@ -499,6 +499,13 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 		}
 	}
 
+	// Upstream error bodies are passed through unchanged for every protocol.
+	// Converting them would produce an empty successful response instead of
+	// surfacing the upstream failure.
+	if errVal, ok := raw["error"]; ok && errVal != nil {
+		return body, nil
+	}
+
 	// Body-primary protocol detection (authoritative).
 	source := detectSource(raw)
 	dir := DirectionRequest

@@ -1209,6 +1209,28 @@ func TestP1_AnthropicErrorEventDetection(t *testing.T) {
 	}
 }
 
+// TestP1_NonStreamErrorBodyPassthrough verifies that non-stream error bodies
+// are returned unchanged instead of being converted into an empty successful
+// ChatCompletion.
+func TestP1_NonStreamErrorBodyPassthrough(t *testing.T) {
+	bodies := []string{
+		`{"type":"error","error":{"type":"overloaded_error","message":"boom"}}`,
+		`{"error":{"message":"boom","type":"server_error"}}`,
+	}
+	for _, body := range bodies {
+		out, err := Convert([]byte(body), &ConvertOptions{Direction: "response", URI: "/v1/chat/completions"})
+		if err != nil {
+			t.Fatalf("Convert: %v", err)
+		}
+		if string(out) != body {
+			t.Fatalf("error body changed:\n got %s\nwant %s", out, body)
+		}
+		if strings.Contains(string(out), "chat.completion") {
+			t.Fatalf("error body converted to completion: %s", out)
+		}
+	}
+}
+
 // TestP1_ResponsesErrorFirstEventSelectsAnthropicConverter covers the routing
 // consequence: an Anthropic error event as the first Responses stream event
 // must be handled by the Anthropic converter and fail the response.
