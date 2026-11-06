@@ -1568,7 +1568,7 @@ git commit -m "fix(convert): reject truncated responses tool streams"
 - Produces: `GeminiChatResponse.Error *GeminiError`
 - Behavior: every stateful Gemini converter's `EmitError` is JSON-safe, idempotent, and terminal.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append:
 
@@ -1745,13 +1745,13 @@ Replace `TestP1_GeminiEndPhaseStreamErrorNotDispatched` in
 `convert/anthropic_openai_p1_test.go` with the new expectation, or delete it
 because `TestP2_GeminiEndPhaseStreamErrorDispatched` covers the behavior.
 
-- [ ] **Step 2: Run the tests and capture RED**
+- [x] **Step 2: Run the tests and capture RED**
 
 Run: `go test -count=1 -run 'TestP2_Gemini' ./convert`
 
 Expected: `GeminiToAnthropicStreamConverter.EmitError` corrupts JSON for quotes, several converters close normally after an error, and end-phase errors are not dispatched to the Gemini handler.
 
-- [ ] **Step 3: Implement terminal, JSON-safe errors and routing**
+- [x] **Step 3: Implement terminal, JSON-safe errors and routing**
 
 In `convert/gemini_types.go`:
 
@@ -1854,7 +1854,7 @@ case *StreamConverter, *AnthropicToOpenAIStreamConverter,
 }
 ```
 
-- [ ] **Step 4: Run the focused, full, and race tests**
+- [x] **Step 4: Run the focused, full, and race tests**
 
 Run: `go test -count=1 -run 'TestP2_Gemini|TestP1_Gemini' ./convert`
 
@@ -1868,7 +1868,7 @@ Run: `CGO_ENABLED=1 go test -race -count=1 ./convert`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/gemini_types.go convert/stream_gemini.go convert/stream_to_gemini.go convert/convert.go convert/anthropic_openai_p1_test.go convert/anthropic_openai_p2_test.go
@@ -1876,12 +1876,12 @@ git commit -m "fix(convert): make gemini stream errors terminal"
 ```
 
 **Implementation record:**
-- Date/status:
-- Repository/commit:
-- Files changed:
-- Tests/commands/results:
-- Review findings/fixes:
-- Deferred/limitations:
+- Date/status: 2026-11-06 / complete
+- Repository/commit: `llm-api-converter` `c8c5138`
+- Files changed: `convert/gemini_types.go`, `convert/stream_gemini.go`, `convert/stream_to_gemini.go`, `convert/convert.go`, `convert/anthropic_openai_p1_test.go`, `convert/anthropic_openai_p2_test.go`
+- Tests/commands/results: RED `go test -count=1 -run 'TestP2_Gemini' ./convert` → non-idempotent errors, corrupted JSON, normal close after upstream error, and no end-phase dispatch; GREEN focused → PASS; full `go test -count=1 ./...` → all packages PASS; `CGO_ENABLED=1 go test -race -count=1 ./convert` → PASS; `go vet ./...` and `git diff --check` clean.
+- Review findings/fixes: `GeminiToOpenAI` keeps `content_filter` for blocked responses via an internal `emitError(message, type)` helper while `EmitError` uses `server_error`; both are terminal. Deleted the obsolete `TestP1_GeminiEndPhaseStreamErrorNotDispatched`.
+- Deferred/limitations: `GeminiStreamHandler` remains stateless and out of scope; it has no lifecycle to terminate.
 
 ---
 
