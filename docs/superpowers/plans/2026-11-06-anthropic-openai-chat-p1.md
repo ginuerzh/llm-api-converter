@@ -1183,7 +1183,7 @@ the 2026-11-06 observation to say P1 is also fixed and list the task SHAs.
 Update the `MEMORY.md` index line path/status. Stage only the note; if
 `MEMORY.md` still has unrelated edits, leave it uncommitted and record that.
 
-- [ ] **Step 5: Commit docs and memory**
+- [x] **Step 5: Commit docs and memory**
 
 ```bash
 cd /root/code/go-gost/llm-api-converter
@@ -1203,9 +1203,9 @@ cannot contain its own SHA, use the same follow-up docs commit pattern as P0.
 - Status: Complete
 - Date: 2026-11-06
 - Repository / commit:
-  - `llm-api-converter` @ `DOCS_SHA_PENDING` (`docs(convert): record P1 review status`, branch `feat/anthropic-openai-p1`).
-  - `/root/code/go-gost` @ `MEMORY_SHA_PENDING` (`docs(memory): record llm-api-converter P1 review`).
-  - A commit cannot contain its own SHA; both SHAs were filled in by the follow-up docs commit `docs(convert): record task 7 commit SHAs` in `llm-api-converter`, matching the P0 pattern.
+  - `llm-api-converter` @ `883896f` (`docs(convert): record P1 review status`, branch `feat/anthropic-openai-p1`).
+  - `/root/code/go-gost` @ `499831b` (`docs(memory): record llm-api-converter P1 review`).
+  - A commit cannot contain its own SHA; both SHAs were added by the follow-up docs commit `docs(convert): record task 7 commit SHAs` in `llm-api-converter`, matching the P0 pattern.
 - Files changed:
   - `docs/reviews/2026-11-06-anthropic-openai-chat-review.md` — header status changed to “P0 and P1 fixed and verified; P2 findings remain open”; added the `P1 Status` table with P1-1…P1-15 as fixed and the task SHAs (`e534397`, `7620613`, `d2ec345`, `8d9e8d3`, `1ee9c9f`, `0f53577`, fix round `2de9c52`); added the verification commands with the verified HEAD `40e70e9`; updated the P0 note and Follow-up section to include the P1 plan and keep only P2 open.
   - `docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p1.md` — ticked the completed Task 7 checkboxes, filled this record, and corrected the Task 6 `convert/convert.go` bullet that still described the unscoped end-phase `handler.EmitError` dispatch; the fix-round record supersedes it.
