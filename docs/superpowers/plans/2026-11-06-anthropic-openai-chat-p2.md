@@ -514,7 +514,7 @@ git commit -m "fix(convert): normalize stop reasons and refusal content"
 - Produces: `func normalizeReasoningAliases(reasoningContent, reasoning string, details []OpenAIReasoningDetail) string`
 - Behavior: the normalized value is stored in `ReasoningContent`; alias fields are not added to the public structs.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append:
 
@@ -601,13 +601,13 @@ func TestP2_ReasoningAliasResponse(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests and capture RED**
+- [x] **Step 2: Run the tests and capture RED**
 
 Run: `go test -count=1 -run 'TestP2_Reasoning' ./convert`
 
 Expected: alias tests fail because `reasoning` / `reasoning_details` are unknown fields and `ReasoningContent` stays empty.
 
-- [ ] **Step 3: Implement alias normalization**
+- [x] **Step 3: Implement alias normalization**
 
 In `convert/types.go`, add:
 
@@ -665,7 +665,7 @@ d.ReasoningContent = normalizeReasoningAliases(aux.ReasoningContent, aux.Reasoni
 
 Keep `Refusal` in the aux from Task 2.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `go test -count=1 -run 'TestP2_Reasoning' ./convert`
 
@@ -675,7 +675,7 @@ Run: `go test -count=1 ./...`
 
 Expected: all packages PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/types.go convert/anthropic_openai_p2_test.go
@@ -683,12 +683,12 @@ git commit -m "fix(convert): accept reasoning aliases"
 ```
 
 **Implementation record:**
-- Date/status:
-- Repository/commit:
-- Files changed:
-- Tests/commands/results:
-- Review findings/fixes:
-- Deferred/limitations:
+- Date/status: 2026-11-06 / complete
+- Repository/commit: `llm-api-converter` `a84076c`
+- Files changed: `convert/types.go`, `convert/anthropic_openai_p2_test.go`
+- Tests/commands/results: RED `go test -count=1 -run 'TestP2_Reasoning' ./convert` → alias tests produced text-only/empty thinking; GREEN same command → PASS; `go test -count=1 ./...` → all packages PASS; `go vet ./...` and `git diff --check` clean.
+- Review findings/fixes: plan tests assumed the assistant message was at index 0; the P1 normalizer inserts a synthetic user turn for assistant-first history. Ruling: search for the assistant message instead of assuming its index. Cost if wrong: the test would assert the synthetic user turn and miss the actual conversion.
+- Deferred/limitations: alias fields are normalized into `ReasoningContent` and not re-emitted; `reasoning_details` signatures/encrypted payloads are not preserved, only text/summary.
 
 ---
 
