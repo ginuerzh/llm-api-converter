@@ -38,7 +38,7 @@ func detectSource(raw map[string]any) Protocol {
 	if t, ok := raw["type"].(string); ok {
 		switch t {
 		case "message_start", "content_block_start", "content_block_delta",
-			"content_block_stop", "message_delta", "message_stop":
+			"content_block_stop", "message_delta", "message_stop", "error":
 			return ProtocolAnthropic
 		}
 	}

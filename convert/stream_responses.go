@@ -92,6 +92,15 @@ func (sc *ResponsesStreamConverter) HandleChunk(data []byte) ([]byte, error) {
 	if err := json.Unmarshal(data, &chunk); err != nil {
 		return nil, fmt.Errorf("unmarshal stream chunk: %w", err)
 	}
+	// An error chunk is terminal: emit response.failed instead of letting the
+	// end phase report a successful empty response.
+	if chunk.Error != nil {
+		msg := chunk.Error.Message
+		if msg == "" {
+			msg = "upstream stream error"
+		}
+		return sc.EmitError(msg), nil
+	}
 	if len(chunk.Choices) == 0 {
 		if chunk.Usage != nil {
 			sc.setUsage(chunk.Usage)

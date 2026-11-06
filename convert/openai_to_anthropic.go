@@ -576,9 +576,15 @@ func convertAssistantContent(msg OpenAIMessage, model string) []AnthropicContent
 		}
 		blocks = appendTextBlock(blocks, extractTextContent(msg.Content))
 		for _, tc := range toolCalls {
+			// A legacy function_call has no id; Anthropic requires one and
+			// the synthesized result must reuse it.
+			id := tc.ID
+			if id == "" {
+				id = ensureToolID("")
+			}
 			blocks = append(blocks, AnthropicContent{
 				Type:  "tool_use",
-				ID:    tc.ID, // preserve original ID — client uses it for tool_result matching
+				ID:    id, // clients match the synthesized tool_result by this id
 				Name:  tc.Function.Name,
 				Input: anthropicToolInput(tc.Function.Arguments),
 			})
@@ -742,9 +748,14 @@ func convertOpenAIMessageToContent(msg OpenAIMessage) []AnthropicContent {
 			blocks = append(blocks, AnthropicContent{Type: "text", Text: text})
 		}
 		for _, tc := range calls {
+			// A legacy function_call has no id; Anthropic requires one.
+			id := tc.ID
+			if id == "" {
+				id = ensureToolID("")
+			}
 			blocks = append(blocks, AnthropicContent{
 				Type:  "tool_use",
-				ID:    tc.ID,
+				ID:    id,
 				Name:  tc.Function.Name,
 				Input: anthropicToolInput(tc.Function.Arguments),
 			})

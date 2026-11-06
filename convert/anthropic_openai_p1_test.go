@@ -2,6 +2,7 @@ package convert
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -248,15 +249,16 @@ func TestP1_SyntheticAndOrphanResultText(t *testing.T) {
 		{Role: "user", Content: []AnthropicContent{{Type: "tool_result", ToolUseID: "b"}}},
 	}
 	got := normalizeAnthropicMessages(msgs)
-	if len(got) != 2 || len(got[1].Content) != 2 {
+	// The assistant-first history gets a minimal user turn prepended.
+	if len(got) != 3 || got[0].Role != "user" || len(got[2].Content) != 2 {
 		t.Fatalf("messages = %+v", got)
 	}
-	synthetic := got[1].Content[0]
+	synthetic := got[2].Content[0]
 	if synthetic.Type != "tool_result" || synthetic.ToolUseID != "a" ||
 		synthetic.Content != "Tool result missing." || !synthetic.IsError {
 		t.Fatalf("synthetic = %+v", synthetic)
 	}
-	orphan := got[1].Content[1]
+	orphan := got[2].Content[1]
 	if orphan.Type != "text" || orphan.Text != "Tool result received." {
 		t.Fatalf("orphan = %+v", orphan)
 	}
@@ -303,10 +305,10 @@ func TestP1_UserRunKeepsResultsFirst(t *testing.T) {
 		{Role: "user", Content: []AnthropicContent{{Type: "tool_result", ToolUseID: "a", Content: "ok"}}},
 	}
 	got := normalizeAnthropicMessages(msgs)
-	if len(got) != 2 {
-		t.Fatalf("messages = %+v, want assistant + merged user", got)
+	if len(got) != 3 || got[0].Role != "user" {
+		t.Fatalf("messages = %+v, want prepended user + assistant + merged user", got)
 	}
-	blocks := got[1].Content
+	blocks := got[2].Content
 	if len(blocks) != 2 || blocks[0].Type != "tool_result" || blocks[0].ToolUseID != "a" || blocks[1].Text != "wait" {
 		t.Fatalf("blocks = %+v, want tool_result then text", blocks)
 	}
@@ -323,17 +325,28 @@ func TestP1_UnsignedThinkingDroppedForAnthropic(t *testing.T) {
 	b, _ := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 1024, ResolvedModel: "gpt-4"})
 	var anth AnthropicRequest
 	_ = json.Unmarshal(b, &anth)
-	for _, block := range anth.Messages[0].Content {
-		if block.Type == "thinking" {
-			t.Fatalf("unsigned thinking sent to Anthropic target: %+v", block)
+	// An assistant-first history gets a minimal user turn prepended.
+	if len(anth.Messages) < 2 || anth.Messages[0].Role != "user" {
+		t.Fatalf("Messages[0].Role = %q, want user: %s", anth.Messages[0].Role, b)
+	}
+	for _, msg := range anth.Messages {
+		for _, block := range msg.Content {
+			if block.Type == "thinking" {
+				t.Fatalf("unsigned thinking sent to Anthropic target: %+v", block)
+			}
 		}
 	}
 
 	b, _ = convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 1024, ResolvedModel: "deepseek-chat"})
 	_ = json.Unmarshal(b, &anth)
+	if len(anth.Messages) < 2 || anth.Messages[0].Role != "user" {
+		t.Fatalf("Messages[0].Role = %q, want user: %s", anth.Messages[0].Role, b)
+	}
 	found := false
-	for _, block := range anth.Messages[0].Content {
-		found = found || block.Type == "thinking"
+	for _, msg := range anth.Messages {
+		for _, block := range msg.Content {
+			found = found || block.Type == "thinking"
+		}
 	}
 	if !found {
 		t.Fatal("DeepSeek target lost its thinking block")
@@ -978,5 +991,283 @@ func TestP1_StreamConverterEmitErrorIsTerminal(t *testing.T) {
 	}
 	if out := sc.HandleStreamEnd(); out != nil {
 		t.Fatalf("normal end after error = %s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Final review fix wave: truncated tool streams, assistant-first histories,
+// adjacent assistant turns, Responses error events, legacy function_call IDs
+// ---------------------------------------------------------------------------
+
+// TestP1_TruncatedToolStreamErrors covers the Critical finding: a clean EOF
+// after a partial tool argument must not close as a successful tool turn.
+func TestP1_TruncatedToolStreamErrors(t *testing.T) {
+	// OpenAI Chat → Anthropic.
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	if _, err := sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"toolu_a","type":"function","function":{"name":"f","arguments":"{\"a\":"}}]},"finish_reason":null}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	end := string(sc.HandleStreamEnd())
+	if !strings.Contains(end, "event: error") || !strings.Contains(end, "incomplete tool call arguments") {
+		t.Fatalf("truncated OpenAI stream end = %s, want an error event", end)
+	}
+	if strings.Contains(end, `"stop_reason"`) || strings.Contains(end, "message_stop") {
+		t.Fatalf("truncated OpenAI stream closed normally: %s", end)
+	}
+
+	// Anthropic → OpenAI.
+	c := NewAnthropicToOpenAIStreamConverter("claude")
+	_, _ = c.HandleChunk([]byte(`{"type":"message_start","message":{"id":"msg_1","model":"claude"}}`))
+	_, _ = c.HandleChunk([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"f"}}`))
+	_, _ = c.HandleChunk([]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"a\":"}}`))
+	end = string(c.HandleStreamEnd())
+	if !strings.Contains(end, `"error"`) || !strings.Contains(end, "incomplete tool call arguments") {
+		t.Fatalf("truncated Anthropic stream end = %s, want an error event", end)
+	}
+	if strings.Contains(end, `"finish_reason"`) || strings.Contains(end, "[DONE]") {
+		t.Fatalf("truncated Anthropic stream finished normally: %s", end)
+	}
+}
+
+// TestP1_CompleteToolStreamsStillInferToolStop guards the other side of the
+// validation: empty and complete arguments keep inferring the tool stop.
+func TestP1_CompleteToolStreamsStillInferToolStop(t *testing.T) {
+	openAICases := []struct {
+		name string
+		args string
+	}{
+		{"empty", ""},
+		{"complete", `{"a":1}`},
+	}
+	for _, tc := range openAICases {
+		t.Run("openai "+tc.name, func(t *testing.T) {
+			sc := NewStreamConverter("claude", nil, nil)
+			sc.HandleStreamStart()
+			chunk := fmt.Sprintf(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"toolu_a","type":"function","function":{"name":"f","arguments":%q}}]},"finish_reason":null}]}`, tc.args)
+			if _, err := sc.HandleChunk([]byte(chunk)); err != nil {
+				t.Fatal(err)
+			}
+			end := string(sc.HandleStreamEnd())
+			if !strings.Contains(end, `"stop_reason":"tool_use"`) {
+				t.Fatalf("complete OpenAI tool stream end = %s, want tool_use", end)
+			}
+		})
+	}
+
+	anthropicCases := []struct {
+		name string
+		args string
+	}{
+		{"no arguments", ""},
+		{"complete", `{"a":1}`},
+	}
+	for _, tc := range anthropicCases {
+		t.Run("anthropic "+tc.name, func(t *testing.T) {
+			c := NewAnthropicToOpenAIStreamConverter("claude")
+			_, _ = c.HandleChunk([]byte(`{"type":"message_start","message":{"id":"msg_1","model":"claude"}}`))
+			_, _ = c.HandleChunk([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"f"}}`))
+			if tc.args != "" {
+				delta := fmt.Sprintf(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":%q}}`, tc.args)
+				_, _ = c.HandleChunk([]byte(delta))
+			}
+			_, _ = c.HandleChunk([]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`))
+			end := string(c.HandleStreamEnd())
+			if !strings.Contains(end, `"finish_reason":"tool_calls"`) {
+				t.Fatalf("complete Anthropic tool stream end = %s, want tool_calls", end)
+			}
+		})
+	}
+}
+
+// TestP1_InterruptedToolStreamErrors keeps the interruption marker only for
+// no-tool streams; an interrupted tool stream must surface an error.
+func TestP1_InterruptedToolStreamErrors(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	if _, err := sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"toolu_a","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":null}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	sc.SetInterrupted()
+	end := string(sc.HandleStreamEnd())
+	if !strings.Contains(end, "event: error") || !strings.Contains(end, "stream interrupted") {
+		t.Fatalf("interrupted tool stream end = %s, want an error event", end)
+	}
+	if strings.Contains(end, "[stream interrupted]") || strings.Contains(end, "message_stop") {
+		t.Fatalf("interrupted tool stream closed normally: %s", end)
+	}
+}
+
+// TestP1_AssistantFirstHistoryGetsUserTurn covers the Important finding that
+// Anthropic requires the first message to use the user role.
+func TestP1_AssistantFirstHistoryGetsUserTurn(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[{"role":"assistant","content":"hello"}]}`
+	b, err := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var anth AnthropicRequest
+	if err := json.Unmarshal(b, &anth); err != nil {
+		t.Fatal(err)
+	}
+	if len(anth.Messages) != 2 {
+		t.Fatalf("messages = %d, want 2: %s", len(anth.Messages), b)
+	}
+	first := anth.Messages[0]
+	if first.Role != "user" {
+		t.Fatalf("Messages[0].Role = %q, want user: %s", first.Role, b)
+	}
+	if len(first.Content) != 1 || first.Content[0].Type != "text" || strings.TrimSpace(first.Content[0].Text) == "" {
+		t.Fatalf("Messages[0].Content = %+v, want a minimal text block", first.Content)
+	}
+	if anth.Messages[1].Role != "assistant" {
+		t.Fatalf("Messages[1].Role = %q, want assistant: %s", anth.Messages[1].Role, b)
+	}
+}
+
+// TestP1_AdjacentAssistantToolCallsMergeBeforeRepair covers the Important
+// finding that adjacent assistant tool-call turns must be merged before the
+// tool-pair repair, so real results are not replaced by synthetic ones.
+func TestP1_AdjacentAssistantToolCallsMergeBeforeRepair(t *testing.T) {
+	msgs := []AnthropicMessage{
+		{Role: "user", Content: []AnthropicContent{{Type: "text", Text: "start"}}},
+		{Role: "assistant", Content: []AnthropicContent{{Type: "tool_use", ID: "a", Name: "f"}}},
+		{Role: "assistant", Content: []AnthropicContent{{Type: "tool_use", ID: "b", Name: "g"}}},
+		{Role: "user", Content: []AnthropicContent{{Type: "tool_result", ToolUseID: "a", Content: "ra"}}},
+		{Role: "user", Content: []AnthropicContent{{Type: "tool_result", ToolUseID: "b", Content: "rb"}}},
+	}
+	got := normalizeAnthropicMessages(msgs)
+	if len(got) != 3 {
+		t.Fatalf("messages = %d, want 3: %+v", len(got), got)
+	}
+	if got[1].Role != "assistant" || len(got[1].Content) != 2 {
+		t.Fatalf("merged assistant = %+v, want two tool_use blocks", got[1])
+	}
+	last := got[2].Content
+	if len(last) != 2 || last[0].Type != "tool_result" || last[0].ToolUseID != "a" ||
+		last[1].Type != "tool_result" || last[1].ToolUseID != "b" {
+		t.Fatalf("results = %+v, want tool_result a then b", last)
+	}
+	for _, block := range last {
+		if block.Type == "text" && strings.Contains(block.Text, missingToolResultText) {
+			t.Fatalf("synthetic result replaced a real one: %+v", last)
+		}
+	}
+}
+
+// TestP1_ResponsesErrorEventFromOpenAIChunk covers the Important finding that
+// an OpenAI error chunk becomes a failed Responses stream, not a completed one.
+func TestP1_ResponsesErrorEventFromOpenAIChunk(t *testing.T) {
+	sc := NewResponsesStreamConverter("claude")
+	out, err := sc.HandleChunk([]byte(`{"error":{"type":"server_error","message":"boom \"x\""}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "response.failed") || !strings.Contains(string(out), `boom \"x\"`) {
+		t.Fatalf("error chunk output = %s, want response.failed", out)
+	}
+	if strings.Contains(string(out), "response.completed") {
+		t.Fatalf("error chunk completed the response: %s", out)
+	}
+	if end := sc.HandleStreamEnd(); end != nil {
+		t.Fatalf("normal completion after error: %s", end)
+	}
+}
+
+// TestP1_ResponsesErrorEventFromAnthropicStream covers the same rule for an
+// Anthropic error event as the first (or any) event of a Responses stream.
+func TestP1_ResponsesErrorEventFromAnthropicStream(t *testing.T) {
+	sc := NewAnthropicStreamConverter("claude")
+	out, err := sc.HandleChunk([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"boom"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "response.failed") || !strings.Contains(string(out), "boom") {
+		t.Fatalf("anthropic error output = %s, want response.failed", out)
+	}
+	if strings.Contains(string(out), "response.completed") {
+		t.Fatalf("anthropic error completed the response: %s", out)
+	}
+	if end := sc.HandleStreamEnd(); end != nil {
+		t.Fatalf("normal completion after error: %s", end)
+	}
+}
+
+// TestP1_AnthropicErrorEventDetection verifies that an error event can select
+// the Anthropic stream converter when it is the first event of a stream.
+func TestP1_AnthropicErrorEventDetection(t *testing.T) {
+	payload := []byte(`{"type":"error","error":{"type":"overloaded_error","message":"boom"}}`)
+	if !isAnthropicStreamEvent(payload) {
+		t.Fatal("isAnthropicStreamEvent(error) = false, want true")
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectSource(raw); got != ProtocolAnthropic {
+		t.Fatalf("detectSource(error) = %v, want ProtocolAnthropic", got)
+	}
+}
+
+// TestP1_ResponsesErrorFirstEventSelectsAnthropicConverter covers the routing
+// consequence: an Anthropic error event as the first Responses stream event
+// must be handled by the Anthropic converter and fail the response.
+func TestP1_ResponsesErrorFirstEventSelectsAnthropicConverter(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("e1", &Session{ID: "e1", IsResponses: true})
+	opts := &ConvertOptions{SessionStore: store, Direction: "response", URI: "/v1/responses", SID: "e1"}
+	data := []byte(`data: {"type":"error","error":{"type":"overloaded_error","message":"boom"}}`)
+	out, err := HandleSSEEvent("e1", "start", 0, data, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "response.failed") || !strings.Contains(string(out), "boom") {
+		t.Fatalf("start output = %s, want response.failed", out)
+	}
+	sess := store.Get("e1")
+	if sess == nil {
+		t.Fatal("session not stored")
+	}
+	if _, ok := sess.StreamHandler.(*AnthropicStreamConverter); !ok {
+		t.Fatalf("handler = %T, want *AnthropicStreamConverter", sess.StreamHandler)
+	}
+}
+
+// TestP1_LegacyFunctionCallGetsToolID covers the Important finding that a
+// legacy function_call history must not produce a tool_use without an id.
+func TestP1_LegacyFunctionCallGetsToolID(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[
+		{"role":"user","content":"weather?"},
+		{"role":"assistant","content":null,"function_call":{"name":"get_weather","arguments":"{\"loc\":\"NYC\"}"}},
+		{"role":"user","content":"thanks"}]}`
+	b, err := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var anth AnthropicRequest
+	if err := json.Unmarshal(b, &anth); err != nil {
+		t.Fatal(err)
+	}
+	toolID := ""
+	for _, msg := range anth.Messages {
+		for _, block := range msg.Content {
+			if block.Type == "tool_use" && block.Name == "get_weather" {
+				toolID = block.ID
+			}
+		}
+	}
+	if toolID == "" {
+		t.Fatalf("legacy function_call tool_use has no id: %s", b)
+	}
+	found := false
+	for _, msg := range anth.Messages {
+		for _, block := range msg.Content {
+			if block.Type == "tool_result" && block.ToolUseID == toolID {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no tool_result pairs with tool_use id %q: %s", toolID, b)
 	}
 }

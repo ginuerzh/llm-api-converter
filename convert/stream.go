@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // StreamConverter converts OpenAI streaming delta chunks into the proper
@@ -198,6 +199,20 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 	if sc.finalized {
 		return nil
 	}
+
+	// A clean EOF in the middle of tool arguments is not a successful tool
+	// turn: the client cannot parse the arguments and would still run the
+	// call. An interrupted stream with tool calls is a failure for the same
+	// reason. EmitError marks the stream finalized.
+	if sc.streamInterrupted && len(sc.toolCallByIndex) > 0 {
+		return sc.EmitError("stream interrupted before tool calls completed")
+	}
+	for _, state := range sc.toolCallByIndex {
+		if !streamToolArgsComplete(state.Arguments) {
+			return sc.EmitError("stream ended with incomplete tool call arguments")
+		}
+	}
+
 	sc.finalized = true
 
 	var events [][]byte
@@ -472,6 +487,13 @@ func (sc *StreamConverter) toolIndex(tc OpenAIDeltaToolCall) int {
 func toolArgsComplete(args string) bool {
 	var v map[string]any
 	return json.Unmarshal([]byte(args), &v) == nil
+}
+
+// streamToolArgsComplete reports whether accumulated tool arguments can close
+// a tool_use block. Empty arguments mean a no-argument tool call and are
+// complete; anything else must parse as a JSON object.
+func streamToolArgsComplete(args string) bool {
+	return strings.TrimSpace(args) == "" || toolArgsComplete(args)
 }
 
 func (sc *StreamConverter) handleToolCallDelta(tc OpenAIDeltaToolCall) [][]byte {

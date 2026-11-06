@@ -732,20 +732,32 @@ func TestConvert_FunctionCallToToolUse(t *testing.T) {
 	if err := json.Unmarshal(b, &a); err != nil {
 		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
 	}
-	if len(a.Messages) != 2 {
-		t.Fatalf("want 2 messages, got %d", len(a.Messages))
+	if len(a.Messages) != 3 {
+		t.Fatalf("want user, assistant tool_use, synthetic user result; got %d messages", len(a.Messages))
 	}
 	if a.Messages[1].Role != "assistant" {
 		t.Fatalf("messages[1] role: want assistant, got %q", a.Messages[1].Role)
 	}
-	toolUseFound := false
+	toolUseID := ""
 	for _, c := range a.Messages[1].Content {
 		if c.Type == "tool_use" && c.Name == "get_weather" {
-			toolUseFound = true
+			toolUseID = c.ID
 		}
 	}
-	if !toolUseFound {
-		t.Fatal("expected tool_use block for function_call")
+	if toolUseID == "" {
+		t.Fatalf("legacy function_call tool_use has no id: %s", b)
+	}
+	if a.Messages[2].Role != "user" {
+		t.Fatalf("messages[2] role: want user, got %q", a.Messages[2].Role)
+	}
+	foundResult := false
+	for _, c := range a.Messages[2].Content {
+		if c.Type == "tool_result" && c.ToolUseID == toolUseID {
+			foundResult = true
+		}
+	}
+	if !foundResult {
+		t.Fatalf("no tool_result pairs with tool_use id %q: %s", toolUseID, b)
 	}
 }
 
@@ -987,9 +999,9 @@ func TestConvertViaAutoDetection_PlainJSON(t *testing.T) {
 
 func TestDetectSource_AnthropicRequestMarkers(t *testing.T) {
 	tests := []struct {
-		name    string
-		json    string
-		want    Protocol
+		name string
+		json string
+		want Protocol
 	}{
 		{
 			name: "anthropic with thinking block",

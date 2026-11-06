@@ -28,6 +28,15 @@ func normalizeAnthropicMessages(msgs []AnthropicMessage) []AnthropicMessage {
 		return msgs
 	}
 
+	// Merge same-role runs before repairing the exchange. Adjacent assistant
+	// tool-call messages are one turn: repairing first would close the first
+	// exchange with a synthetic result before the second turn's calls (and
+	// their real results) are seen.
+	msgs = mergeConsecutiveAnthropicMessages(msgs)
+	if len(msgs) == 0 {
+		return nil
+	}
+
 	var out []AnthropicMessage
 	var pending []string
 	open := make(map[string]bool)
@@ -118,7 +127,19 @@ func normalizeAnthropicMessages(msgs []AnthropicMessage) []AnthropicMessage {
 	// answered (interrupted generation).
 	closeExchange()
 
-	return mergeConsecutiveAnthropicMessages(out)
+	out = mergeConsecutiveAnthropicMessages(out)
+
+	// Anthropic requires the first message to use the user role. Histories
+	// that start with an assistant turn (for example a truncated prefix) get a
+	// minimal user turn prepended.
+	if len(out) > 0 && out[0].Role == "assistant" {
+		out = append([]AnthropicMessage{{
+			Role:    "user",
+			Content: []AnthropicContent{{Type: "text", Text: "..."}},
+		}}, out...)
+	}
+
+	return out
 }
 
 // missingToolResult builds the synthetic result for an unanswered tool_use.

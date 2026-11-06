@@ -30,6 +30,9 @@ type AnthropicToOpenAIStreamConverter struct {
 	// Anthropic content block index -> OpenAI tool_calls index.
 	toolByBlock map[int]int
 	nextTool    int
+	// Accumulated arguments per Anthropic tool block; used to reject a
+	// truncated stream instead of finishing it as a successful tool call.
+	toolArgs map[int]string
 	// Blocks whose tool input arrived complete in content_block_start; later
 	// input_json_delta events for those blocks are ignored.
 	toolInputComplete map[int]bool
@@ -41,6 +44,7 @@ func NewAnthropicToOpenAIStreamConverter(model string, opts ...*ConvertOptions) 
 		id:                "chatcmpl-" + randHex(16),
 		created:           time.Now().Unix(),
 		toolByBlock:       make(map[int]int),
+		toolArgs:          make(map[int]string),
 		toolInputComplete: make(map[int]bool),
 	}
 	if len(opts) > 0 {
@@ -145,6 +149,7 @@ func (c *AnthropicToOpenAIStreamConverter) HandleChunk(data []byte) ([]byte, err
 			if anthropicToolStartInput(evt.ContentBlock.Input) {
 				args = string(evt.ContentBlock.Input)
 				c.toolInputComplete[evt.Index] = true
+				c.toolArgs[evt.Index] = args
 			}
 			emit(OpenAIStreamChunk{
 				ID:      c.id,
@@ -195,6 +200,7 @@ func (c *AnthropicToOpenAIStreamConverter) HandleChunk(data []byte) ([]byte, err
 				c.nextTool++
 				c.toolByBlock[evt.Index] = idx
 			}
+			c.toolArgs[evt.Index] += evt.Delta.PartialJSON
 			emit(OpenAIStreamChunk{
 				ID: c.id, Object: "chat.completion.chunk", Created: c.created, Model: c.model,
 				Choices: []OpenAIStreamChoice{{Delta: OpenAIDelta{ToolCalls: []OpenAIDeltaToolCall{{
@@ -304,9 +310,17 @@ func (c *AnthropicToOpenAIStreamConverter) emitRole(events *[][]byte) {
 }
 
 // finish emits the finish chunk, the usage chunk (when the upstream reported
-// usage) and [DONE].
+// usage) and [DONE]. A truncated tool block is terminal instead: the client
+// gets an error event and no finish chunk, so a partial argument object is
+// never reported as a successful tool call.
 func (c *AnthropicToOpenAIStreamConverter) finish() [][]byte {
 	if c.finished {
+		return nil
+	}
+	if c.hasIncompleteToolArgs() {
+		if errEvent := c.EmitError("stream ended with incomplete tool call arguments"); errEvent != nil {
+			return [][]byte{errEvent}
+		}
 		return nil
 	}
 	c.finished = true
@@ -341,6 +355,18 @@ func (c *AnthropicToOpenAIStreamConverter) finish() [][]byte {
 
 	events = append(events, []byte("data: [DONE]\n\n"))
 	return events
+}
+
+// hasIncompleteToolArgs reports whether any tool block's accumulated arguments
+// are not a complete JSON object. Empty arguments mean a no-argument tool call
+// and are complete.
+func (c *AnthropicToOpenAIStreamConverter) hasIncompleteToolArgs() bool {
+	for blockIndex := range c.toolByBlock {
+		if !streamToolArgsComplete(c.toolArgs[blockIndex]) {
+			return true
+		}
+	}
+	return false
 }
 
 // anthropicToolStartInput reports whether a content_block_start tool_use input
