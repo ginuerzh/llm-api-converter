@@ -202,3 +202,98 @@ func TestP2_EmptyChoicesContentArray(t *testing.T) {
 		t.Fatalf("stop_reason = %v, want end_turn", resp.StopReason)
 	}
 }
+
+func TestP2_ReasoningAliasRequest(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[
+		{"role":"assistant","content":"ok","reasoning":"chain"},
+		{"role":"user","content":"go on"}]}`
+	out, err := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{ResolvedModel: "deepseek-chat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req AnthropicRequest
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatal(err)
+	}
+	var assistant *AnthropicMessage
+	for i := range req.Messages {
+		if req.Messages[i].Role == "assistant" {
+			assistant = &req.Messages[i]
+			break
+		}
+	}
+	if assistant == nil || len(assistant.Content) == 0 || assistant.Content[0].Type != "thinking" {
+		t.Fatalf("messages = %+v, want an assistant thinking block", req.Messages)
+	}
+	if assistant.Content[0].Thinking != "chain" {
+		t.Fatalf("thinking = %q, want chain", assistant.Content[0].Thinking)
+	}
+}
+
+func TestP2_ReasoningDetailsRequest(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[
+		{"role":"assistant","content":"ok","reasoning_details":[
+			{"type":"reasoning.text","text":"a"},
+			{"type":"reasoning.summary","summary":"b"}]},
+		{"role":"user","content":"go on"}]}`
+	out, err := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{ResolvedModel: "deepseek-chat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req AnthropicRequest
+	_ = json.Unmarshal(out, &req)
+	var assistant *AnthropicMessage
+	for i := range req.Messages {
+		if req.Messages[i].Role == "assistant" {
+			assistant = &req.Messages[i]
+			break
+		}
+	}
+	if assistant == nil || len(assistant.Content) == 0 {
+		t.Fatalf("messages = %+v", req.Messages)
+	}
+	if got := assistant.Content[0].Thinking; got != "a\nb" {
+		t.Fatalf("thinking = %q, want a\\nb", got)
+	}
+}
+
+func TestP2_ReasoningContentWinsOverAlias(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[
+		{"role":"assistant","content":"ok","reasoning_content":"primary","reasoning":"alias"},
+		{"role":"user","content":"go on"}]}`
+	out, err := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{ResolvedModel: "deepseek-chat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), `"alias"`) {
+		t.Fatalf("alias leaked: %s", out)
+	}
+	if !strings.Contains(string(out), `"primary"`) {
+		t.Fatalf("primary reasoning lost: %s", out)
+	}
+}
+
+func TestP2_ReasoningAliasStream(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	out, err := sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"reasoning":"chain"},"finish_reason":null}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"thinking_delta"`) || !strings.Contains(string(out), `"chain"`) {
+		t.Fatalf("reasoning alias missing from stream: %s", out)
+	}
+}
+
+func TestP2_ReasoningAliasResponse(t *testing.T) {
+	body := `{"id":"x","model":"gpt-4","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok","reasoning":"chain"}}]}`
+	out, err := convertOpenAIResponseToAnthropic([]byte(body), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp AnthropicResponse
+	_ = json.Unmarshal(out, &resp)
+	if len(resp.Content) == 0 || resp.Content[0].Type != "thinking" || resp.Content[0].Thinking != "chain" {
+		t.Fatalf("content = %+v, want thinking chain", resp.Content)
+	}
+}
