@@ -200,10 +200,11 @@ func (c *AnthropicToGeminiStreamConverter) HandleChunk(data []byte) ([]byte, err
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(data, &e)
-		b, _ := json.Marshal(map[string]any{"error": map[string]any{
-			"code": 502, "message": e.Error.Message, "status": "UNAVAILABLE",
-		}})
-		events = append(events, []byte("data: "+string(b)+"\n\n"))
+		msg := e.Error.Message
+		if msg == "" {
+			msg = "upstream stream error"
+		}
+		return c.EmitError(msg), nil
 	}
 	return joinSSE(events), nil
 }
@@ -216,6 +217,10 @@ func (c *AnthropicToGeminiStreamConverter) HandleStreamEnd() []byte {
 }
 
 func (c *AnthropicToGeminiStreamConverter) EmitError(message string) []byte {
+	if c.finished {
+		return nil
+	}
+	c.finished = true
 	b, _ := json.Marshal(map[string]any{"error": map[string]any{
 		"code": 502, "message": message, "status": "UNAVAILABLE",
 	}})
@@ -311,6 +316,13 @@ func (c *OpenAIToGeminiStreamConverter) HandleChunk(data []byte) ([]byte, error)
 	var chunk OpenAIStreamChunk
 	if err := json.Unmarshal(data, &chunk); err != nil {
 		return nil, nil
+	}
+	if chunk.Error != nil {
+		msg := chunk.Error.Message
+		if msg == "" {
+			msg = "upstream stream error"
+		}
+		return c.EmitError(msg), nil
 	}
 	var events [][]byte
 	if chunk.Usage != nil {
@@ -428,6 +440,10 @@ func (c *OpenAIToGeminiStreamConverter) HandleStreamEnd() []byte {
 }
 
 func (c *OpenAIToGeminiStreamConverter) EmitError(message string) []byte {
+	if c.finished {
+		return nil
+	}
+	c.finished = true
 	b, _ := json.Marshal(map[string]any{"error": map[string]any{
 		"code": 502, "message": message, "status": "UNAVAILABLE",
 	}})

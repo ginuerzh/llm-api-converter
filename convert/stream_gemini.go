@@ -97,17 +97,18 @@ func (c *GeminiToOpenAIStreamConverter) HandleChunk(data []byte) ([]byte, error)
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("gemini stream chunk: %w", err)
 	}
+	if resp.Error != nil {
+		msg := resp.Error.Message
+		if msg == "" {
+			msg = "upstream stream error"
+		}
+		return c.EmitError(msg), nil
+	}
 
 	// Blocked response.
 	if len(resp.Candidates) == 0 {
 		if resp.PromptFeedback != nil && resp.PromptFeedback.BlockReason != "" {
-			b, _ := json.Marshal(map[string]any{
-				"error": map[string]any{
-					"message": fmt.Sprintf("blocked by Gemini safety: %s", resp.PromptFeedback.BlockReason),
-					"type":    "content_filter",
-				},
-			})
-			return append([]byte("data: "), append(b, '\n')...), nil
+			return c.emitError(fmt.Sprintf("blocked by Gemini safety: %s", resp.PromptFeedback.BlockReason), "content_filter"), nil
 		}
 		return nil, nil
 	}
@@ -225,10 +226,19 @@ func (c *GeminiToOpenAIStreamConverter) HandleStreamEnd() []byte {
 }
 
 func (c *GeminiToOpenAIStreamConverter) EmitError(message string) []byte {
+	return c.emitError(message, "server_error")
+}
+
+// emitError builds a terminal OpenAI error chunk with the given error type.
+func (c *GeminiToOpenAIStreamConverter) emitError(message, typ string) []byte {
+	if c.finalized {
+		return nil
+	}
+	c.finalized = true
 	b, _ := json.Marshal(map[string]any{
-		"error": map[string]any{"message": message},
+		"error": map[string]any{"message": message, "type": typ},
 	})
-	return append([]byte("data: "), append(b, '\n')...)
+	return []byte("data: " + string(b) + "\n\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +291,13 @@ func (c *GeminiToAnthropicStreamConverter) HandleChunk(data []byte) ([]byte, err
 	var resp GeminiChatResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return nil, fmt.Errorf("gemini stream chunk: %w", err)
+	}
+	if resp.Error != nil {
+		msg := resp.Error.Message
+		if msg == "" {
+			msg = "upstream stream error"
+		}
+		return c.EmitError(msg), nil
 	}
 
 	// Blocked response → error event.
@@ -415,10 +432,15 @@ func (c *GeminiToAnthropicStreamConverter) HandleStreamEnd() []byte {
 }
 
 func (c *GeminiToAnthropicStreamConverter) EmitError(message string) []byte {
-	return []byte(fmt.Sprintf(
-		`event: error`+"\n"+`data: {"type":"error","error":{"type":"stream_error","message":"%s"}}`,
-		message,
-	))
+	if c.finalized {
+		return nil
+	}
+	c.finalized = true
+	b, _ := json.Marshal(map[string]any{
+		"type":  "error",
+		"error": map[string]any{"type": "stream_error", "message": message},
+	})
+	return []byte("event: error\ndata: " + string(b))
 }
 
 // ensureBlock transitions to a new content block.
@@ -434,8 +456,16 @@ func (c *GeminiToAnthropicStreamConverter) ensureBlock(blockType, meta string) [
 		`data: {"type":"content_block_start","index":%d,"content_block":{"type":"%s"`,
 		idx, blockType,
 	)
-	if meta != "" {
-		startPayload += "," + meta
+	switch blockType {
+	case "text":
+		startPayload += `,"text":""`
+	case "thinking":
+		startPayload += `,"thinking":"","signature":""`
+	case "tool_use":
+		if meta != "" {
+			startPayload += "," + meta
+		}
+		startPayload += `,"input":{}`
 	}
 	startPayload += `}}`
 	return [][]byte{[]byte("event: content_block_start\n" + startPayload)}

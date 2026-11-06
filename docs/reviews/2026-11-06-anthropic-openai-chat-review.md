@@ -4,7 +4,7 @@ Date: 2026-11-06
 Reviewed repository: `llm-api-converter`
 Reviewed revision: `e4c7c1a` (`feat(engine): expose the resolved logical model`)
 Comparison implementation: `magpie` at `e17b6ce`
-Status: P0 and P1 fixed and verified; P2 findings remain open.
+Status: P0, P1 and P2 fixed and verified; deferred items remain unscheduled.
 
 ## Scope
 
@@ -89,7 +89,9 @@ P0 was verified on `feat/anthropic-openai-p0` at `4d77eb1` with
 passed. A later fix wave after the final whole-branch review hardened
 additional P0 edge cases at `8eb988a`
 (`fix(convert): harden P0 conversion edge cases`); see the P0 plan's
-Post-review fix wave. P2 findings below are unchanged and still open.
+Post-review fix wave. P2 findings were closed on `fix/anthropic-openai-p2`;
+see the P2 Status table below. Files/audio/documents, `message_start.usage`,
+the legacy `ConvertSSE` path, and annotations remain deferred.
 
 ## P1 Status
 
@@ -444,6 +446,43 @@ handles initial text/thinking and `fullInput` (`internal/gateway/anthropic.go:12
 | Legacy `ConvertSSE` path incomplete | `convert/convert.go:220-268` | standalone SSE conversion lacks lifecycle events and tool calls |
 | Interrupted stream may add two text blocks | `convert/stream.go:218-232` | cosmetic duplicate placeholder |
 | `ReasoningCache` read can race with in-place `Set` | `convert/reasoning_cache.go:233-245` | potential data race under concurrent streams |
+
+## P2 Status
+
+All actionable P2 findings are fixed. Deferred items are recorded separately.
+
+| ID | Finding | Status | Commit |
+|---|---|---|---|
+| P2-1 | Stream block starts lack `text:""` / thinking fields | fixed | `48e248a` |
+| P2-2 | No-argument tool does not emit `{}` | fixed | `48e248a` |
+| P2-3 | `reasoning` / `reasoning_details` aliases ignored | fixed | `a84076c` |
+| P2-4 | `developer` role becomes user | fixed | `7e9f5e4` |
+| P2-5 | Anthropic tool IDs not sanitized | fixed | `f8d9aec` |
+| P2-6 | Unknown `finish_reason` / `stop_reason` passed through | fixed | `ae8391a` |
+| P2-7 | `content_filter` mapping inconsistent | fixed | `ae8391a` |
+| P2-8 | `refusal` / annotations ignored | refusal fixed; annotations deferred | `ae8391a` |
+| P2-9 | Empty OpenAI choices produce `content:null` | fixed | `ae8391a` |
+| P2-10 | Files/audio/documents dropped | deferred | — |
+| P2-11 | `parallel_tool_calls` / `disable_parallel_tool_use` dropped | fixed | `7e9f5e4` |
+| P2-12 | `top_k` dropped Anthropic → OpenAI | fixed for known providers | `7e9f5e4` |
+| P2-13 | `message_start.usage` is always 0 | deferred | — |
+| P2-14 | Legacy `ConvertSSE` path incomplete | deferred | — |
+| P2-15 | Interrupted stream may add two text blocks | fixed | `48e248a` |
+| P2-16 | `ReasoningCache` read can race with in-place `Set` | fixed | `1bca7bd` |
+| Extra | Responses stream accepts truncated tool arguments | fixed | `5a50512` |
+| Extra | Gemini stream errors can be non-terminal / invalid JSON | fixed | `c8c5138` |
+
+Deferred rationale:
+
+- **Files/audio/documents:** needs a separate content-part capability design;
+  no provider-neutral mapping exists today.
+- **`message_start.usage`:** OpenAI reports usage only in the final streaming
+  chunk, so there is no honest value before that point. The real values already
+  appear in `message_delta`.
+- **Legacy `ConvertSSE`:** the stateless function cannot own block or tool
+  state; the supported route is the stateful `HandleSSEEvent` / session path.
+- **Annotations:** OpenAI URL citations and Anthropic citations need a separate
+  mapping; refusal text itself is fixed.
 
 ## Magpie comparison summary
 

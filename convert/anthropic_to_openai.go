@@ -120,6 +120,31 @@ func toolChoiceInstruction(choice *AnthropicToolChoice, model string) string {
 	return ""
 }
 
+// stripAllProviderPrefixes removes every leading "provider/" segment.
+func stripAllProviderPrefixes(model string) string {
+	for {
+		i := strings.IndexByte(model, '/')
+		if i < 0 {
+			return model
+		}
+		model = model[i+1:]
+	}
+}
+
+// supportsTopKPassthrough reports whether the model's provider accepts top_k.
+// Strict OpenAI endpoints reject it, so the allowlist stays small.
+func supportsTopKPassthrough(model string) bool {
+	i := strings.IndexByte(model, '/')
+	if i < 0 {
+		return false
+	}
+	switch strings.ToLower(model[:i]) {
+	case "groq", "openrouter", "together", "fireworks", "vllm", "ollama", "lmstudio":
+		return true
+	}
+	return false
+}
+
 // thinkingToOpenAi converts Anthropic thinking config to OpenAI format.
 // Only values OpenAI-format APIs actually accept ("enabled"/"disabled") are
 // forwarded. Claude Code's "adaptive" mode has no OpenAI equivalent and
@@ -213,6 +238,10 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 		}
 		if req.TopP != nil {
 			oai.TopP = req.TopP
+		}
+		if req.TopK != nil && !isOpenAIReasoningModel(stripAllProviderPrefixes(outputModel)) &&
+			supportsTopKPassthrough(outputModel) {
+			oai.TopK = req.TopK
 		}
 	}
 	// Anthropic metadata (user_id etc.) is NOT forwarded: most OpenAI-compatible
@@ -330,6 +359,10 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 
 		// Model-aware tool choice mapping.
 		oai.ToolChoice = anthropicToolChoiceToOpenAi(req.ToolChoice, outputModel)
+		if len(oai.Tools) > 0 && req.ToolChoice != nil && req.ToolChoice.DisableParallelToolUse != nil {
+			parallel := !*req.ToolChoice.DisableParallelToolUse
+			oai.ParallelToolCalls = &parallel
+		}
 	}
 
 	// stream_options for streaming requests (enables usage in final chunk).
@@ -682,26 +715,25 @@ func convertAnthropicResponseToOpenAI(body []byte) ([]byte, error) {
 
 func mapFinishReason(reason *string) *string {
 	if reason == nil {
-		return &strStop // default to "stop" instead of nil to avoid NPE
+		return &strStop
 	}
 	switch *reason {
-	case "end_turn":
+	case "end_turn", "stop_sequence", "pause_turn":
 		return &strStop
 	case "max_tokens":
 		return &strLength
 	case "tool_use":
 		return &strToolCalls
-	case "stop_sequence":
-		return &strStop
-	case "content_filter":
-		return &strStop
+	case "refusal", "content_filter":
+		return &strContentFilter
 	default:
-		return reason
+		return &strStop
 	}
 }
 
 var (
-	strStop      = "stop"
-	strLength    = "length"
-	strToolCalls = "tool_calls"
+	strStop          = "stop"
+	strLength        = "length"
+	strToolCalls     = "tool_calls"
+	strContentFilter = "content_filter"
 )

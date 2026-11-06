@@ -33,6 +33,7 @@ type OpenAIChatRequest struct {
 	LogitBias            any                   `json:"logit_bias,omitempty"`        // ignored
 	User                 string                `json:"user,omitempty"`              // ignored
 	Metadata             any                   `json:"metadata,omitempty"`
+	ParallelToolCalls    *bool                 `json:"parallel_tool_calls,omitempty"`
 }
 
 type OpenAIMessage struct {
@@ -43,6 +44,52 @@ type OpenAIMessage struct {
 	ToolCallID       string              `json:"tool_call_id,omitempty"`      // tool role
 	Name             string              `json:"name,omitempty"`              // function role
 	ReasoningContent string              `json:"reasoning_content,omitempty"` // DeepSeek/GLM thinking
+	Refusal          string              `json:"refusal,omitempty"`           // OpenAI safety refusal
+}
+
+// OpenAIReasoningDetail is one OpenRouter-style reasoning_details entry.
+type OpenAIReasoningDetail struct {
+	Type    string `json:"type,omitempty"`
+	Text    string `json:"text,omitempty"`
+	Summary string `json:"summary,omitempty"`
+}
+
+// normalizeReasoningAliases folds OpenRouter's reasoning fields into the
+// DeepSeek/GLM reasoning_content field used by the converters.
+func normalizeReasoningAliases(reasoningContent, reasoning string, details []OpenAIReasoningDetail) string {
+	if reasoningContent != "" {
+		return reasoningContent
+	}
+	if reasoning != "" {
+		return reasoning
+	}
+	var parts []string
+	for _, d := range details {
+		switch {
+		case d.Text != "":
+			parts = append(parts, d.Text)
+		case d.Summary != "":
+			parts = append(parts, d.Summary)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// UnmarshalJSON normalizes reasoning aliases without exposing them on the
+// public message shape, so re-marshalling cannot emit both forms.
+func (m *OpenAIMessage) UnmarshalJSON(data []byte) error {
+	type shadow OpenAIMessage
+	var aux struct {
+		shadow
+		Reasoning        string                  `json:"reasoning,omitempty"`
+		ReasoningDetails []OpenAIReasoningDetail `json:"reasoning_details,omitempty"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	*m = OpenAIMessage(aux.shadow)
+	m.ReasoningContent = normalizeReasoningAliases(m.ReasoningContent, aux.Reasoning, aux.ReasoningDetails)
+	return nil
 }
 
 // OpenAIContentPart is an element in a multi-part user message.
@@ -367,8 +414,9 @@ type AnthropicImageSource struct {
 }
 
 type AnthropicToolChoice struct {
-	Type string `json:"type"`
-	Name string `json:"name,omitempty"`
+	Type                   string `json:"type"`
+	Name                   string `json:"name,omitempty"`
+	DisableParallelToolUse *bool  `json:"disable_parallel_tool_use,omitempty"`
 }
 
 type AnthropicTool struct {
@@ -571,6 +619,7 @@ type OpenAIDelta struct {
 	Role             string                `json:"role,omitempty"`
 	Content          string                `json:"content,omitempty"`
 	ReasoningContent string                `json:"reasoning_content,omitempty"`
+	Refusal          string                `json:"refusal,omitempty"`
 	ToolCalls        []OpenAIDeltaToolCall `json:"tool_calls,omitempty"`
 	FunctionCall     *OpenAIFunctionCall   `json:"function_call,omitempty"`
 }
@@ -583,18 +632,22 @@ func (d *OpenAIDelta) UnmarshalJSON(data []byte) error {
 	// Shadow type mirroring OpenAIDelta with Content kept raw; keep in sync
 	// when fields are added to the struct.
 	var aux struct {
-		Role             string                `json:"role,omitempty"`
-		Content          json.RawMessage       `json:"content,omitempty"`
-		ReasoningContent string                `json:"reasoning_content,omitempty"`
-		ToolCalls        []OpenAIDeltaToolCall `json:"tool_calls,omitempty"`
-		FunctionCall     *OpenAIFunctionCall   `json:"function_call,omitempty"`
+		Role             string                  `json:"role,omitempty"`
+		Content          json.RawMessage         `json:"content,omitempty"`
+		ReasoningContent string                  `json:"reasoning_content,omitempty"`
+		Reasoning        string                  `json:"reasoning,omitempty"`
+		ReasoningDetails []OpenAIReasoningDetail `json:"reasoning_details,omitempty"`
+		Refusal          string                  `json:"refusal,omitempty"`
+		ToolCalls        []OpenAIDeltaToolCall   `json:"tool_calls,omitempty"`
+		FunctionCall     *OpenAIFunctionCall     `json:"function_call,omitempty"`
 	}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 	d.Role = aux.Role
 	d.Content = joinOpenAIDeltaContent(aux.Content)
-	d.ReasoningContent = aux.ReasoningContent
+	d.ReasoningContent = normalizeReasoningAliases(aux.ReasoningContent, aux.Reasoning, aux.ReasoningDetails)
+	d.Refusal = aux.Refusal
 	d.ToolCalls = aux.ToolCalls
 	d.FunctionCall = aux.FunctionCall
 	return nil

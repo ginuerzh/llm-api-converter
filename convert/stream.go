@@ -52,6 +52,7 @@ type StreamConverter struct {
 	// Accumulated reasoning and text across streaming deltas.
 	accumulatedReasoning string
 	accumulatedText      string
+	sawRefusal           bool
 
 	// Usage accumulated from the final chunk.
 	usage *OpenAIUsage
@@ -173,6 +174,15 @@ func (sc *StreamConverter) HandleChunk(data []byte) ([]byte, error) {
 		}
 	}
 
+	// Refusal text → text delta.
+	if delta.Refusal != "" {
+		sc.sawRefusal = true
+		sc.accumulatedText += delta.Refusal
+		sc.stopThinkingBlock()
+		events = append(events, sc.ensureBlock("text", "", "")...)
+		events = append(events, sc.textDelta(delta.Refusal)...)
+	}
+
 	// Tool calls.
 	if len(delta.ToolCalls) > 0 {
 		for _, tc := range delta.ToolCalls {
@@ -217,6 +227,22 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 
 	var events [][]byte
 
+	// The interruption marker and the empty-text placeholder are emitted
+	// before the open block is closed, so they append to an existing text
+	// block instead of opening a second one.
+	if sc.streamInterrupted {
+		events = append(events, sc.ensureBlock("text", "", "")...)
+		events = append(events, sc.textDelta("\n\n[stream interrupted]")...)
+	}
+	// Ensure at least one valid text block — a reasoning-only stream
+	// (DeepSeek-V4-Pro with a small max_tokens budget) produces a thinking
+	// block but no text, leaving the final content array empty. Claude Code's
+	// safety classifier cannot parse an empty/no-content response.
+	if sc.accumulatedText == "" && len(sc.toolCallByIndex) == 0 {
+		events = append(events, sc.ensureBlock("text", "", "")...)
+		events = append(events, sc.textDelta(" ")...)
+	}
+
 	// Close the thinking block if still open.
 	if sc.curBlockType == "thinking" {
 		events = append(events, sc.thinkingBlockStop())
@@ -226,7 +252,11 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 
 	// Close the current content block if one is open.
 	if sc.curBlockType != "" {
-		events = append(events, sc.contentBlockStop())
+		if sc.curBlockType == "tool_use" {
+			events = append(events, sc.closeOpenToolBlock()...)
+		} else {
+			events = append(events, sc.contentBlockStop())
+		}
 		sc.curBlockType = ""
 		sc.openToolIndex = -1
 	}
@@ -256,30 +286,14 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 		}
 	}
 
-	// Stream interrupted marker.
-	if sc.streamInterrupted {
-		events = append(events, sc.ensureBlock("text", "", "")...)
-		events = append(events, sc.textDelta("\n\n[stream interrupted]")...)
-	}
-
-	// Ensure at least one valid text block — a reasoning-only stream
-	// (DeepSeek-V4-Pro with a small max_tokens budget) produces a thinking
-	// block but no text, leaving the final content array empty. Claude Code's
-	// safety classifier cannot parse an empty/no-content response.
-	if sc.accumulatedText == "" && len(sc.toolCallByIndex) == 0 {
-		events = append(events, sc.ensureBlock("text", "", "")...)
-		events = append(events, sc.textDelta(" ")...)
-		events = append(events, sc.contentBlockStop())
-	}
-
-	// message_delta with stop_reason. When tools were emitted, an empty or
-	// "stop" upstream finish reason is ambiguous: OpenAI-compatible backends
-	// often report it for a tool-calling turn, so infer tool_use. Explicit
-	// reasons such as length or content_filter are preserved.
+	// message_delta with stop_reason. Tool content wins unless the upstream
+	// explicitly truncated with length; refusals keep their own stop reason.
 	stopReason := "end_turn"
 	switch {
-	case len(sc.toolCallByIndex) > 0 && (sc.finishReason == "" || sc.finishReason == "stop"):
+	case len(sc.toolCallByIndex) > 0 && sc.finishReason != "length":
 		stopReason = "tool_use"
+	case sc.sawRefusal && (sc.finishReason == "" || sc.finishReason == "stop"):
+		stopReason = "refusal"
 	case sc.finishReason != "":
 		stopReason = mapOpenAIStreamFinish(sc.finishReason)
 	}
@@ -349,11 +363,11 @@ func (sc *StreamConverter) ensureBlock(blockType, toolID, toolName string) [][]b
 		if sc.curBlockType == "thinking" {
 			events = append(events, sc.thinkingBlockStop())
 			sc.thinkingBlockStopped = true
+		} else if sc.curBlockType == "tool_use" {
+			events = append(events, sc.closeOpenToolBlock()...)
+			sc.openToolIndex = -1
 		} else {
 			events = append(events, sc.contentBlockStop())
-			if sc.curBlockType == "tool_use" {
-				sc.openToolIndex = -1
-			}
 		}
 	}
 
@@ -368,12 +382,33 @@ func (sc *StreamConverter) ensureBlock(blockType, toolID, toolName string) [][]b
 		return events
 	}
 
+	var payload []byte
+	switch blockType {
+	case "text":
+		payload = []byte(`{"type":"text","text":""}`)
+	case "thinking":
+		payload = []byte(`{"type":"thinking","thinking":"","signature":""}`)
+	default:
+		payload = []byte(fmt.Sprintf(`{"type":%q}`, blockType))
+	}
 	startPayload := fmt.Sprintf(
-		`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":%d,"content_block":{"type":"%s"}}`,
-		idx, blockType,
+		`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":%d,"content_block":%s}`,
+		idx, payload,
 	)
 	events = append(events, []byte(startPayload))
 
+	return events
+}
+
+// closeOpenToolBlock closes the currently open tool_use block. A call whose
+// accumulated arguments are empty is a no-argument tool; emit an explicit {}
+// so clients accumulate a JSON object rather than an empty string.
+func (sc *StreamConverter) closeOpenToolBlock() [][]byte {
+	var events [][]byte
+	if state := sc.toolCallByIndex[sc.openToolIndex]; state != nil && strings.TrimSpace(state.Arguments) == "" {
+		events = append(events, sc.inputJSONDelta(sc.curBlockIndex, "{}")...)
+	}
+	events = append(events, sc.contentBlockStop())
 	return events
 }
 
@@ -483,10 +518,15 @@ func (sc *StreamConverter) toolIndex(tc OpenAIDeltaToolCall) int {
 	return sc.lastToolIndex
 }
 
-// toolArgsComplete reports whether args is a complete JSON object.
+// toolArgsComplete reports whether args is a complete JSON object. JSON null,
+// arrays, and scalars are not valid tool input objects.
 func toolArgsComplete(args string) bool {
-	var v map[string]any
-	return json.Unmarshal([]byte(args), &v) == nil
+	var v any
+	if err := json.Unmarshal([]byte(args), &v); err != nil {
+		return false
+	}
+	_, ok := v.(map[string]any)
+	return ok
 }
 
 // streamToolArgsComplete reports whether accumulated tool arguments can close
@@ -530,10 +570,7 @@ func (sc *StreamConverter) handleToolCallDelta(tc OpenAIDeltaToolCall) [][]byte 
 	}
 
 	// First appearance of this tool call.
-	toolID := tc.ID
-	if toolID == "" {
-		toolID = ensureToolID("")
-	}
+	toolID := sanitizeAnthropicToolID(tc.ID)
 
 	state := &streamToolState{
 		ID:        toolID,
@@ -566,7 +603,7 @@ func (sc *StreamConverter) handleToolCallDelta(tc OpenAIDeltaToolCall) [][]byte 
 	// If we're already in a tool_use block for a different tool call,
 	// stop it before starting the new one.
 	if sc.curBlockType == "tool_use" {
-		events = append(events, sc.contentBlockStop())
+		events = append(events, sc.closeOpenToolBlock()...)
 		sc.curBlockType = ""
 		sc.openToolIndex = -1
 	}
