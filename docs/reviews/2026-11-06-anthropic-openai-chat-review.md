@@ -430,6 +430,9 @@ handles initial text/thinking and `fullInput` (`internal/gateway/anthropic.go:12
 | URL images | dropped | preserved | P1 bug |
 | Stream error chunks | swallowed | explicit error | P1 bug |
 
+> Historical findings: the P0 rows above describe the reviewed revision; all
+> four were fixed at `4d77eb1`.
+
 ## What is already good
 
 - The pairwise registry/model-map architecture is appropriate; magpie's IR is

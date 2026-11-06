@@ -860,7 +860,7 @@ this task. Record both commit SHAs in the implementation record.
   - `go test -count=1 ./...` → PASS: `convert 0.040s`, `engine 0.004s`, `rewriter 0.009s`, `tests/e2e 12.286s` (fresh e2e run, not cached).
   - `CGO_ENABLED=1 go test -race ./convert ./rewriter` → PASS; `convert` was reported cached, so `CGO_ENABLED=1 go test -race -count=1 ./convert ./rewriter` was also run → PASS (`convert 1.202s`, `rewriter 1.031s`).
   - `go vet ./...` → PASS, no diagnostics.
-  - `git status --short` before the docs commit showed only the review doc and plan modified in `llm-api-converter` (plus the memory note in the workspace root); no Go source or test file was modified.
+  - `git status --short` before the docs commit showed only the review doc and plan modified in `llm-api-converter`; in the workspace-root repository only the memory note was modified. No Go source or test file was modified.
 - Review findings / fixes:
   - Confirmed the four code commits are on `feat/anthropic-openai-p0` in the required order and that the P0 items are fixed, so no P0 item was marked deferred.
   - Verified commit `612b033` really contains the `convert/responses_test.go` whitespace hunk (`@@ -580,7 +577,7 @@`), so the Task 2 record’s “both hunks were reverted” claim was wrong and is now corrected.
@@ -868,7 +868,7 @@ this task. Record both commit SHAs in the implementation record.
   - No production code, test, dependency, or registry behavior changed in this task.
 - Deferred:
   - P1/P2 findings in the review document remain open.
-  - The Task 2 whitespace hunk is in published branch history and is behavior-neutral; it is left in place rather than rewriting history.
+  - The Task 2 whitespace hunk is in branch history and is behavior-neutral; it is left in place rather than rewriting history.
   - The whole `ToolConfig` → `tool_choice` switch in `convert/anthropic_to_gemini.go`, not only the `NONE` branch, still needs the no-tools guard in a future task.
 
 ---
@@ -890,3 +890,38 @@ Please review it. Which execution approach would you prefer?
 - **Native** — I implement every task in this session; fastest, with one final review.
 
 For this plan I recommend **subagent-driven** if the P0 fixes will ship immediately, because Tasks 1–3 touch shared conversion code and benefit from an independent gate; otherwise native is fine for the small, well-bounded changes.
+
+---
+
+## Post-review fix wave
+
+Final whole-branch review findings (verdict **With fixes** at head `22a03fd`):
+`.superpowers/sdd/2026-11-06-anthropic-openai-chat-p0/final-review-findings.md`.
+
+- Status: Done
+- Date: 2026-11-06
+- Repository / commit:
+  - `llm-api-converter` @ `8eb988a` (`fix(convert): harden P0 conversion edge cases`, branch `feat/anthropic-openai-p0`) — code and tests.
+  - The docs/memory record is the follow-up docs commit on the same branch; its SHA is recorded in the final fix report because a commit cannot contain its own SHA.
+- Files changed:
+  - `convert/openai_to_anthropic.go` — added `anthropicSystemBlocks`; the Chat→Anthropic request now omits `system` when every collected system text is empty or whitespace-only.
+  - `convert/responses.go` — the Responses→Anthropic request uses `anthropicSystemBlocks` after billing-header stripping; whitespace-only `system`/`developer` input items are skipped; `tool_choice` is mapped only when `len(anth.Tools) > 0` after non-function tools are filtered.
+  - `convert/stream.go` — extracted `toolUseBlockStart` shared by `ensureBlock` and `releaseHeldTools` (JSON-escaped id/name, `"input":{}` on every tool_use start); `releaseHeldTools` records `state.BlockIndex`; corrected the closed-call comment.
+  - `convert/tool_input.go` — the invalid-JSON fallback uses the trimmed arguments string.
+  - `convert/anthropic_openai_p0_test.go` — Chat and Responses empty/whitespace-system regression tests, mixed-text preservation tests, a non-function-tools `tool_choice` regression; hardened the empty-user, all-empty, Responses tool-only, and held-release tests (length checks, parsed assistant/tool_use assertions, non-empty text, parsed unique ascending block indices and one start/stop per released call).
+  - `convert/tool_input_test.go` — new table tests for `anthropicToolInput` and `openAIToolArguments` covering empty, whitespace, null, invalid JSON, array/string/number/bool, and valid object; every result is asserted to be a JSON object.
+- Tests / commands:
+  - RED (Important 1): `go test -count=1 ./convert -run 'TestP0_(OpenAIToAnthropicEmptySystemOmitted|OpenAIToAnthropicSystemKeepsNonWhitespaceText|ResponsesToAnthropicEmptySystemOmitted|ResponsesToAnthropicSystemKeepsNonWhitespaceText)' -v` → FAIL: empty and whitespace system blocks were emitted (`"system":[{"type":"text","text":""}]`, `"text":"   "`, `"text":"   \nbe brief"`).
+  - RED (Important 2): `go test -count=1 ./convert -run TestP0_ResponsesToAnthropicNonFunctionToolsNoToolChoice -v` → FAIL: `"tool_choice":{"type":"auto"}` was emitted after `web_search` was filtered.
+  - GREEN: the same commands after the fixes → PASS.
+  - `go test -count=1 ./...` → PASS (`convert 0.039s`, `engine 0.003s`, `rewriter 0.009s`, `tests/e2e 6.941s`).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert` → PASS (`1.206s`).
+  - `go vet ./...` → clean.
+- Findings fixed:
+  - Important 1 — empty/whitespace system content is filtered after billing-header stripping; `system` is omitted entirely when nothing non-whitespace remains (Chat and Responses).
+  - Important 2 — Responses→Anthropic `tool_choice` is guarded on `len(anth.Tools) > 0` after non-function tools are filtered.
+  - Minors — hardened the four weak P0 tests; added helper table tests and the trimmed invalid-JSON fallback; extracted the shared tool-use start builder with JSON-escaped id/name, set `state.BlockIndex` on release, and corrected the closed-call comment; fixed the review-doc historical note, the `MEMORY.md` path/status, and the plan's Task 5 wording.
+- Deferred:
+  - The unrelated `convert/responses_test.go` whitespace hunk is intentionally left as-is.
+  - “Declined to judge” review items remain out of scope (sequential no-argument tool calls, response-side `" "` placeholder, empty `tool_result`, index-less interleaved streams, partial JSON on released held calls, held-call ID order, Anthropic→Gemini `ToolConfig`, Anthropic→Responses `block.Input`, empty tool names, consecutive same-role messages, Responses content-array instructions, missing `stop_reason`).
+  - `.memory/MEMORY.md` was edited but not committed because the workspace-root repository already had unrelated uncommitted changes.
