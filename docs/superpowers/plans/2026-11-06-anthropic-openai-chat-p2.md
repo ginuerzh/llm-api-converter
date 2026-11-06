@@ -1817,11 +1817,11 @@ Route detected errors:
 
   ```go
   if chunk.Error != nil {
-  	msg := chunk.Error.Message
-  	if msg == "" {
-  		msg = "upstream stream error"
-  	}
-  	return c.EmitError(msg), nil
+      msg := chunk.Error.Message
+      if msg == "" {
+          msg = "upstream stream error"
+      }
+      return c.EmitError(msg), nil
   }
   ```
 
@@ -1829,11 +1829,11 @@ Route detected errors:
 
   ```go
   if resp.Error != nil {
-  	msg := resp.Error.Message
-  	if msg == "" {
-  		msg = "upstream stream error"
-  	}
-  	return c.EmitError(msg), nil
+      msg := resp.Error.Message
+      if msg == "" {
+          msg = "upstream stream error"
+      }
+      return c.EmitError(msg), nil
   }
   ```
 
@@ -1882,6 +1882,52 @@ git commit -m "fix(convert): make gemini stream errors terminal"
 - Tests/commands/results: RED `go test -count=1 -run 'TestP2_Gemini' ./convert` → non-idempotent errors, corrupted JSON, normal close after upstream error, and no end-phase dispatch; GREEN focused → PASS; full `go test -count=1 ./...` → all packages PASS; `CGO_ENABLED=1 go test -race -count=1 ./convert` → PASS; `go vet ./...` and `git diff --check` clean.
 - Review findings/fixes: `GeminiToOpenAI` keeps `content_filter` for blocked responses via an internal `emitError(message, type)` helper while `EmitError` uses `server_error`; both are terminal. Deleted the obsolete `TestP1_GeminiEndPhaseStreamErrorNotDispatched`.
 - Deferred/limitations: `GeminiStreamHandler` remains stateless and out of scope; it has no lifecycle to terminate.
+
+---
+
+### Final review fix pass (2026-11-06)
+
+The fresh whole-branch review found one Critical and three Important issues.
+All were fixed in one pass with regression tests:
+
+1. **Critical: interleaved header-only parallel calls lost arguments.**
+   The Task 4 hold-check change to `streamToolArgsComplete` treated an empty
+   first fragment as complete, closed the block with `{}`, and dropped later
+   fragments. Restored `toolArgsComplete` for the hold check while keeping
+   `closeOpenToolBlock` for every close path.
+2. **Important: refusal overrode a legacy `function_call` tool stop.**
+   The refusal branch checked only `len(msg.ToolCalls) == 0`; changed it to
+   `!hasAnthropicToolUse(anth.Content)` so tool content always wins.
+3. **Important: streamed `null` tool arguments passed the completeness
+   guards.** `toolArgsComplete` now requires a JSON object; `null`, arrays, and
+   scalars are incomplete and produce a terminal error.
+4. **Important: Anthropic → Responses ignored `content_block_start.text` and
+   `content_block_start.input`.** Added both fields, seeded tool arguments from
+   the start event, marked them complete so later deltas cannot double-apply,
+   and emitted the initial text/tool deltas.
+
+Also strengthened the end-phase error assertion and added blocked-Gemini and
+no-tools parallel cases. The plan's Task 8 code-block indentation was fixed so
+`git diff --check 60f59e8..HEAD` is clean.
+
+**Files changed:** `convert/stream.go`, `convert/openai_to_anthropic.go`,
+`convert/stream_anthropic.go`, `convert/anthropic_openai_p2_test.go`, this
+plan.
+
+**Tests:** targeted RED `go test -count=1 -run
+'TestP2_(InterleavedHeaderOnlyToolArguments|RefusalWithLegacyFunctionCallKeepsToolStop|NullToolArgumentsRejected|AnthropicToResponsesStartPayloads)'
+./convert` failed on the base branch; GREEN after the fixes. Full
+`go test -count=1 ./...`, `CGO_ENABLED=1 go test -race -count=1 ./convert`,
+`go vet ./...`, and `git diff --check` all pass.
+
+**Implementation record:**
+- Date/status: 2026-11-06 / complete
+- Repository/commit: `llm-api-converter` `7bf41ee` (code); docs commit follows
+- Files changed: `convert/stream.go`, `convert/openai_to_anthropic.go`, `convert/stream_anthropic.go`, `convert/anthropic_openai_p2_test.go`, `docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p2.md`
+- Tests/commands/results: targeted RED→GREEN; full suite PASS; race PASS; vet PASS; `git diff --check 60f59e8..HEAD` clean after the docs commit
+- Review findings/fixes: Critical hold-check regression restored; legacy function_call refusal stop; `null` arguments rejected; Responses start text/tool input preserved
+- Deferred minors: empty-ID legacy function-call cache keys are random on both sides (pre-existing/spec-accepted); Gemini start-event tool names are still string-concatenated (Gemini names are restricted); end-phase test assertion strengthened
+- Process note: task records remain in separate `docs(convert): record task N` commits to capture the code commit SHA, matching the P1 precedent; this is an intentional deviation from the "same commit" wording
 
 ---
 
