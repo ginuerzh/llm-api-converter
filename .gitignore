@@ -11,6 +11,9 @@ llm-api-converter-*
 # Codegraph index
 .codegraph/
 
+# Superpowers SDD scratch workspace
+.superpowers/
+
 # Temporary fix scripts
 _fix*.py
 
