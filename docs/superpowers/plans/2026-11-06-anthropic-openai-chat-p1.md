@@ -922,7 +922,7 @@ git commit -m "fix(convert): preserve image URLs and structured output"
 - Anthropic→OpenAI `content_block_start` consumes `text`, `thinking`, and
   `input`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestP1_OpenAIStreamErrorChunk(t *testing.T) {
@@ -1036,13 +1036,13 @@ func TestMetaFromStreamError(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd llm-api-converter && go test ./convert ./engine ./rewriter -run 'TestP1_(OpenAIStreamErrorChunk|AnthropicStreamErrorChunk|EndPhaseStreamErrorEmitsError|PassthroughEndPhaseIgnoresError|AnthropicBlockStartFields)|TestRewriteEndPhaseStreamError|TestMetaFromStreamError' -v`
 
 Expected: FAIL/compile error — `OpenAIStreamChunk.Error`, `StreamError`, and start payload fields do not exist; error chunks are swallowed.
 
-- [ ] **Step 3: Implement the error and start-field handling**
+- [x] **Step 3: Implement the error and start-field handling**
 
 - Add `OpenAIStreamError` and `OpenAIStreamChunk.Error`.
 - In `StreamConverter.HandleChunk`, check `chunk.Error` before the
@@ -1066,13 +1066,13 @@ Expected: FAIL/compile error — `OpenAIStreamChunk.Error`, `StreamError`, and s
     `{}`/`null`, set `Function.Arguments` to the raw input and mark that block
     complete. Skip later `input_json_delta` events for that block.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd llm-api-converter && go test ./convert ./engine ./rewriter -run 'TestP1_|TestRewriteEndPhaseStreamError|TestMetaFromStreamError' -v`
 
 Expected: PASS.
 
-- [ ] **Step 5: Run the full suite and commit**
+- [x] **Step 5: Run the full suite and commit**
 
 Run: `cd llm-api-converter && go test -count=1 ./... && go vet ./...`
 
@@ -1085,13 +1085,34 @@ git commit -m "fix(convert): surface stream errors and block-start payloads"
 
 **Implementation record**
 
-- Status: Pending
-- Date:
-- Repository / commit:
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter` @ `pending` (`fix(convert): surface stream errors and block-start payloads`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-5.
 - Files changed:
+  - `convert/types.go` — added `OpenAIStreamError{Type, Message, Code}` and `OpenAIStreamChunk.Error`.
+  - `convert/stream.go` — `StreamConverter.HandleChunk` checks `chunk.Error` before the no-choices branch: it returns the JSON-safe `EmitError` event (default message `upstream stream error`) and sets `finalized`, so `HandleStreamEnd` emits no `message_delta`/`message_stop`. `SetInterrupted` is not used on this path.
+  - `convert/stream_anthropic_to_openai.go` — the start event now decodes `content_block.text`, `thinking`, `signature`, and `input`. `content_block_start` emits text as a content delta, thinking as `reasoning_content`, and forwards a complete non-empty/non-`{}`/non-`null` tool input as the call's `arguments` while marking that block complete so later `input_json_delta` events are ignored; empty input keeps the delta flow. The `error` case sets `finished` after emitting the OpenAI error object, suppressing the normal finish chunk and `[DONE]`.
+  - `convert/convert.go` — `HandleSSEEvent` and `handleResponsesSSEEvent` end phases now return `handler.EmitError(opts.ErrorMsg)` when error metadata is present (nil for `*PassthroughStreamHandler`) instead of synthesizing the normal close, so partial tool arguments are never reported as a successful `tool_use`.
+  - `engine/engine.go` — added `Meta.StreamError` and set `ConvertOptions.ErrorMsg` from it in `Engine.Rewrite`.
+  - `rewriter/server.go` — `metaFrom` parses `stream_error`.
+  - `convert/anthropic_openai_p1_test.go`, `engine/engine_test.go`, `rewriter/server_test.go` — the plan tests plus regression tests for block-start thinking, empty block-start tool input, and the Responses end-phase error.
 - Tests / commands:
+  - RED: `go test ./convert ./engine ./rewriter -run '<plan pattern>' -v` → `convert` failed: OpenAI error chunk returned no output and the end emitted a normal close; Anthropic error chunk still emitted the normal finish; the end-phase error emitted `content_block_start`/`message_stop`; block-start text and tool input were missing; block-start thinking was missing. `engine`/`rewriter` failed to build: `engine.Meta has no field StreamError`.
+  - GREEN: same targeted command → PASS; `go test ./convert ./engine ./rewriter -run 'TestP1_|TestRewriteEndPhaseStreamError|TestMetaFromStreamError'` → PASS (48 top-level tests).
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS.
+  - `go vet ./...` → clean; `git diff --check` → clean.
 - Review findings:
+  - Error chunks and end-phase `stream_error` are both terminal: they emit one error event and suppress the normal close, and neither path calls `SetInterrupted()`.
+  - Same-protocol passthrough is unchanged: its end phase still returns nil, because `PassthroughStreamHandler.EmitError` always emits an Anthropic frame.
+  - A complete `tool_use.input` in `content_block_start` is emitted once as `arguments`; later `input_json_delta` events for that block are dropped, and the normal `input:{}` + deltas flow is untouched.
+  - Error messages stay JSON-safe because both converters build error payloads with `json.Marshal`.
+  - No registry/model-map, routing, dependency, `core/`, or other-module changes.
 - Deferred:
+  - `AnthropicToOpenAIStreamConverter.EmitError` has no `finished` guard: if a stream already emitted an error chunk and the end phase also reports `stream_error`, a second error object is emitted (never a normal finish). `StreamConverter`, `ResponsesStreamConverter`, and `AnthropicStreamConverter` already guard this.
+  - `content_block.signature` is decoded but dropped, because OpenAI Chat has no equivalent field (signatures are already lossy in this direction).
+  - A relay that sends both start-event text and a following `text_delta` would produce duplicated text; the spec requires emitting start-event text immediately, and real relays use one or the other.
+  - The resolved SHA is recorded by the follow-up docs commit, matching Tasks 1-5.
 
 ---
 

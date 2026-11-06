@@ -1020,6 +1020,16 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			slog.Warn("HandleSSEEvent: unknown stream for end phase", "sid", sid)
 			return nil, nil
 		}
+		// GOST reports interrupted streams through stream_error metadata. An
+		// interrupted stream must surface as an error, not as a normal close:
+		// a synthesized message_stop would report truncated output (including
+		// partial tool arguments) as a successful response.
+		if opts.ErrorMsg != "" {
+			if _, ok := handler.(*PassthroughStreamHandler); ok {
+				return nil, nil
+			}
+			return handler.EmitError(opts.ErrorMsg), nil
+		}
 		// Passthrough: no synthesized closing events needed.
 		if _, ok := handler.(*PassthroughStreamHandler); ok {
 			return nil, nil
@@ -1150,6 +1160,12 @@ func handleResponsesSSEEvent(sid, phase string, _ int, data []byte, opts *Conver
 		}
 		if handler == nil {
 			return nil, nil
+		}
+		if opts.ErrorMsg != "" {
+			if _, ok := handler.(*PassthroughStreamHandler); ok {
+				return nil, nil
+			}
+			return handler.EmitError(opts.ErrorMsg), nil
 		}
 		return handler.HandleStreamEnd(), nil
 

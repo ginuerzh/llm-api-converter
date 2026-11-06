@@ -806,3 +806,114 @@ func TestP1_StructuredInstructionMergesWithToolChoice(t *testing.T) {
 		t.Fatalf("system text = %q, want %q", systems[0], want)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// P1-12/P1-15: stream errors and content_block_start payload fields
+// ---------------------------------------------------------------------------
+
+func TestP1_OpenAIStreamErrorChunk(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	out, err := sc.HandleChunk([]byte(`{"error":{"type":"server_error","message":"boom \"x\""}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `event: error`) || !strings.Contains(string(out), `boom \"x\"`) {
+		t.Fatalf("error chunk output = %s", out)
+	}
+	if end := sc.HandleStreamEnd(); end != nil {
+		t.Fatalf("normal stop after error: %s", end)
+	}
+}
+
+func TestP1_AnthropicStreamErrorChunk(t *testing.T) {
+	c := NewAnthropicToOpenAIStreamConverter("claude")
+	out, _ := c.HandleChunk([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"boom"}}`))
+	if !strings.Contains(string(out), `"error"`) || !strings.Contains(string(out), `boom`) {
+		t.Fatalf("error output = %s", out)
+	}
+	if end := c.HandleStreamEnd(); end != nil {
+		t.Fatalf("normal finish after error: %s", end)
+	}
+}
+
+func TestP1_EndPhaseStreamErrorEmitsError(t *testing.T) {
+	opts := &ConvertOptions{
+		SessionStore: NewSessionStore(),
+		Direction:    "response",
+		URI:          "/v1/messages",
+		SID:          "s1",
+	}
+	start := []byte(`data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`)
+	if _, err := HandleSSEEvent("s1", "start", 0, start, opts); err != nil {
+		t.Fatal(err)
+	}
+	opts.ErrorMsg = "upstream reset"
+	out, _ := HandleSSEEvent("s1", "end", 0, nil, opts)
+	if !strings.Contains(string(out), `event: error`) || !strings.Contains(string(out), `upstream reset`) {
+		t.Fatalf("end error = %s", out)
+	}
+	if strings.Contains(string(out), `message_stop`) {
+		t.Fatalf("normal stop after error: %s", out)
+	}
+}
+
+func TestP1_PassthroughEndPhaseIgnoresError(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("s2", &Session{StreamHandler: NewPassthroughStreamHandler("claude", ProtocolAnthropic, false)})
+	opts := &ConvertOptions{SessionStore: store, ErrorMsg: "upstream reset"}
+	out, _ := HandleSSEEvent("s2", "end", 0, nil, opts)
+	if out != nil {
+		t.Fatalf("passthrough emitted %s", out)
+	}
+}
+
+func TestP1_AnthropicBlockStartFields(t *testing.T) {
+	c := NewAnthropicToOpenAIStreamConverter("claude")
+	out, _ := c.HandleChunk([]byte(`{"type":"message_start","message":{"id":"msg_1","model":"claude"}}`))
+	out2, _ := c.HandleChunk([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"hello"}}`))
+	out3, _ := c.HandleChunk([]byte(`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"a","name":"f","input":{"x":1}}}`))
+	out4, _ := c.HandleChunk([]byte(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"y\":2}"}}`))
+	all := string(out) + string(out2) + string(out3) + string(out4)
+	if !strings.Contains(all, `"content":"hello"`) {
+		t.Fatalf("start text missing: %s", all)
+	}
+	if !strings.Contains(all, `"arguments":"{\"x\":1}"`) {
+		t.Fatalf("start tool input missing: %s", all)
+	}
+	if strings.Contains(all, `{\"y\":2}`) {
+		t.Fatalf("delta duplicated start input: %s", all)
+	}
+}
+
+func TestP1_AnthropicBlockStartThinking(t *testing.T) {
+	c := NewAnthropicToOpenAIStreamConverter("claude")
+	_, _ = c.HandleChunk([]byte(`{"type":"message_start","message":{"id":"msg_1","model":"claude"}}`))
+	out, _ := c.HandleChunk([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"pondering"}}`))
+	if !strings.Contains(string(out), `"reasoning_content":"pondering"`) {
+		t.Fatalf("start thinking missing: %s", out)
+	}
+}
+
+func TestP1_AnthropicBlockStartEmptyInputKeepsDeltas(t *testing.T) {
+	c := NewAnthropicToOpenAIStreamConverter("claude")
+	_, _ = c.HandleChunk([]byte(`{"type":"message_start","message":{"id":"msg_1","model":"claude"}}`))
+	_, _ = c.HandleChunk([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"f","input":{}}}`))
+	out, _ := c.HandleChunk([]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"y\":2}"}}`))
+	if !strings.Contains(string(out), `{\"y\":2}`) {
+		t.Fatalf("delta after empty start input lost: %s", out)
+	}
+}
+
+func TestP1_ResponsesEndPhaseStreamErrorEmitsError(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("r1", &Session{ID: "r1", IsResponses: true, StreamHandler: NewResponsesStreamConverter("claude")})
+	opts := &ConvertOptions{SessionStore: store, ErrorMsg: "upstream reset"}
+	out, _ := HandleSSEEvent("r1", "end", 0, nil, opts)
+	if !strings.Contains(string(out), "response.failed") || !strings.Contains(string(out), "upstream reset") {
+		t.Fatalf("responses end error = %s", out)
+	}
+	if strings.Contains(string(out), "response.completed") {
+		t.Fatalf("normal completion after error: %s", out)
+	}
+}

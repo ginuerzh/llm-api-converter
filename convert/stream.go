@@ -118,6 +118,20 @@ func (sc *StreamConverter) HandleChunk(data []byte) ([]byte, error) {
 	if err := json.Unmarshal(data, &chunk); err != nil {
 		return nil, fmt.Errorf("unmarshal stream chunk: %w", err)
 	}
+
+	// An error chunk is terminal: emit the Anthropic error event and suppress
+	// the normal closing sequence (message_delta/message_stop), so a failed
+	// upstream is never reported as a successful empty response.
+	if chunk.Error != nil {
+		msg := chunk.Error.Message
+		if msg == "" {
+			msg = "upstream stream error"
+		}
+		evt := sc.EmitError(msg)
+		sc.finalized = true
+		return evt, nil
+	}
+
 	if len(chunk.Choices) == 0 {
 		// Check for usage-only chunk (no choices, just usage).
 		if chunk.Usage != nil {

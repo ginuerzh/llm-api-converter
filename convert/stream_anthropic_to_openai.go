@@ -1,6 +1,7 @@
 package convert
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"time"
@@ -29,14 +30,18 @@ type AnthropicToOpenAIStreamConverter struct {
 	// Anthropic content block index -> OpenAI tool_calls index.
 	toolByBlock map[int]int
 	nextTool    int
+	// Blocks whose tool input arrived complete in content_block_start; later
+	// input_json_delta events for those blocks are ignored.
+	toolInputComplete map[int]bool
 }
 
 func NewAnthropicToOpenAIStreamConverter(model string, opts ...*ConvertOptions) *AnthropicToOpenAIStreamConverter {
 	c := &AnthropicToOpenAIStreamConverter{
-		model:       model,
-		id:          "chatcmpl-" + randHex(16),
-		created:     time.Now().Unix(),
-		toolByBlock: make(map[int]int),
+		model:             model,
+		id:                "chatcmpl-" + randHex(16),
+		created:           time.Now().Unix(),
+		toolByBlock:       make(map[int]int),
+		toolInputComplete: make(map[int]bool),
 	}
 	if len(opts) > 0 {
 		c.opts = opts[0]
@@ -64,9 +69,13 @@ func (c *AnthropicToOpenAIStreamConverter) HandleChunk(data []byte) ([]byte, err
 			} `json:"usage"`
 		} `json:"message"`
 		ContentBlock struct {
-			Type string `json:"type"`
-			ID   string `json:"id,omitempty"`
-			Name string `json:"name,omitempty"`
+			Type      string          `json:"type"`
+			ID        string          `json:"id,omitempty"`
+			Name      string          `json:"name,omitempty"`
+			Text      string          `json:"text,omitempty"`
+			Thinking  string          `json:"thinking,omitempty"`
+			Signature string          `json:"signature,omitempty"`
+			Input     json.RawMessage `json:"input,omitempty"`
 		} `json:"content_block"`
 		Delta struct {
 			Type        string `json:"type"`
@@ -111,10 +120,32 @@ func (c *AnthropicToOpenAIStreamConverter) HandleChunk(data []byte) ([]byte, err
 		if !c.started {
 			c.emitRole(&events)
 		}
-		if evt.ContentBlock.Type == "tool_use" {
+		switch evt.ContentBlock.Type {
+		case "text":
+			// Some Anthropic-compatible relays put the first text in the start
+			// event instead of a following text_delta.
+			if evt.ContentBlock.Text != "" {
+				emit(OpenAIStreamChunk{
+					ID: c.id, Object: "chat.completion.chunk", Created: c.created, Model: c.model,
+					Choices: []OpenAIStreamChoice{{Delta: OpenAIDelta{Content: evt.ContentBlock.Text}}},
+				})
+			}
+		case "thinking":
+			if evt.ContentBlock.Thinking != "" {
+				emit(OpenAIStreamChunk{
+					ID: c.id, Object: "chat.completion.chunk", Created: c.created, Model: c.model,
+					Choices: []OpenAIStreamChoice{{Delta: OpenAIDelta{ReasoningContent: evt.ContentBlock.Thinking}}},
+				})
+			}
+		case "tool_use":
 			idx := c.nextTool
 			c.nextTool++
 			c.toolByBlock[evt.Index] = idx
+			args := ""
+			if anthropicToolStartInput(evt.ContentBlock.Input) {
+				args = string(evt.ContentBlock.Input)
+				c.toolInputComplete[evt.Index] = true
+			}
 			emit(OpenAIStreamChunk{
 				ID:      c.id,
 				Object:  "chat.completion.chunk",
@@ -127,7 +158,8 @@ func (c *AnthropicToOpenAIStreamConverter) HandleChunk(data []byte) ([]byte, err
 						ID:    evt.ContentBlock.ID,
 						Type:  "function",
 						Function: OpenAIFunctionCall{
-							Name: evt.ContentBlock.Name,
+							Name:      evt.ContentBlock.Name,
+							Arguments: args,
 						},
 					}}},
 				}},
@@ -154,6 +186,9 @@ func (c *AnthropicToOpenAIStreamConverter) HandleChunk(data []byte) ([]byte, err
 				})
 			}
 		case "input_json_delta":
+			if c.toolInputComplete[evt.Index] {
+				break
+			}
 			idx, ok := c.toolByBlock[evt.Index]
 			if !ok {
 				idx = c.nextTool
@@ -203,6 +238,9 @@ func (c *AnthropicToOpenAIStreamConverter) HandleChunk(data []byte) ([]byte, err
 			"type": e.Error.Type, "message": e.Error.Message,
 		}})
 		events = append(events, []byte("data: "+string(b)+"\n\n"))
+		// An upstream error is terminal: suppress the normal finish chunk and
+		// [DONE] so the client sees the error instead of a successful finish.
+		c.finished = true
 	}
 
 	return joinSSE(events), nil
@@ -295,6 +333,18 @@ func (c *AnthropicToOpenAIStreamConverter) finish() [][]byte {
 
 	events = append(events, []byte("data: [DONE]\n\n"))
 	return events
+}
+
+// anthropicToolStartInput reports whether a content_block_start tool_use input
+// already carries the complete arguments object. Anthropic normally sends {}
+// and streams the arguments in later input_json_delta events, but some relays
+// put the full input in the start event.
+func anthropicToolStartInput(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return false
+	}
+	return !bytes.Equal(trimmed, []byte("{}")) && !bytes.Equal(trimmed, []byte("null"))
 }
 
 func mapAnthropicStopToOpenAI(s string) string {

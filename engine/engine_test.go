@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"llm-api-converter/convert"
@@ -120,5 +121,25 @@ func TestNormalizeEffort(t *testing.T) {
 				t.Fatalf("effort = %q, want %q", eff, tc.want)
 			}
 		})
+	}
+}
+
+func TestRewriteEndPhaseStreamError(t *testing.T) {
+	e := New(Options{Model: "claude", MaxTokens: 8192})
+	start := []byte(`data: {"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`)
+	if _, err := e.Rewrite(context.Background(), start, Meta{
+		Direction: "response", URI: "/v1/messages", SID: "s1", SSEPhase: "start",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := e.Rewrite(context.Background(), nil, Meta{
+		Direction: "response", URI: "/v1/messages", SID: "s1", SSEPhase: "end",
+		StreamError: "upstream reset",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(res.Data), "event: error") {
+		t.Fatalf("end phase = %s", res.Data)
 	}
 }

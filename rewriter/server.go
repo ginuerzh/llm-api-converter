@@ -94,21 +94,23 @@ func (h *rewriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func metaFrom(b []byte) engine.Meta {
 	var m struct {
-		SID        string `json:"sid,omitempty"`
-		EventIndex int    `json:"event_index,omitempty"`
-		SSEPhase   string `json:"sse_phase,omitempty"`
-		Direction  string `json:"direction,omitempty"`
-		URI        string `json:"uri,omitempty"`
+		SID         string `json:"sid,omitempty"`
+		EventIndex  int    `json:"event_index,omitempty"`
+		SSEPhase    string `json:"sse_phase,omitempty"`
+		Direction   string `json:"direction,omitempty"`
+		URI         string `json:"uri,omitempty"`
+		StreamError string `json:"stream_error,omitempty"`
 	}
 	if len(b) > 0 {
 		_ = json.Unmarshal(b, &m)
 	}
 	return engine.Meta{
-		SID:        m.SID,
-		Direction:  m.Direction,
-		URI:        m.URI,
-		SSEPhase:   m.SSEPhase,
-		EventIndex: m.EventIndex,
+		SID:         m.SID,
+		Direction:   m.Direction,
+		URI:         m.URI,
+		SSEPhase:    m.SSEPhase,
+		EventIndex:  m.EventIndex,
+		StreamError: m.StreamError,
 	}
 }
 

@@ -347,3 +347,10 @@ func TestParseModelMap_BackwardCompatible(t *testing.T) {
 		}
 	}
 }
+
+func TestMetaFromStreamError(t *testing.T) {
+	m := metaFrom([]byte(`{"stream_error":"upstream reset","sse_phase":"end"}`))
+	if m.StreamError != "upstream reset" {
+		t.Fatalf("stream error = %q", m.StreamError)
+	}
+}

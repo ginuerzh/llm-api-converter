@@ -540,6 +540,14 @@ type ConvertOptions struct {
 
 // -------- OpenAI Streaming Types --------
 
+// OpenAIStreamError is an error payload in a streaming chunk. OpenAI-compatible
+// upstreams send it as {"error":{...}} instead of a regular delta chunk.
+type OpenAIStreamError struct {
+	Type    string `json:"type,omitempty"`
+	Message string `json:"message,omitempty"`
+	Code    string `json:"code,omitempty"`
+}
+
 // OpenAIStreamChunk is an OpenAI /v1/chat/completions streaming response chunk.
 type OpenAIStreamChunk struct {
 	ID      string               `json:"id,omitempty"`
@@ -548,6 +556,7 @@ type OpenAIStreamChunk struct {
 	Model   string               `json:"model,omitempty"`
 	Choices []OpenAIStreamChoice `json:"choices"`
 	Usage   *OpenAIUsage         `json:"usage,omitempty"`
+	Error   *OpenAIStreamError   `json:"error,omitempty"`
 }
 
 // OpenAIStreamChoice is a single choice in a streaming chunk (delta instead of message).
