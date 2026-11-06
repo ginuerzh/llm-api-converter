@@ -239,11 +239,14 @@ func TestConvert_AssistantToolCalls(t *testing.T) {
 	if a.Messages[1].Role != "assistant" {
 		t.Fatalf("messages[1] role: want assistant, got %q", a.Messages[1].Role)
 	}
-	if len(a.Messages[1].Content) != 2 { // empty text + tool_use
-		t.Fatalf("assistant content: want 2 blocks, got %d", len(a.Messages[1].Content))
+	if len(a.Messages[1].Content) != 1 { // tool_use only, no empty text
+		t.Fatalf("assistant content: want 1 block, got %d: %+v", len(a.Messages[1].Content), a.Messages[1].Content)
 	}
 	toolUseFound := false
 	for _, c := range a.Messages[1].Content {
+		if c.Type == "text" && strings.TrimSpace(c.Text) == "" {
+			t.Fatalf("empty text block in assistant content: %+v", c)
+		}
 		if c.Type == "tool_use" && c.ID == "call_1" && c.Name == "get_weather" {
 			toolUseFound = true
 		}

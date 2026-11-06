@@ -314,7 +314,13 @@ func ConvertResponsesToAnthropic(body []byte, opts *ConvertOptions) ([]byte, err
 
 	// Convert OpenAI messages → Anthropic messages.
 	for _, msg := range result.messages {
-		anth.Messages = append(anth.Messages, convertChatMessageToAnthropic(msg))
+		am := convertChatMessageToAnthropic(msg)
+		// Anthropic rejects empty content arrays, so messages that produced
+		// no valid blocks are dropped instead of being sent as-is.
+		if len(am.Content) == 0 {
+			continue
+		}
+		anth.Messages = append(anth.Messages, am)
 	}
 
 	// Tools.

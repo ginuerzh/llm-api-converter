@@ -283,6 +283,11 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 			am.Role = "user"
 		}
 		am.Content = convertMessageContent(m)
+		// Anthropic rejects empty content arrays, so messages that produced
+		// no valid blocks are dropped instead of being sent as-is.
+		if len(am.Content) == 0 {
+			continue
+		}
 		anthropic.Messages = append(anthropic.Messages, am)
 	}
 
@@ -342,6 +347,15 @@ func extractTextContent(content any) string {
 	return fmt.Sprintf("%v", content)
 }
 
+// appendTextBlock appends a text block only when text has non-whitespace
+// content. Anthropic rejects empty and whitespace-only text blocks.
+func appendTextBlock(blocks []AnthropicContent, text string) []AnthropicContent {
+	if strings.TrimSpace(text) == "" {
+		return blocks
+	}
+	return append(blocks, AnthropicContent{Type: "text", Text: text})
+}
+
 // flattenContentForGLM flattens multi-part content arrays to plain strings.
 // GLM API does not support array-typed content (text + image_url parts).
 func flattenContentForGLM(msgs []OpenAIMessage) {
@@ -382,18 +396,18 @@ func convertMessageContent(msg OpenAIMessage) []AnthropicContent {
 
 func convertUserContent(content any) []AnthropicContent {
 	if content == nil {
-		return []AnthropicContent{{Type: "text", Text: ""}}
+		return nil
 	}
 
 	// Simple string.
 	if s, ok := content.(string); ok {
-		return []AnthropicContent{{Type: "text", Text: s}}
+		return appendTextBlock(nil, s)
 	}
 
 	// Array of content parts (text + image_url).
 	parts, ok := content.([]any)
 	if !ok {
-		return []AnthropicContent{{Type: "text", Text: fmt.Sprintf("%v", content)}}
+		return appendTextBlock(nil, fmt.Sprintf("%v", content))
 	}
 
 	var blocks []AnthropicContent
@@ -405,7 +419,7 @@ func convertUserContent(content any) []AnthropicContent {
 		switch m["type"] {
 		case "text":
 			txt, _ := m["text"].(string)
-			blocks = append(blocks, AnthropicContent{Type: "text", Text: txt})
+			blocks = appendTextBlock(blocks, txt)
 		case "image_url":
 			img := convertImageURL(m)
 			if img != nil {
@@ -472,7 +486,7 @@ func convertAssistantContent(msg OpenAIMessage) []AnthropicContent {
 				Thinking: msg.ReasoningContent,
 			})
 		}
-		blocks = append(blocks, AnthropicContent{Type: "text", Text: extractTextContent(msg.Content)})
+		blocks = appendTextBlock(blocks, extractTextContent(msg.Content))
 		for _, tc := range toolCalls {
 			var input any
 			if tc.Function.Arguments != "" {
@@ -490,15 +504,14 @@ func convertAssistantContent(msg OpenAIMessage) []AnthropicContent {
 
 	// Reasoning content without tools — single thinking + text.
 	if msg.ReasoningContent != "" {
-		return []AnthropicContent{
+		blocks := []AnthropicContent{
 			{Type: "thinking", Thinking: msg.ReasoningContent},
-			{Type: "text", Text: extractTextContent(msg.Content)},
 		}
+		return appendTextBlock(blocks, extractTextContent(msg.Content))
 	}
 
 	// Plain text.
-	text := extractTextContent(msg.Content)
-	return []AnthropicContent{{Type: "text", Text: text}}
+	return appendTextBlock(nil, extractTextContent(msg.Content))
 }
 
 func convertToolResultContent(msg OpenAIMessage) []AnthropicContent {
