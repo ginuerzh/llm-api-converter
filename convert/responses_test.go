@@ -245,7 +245,7 @@ func TestConvertResponsesToAnthropic_WithTools(t *testing.T) {
 	}
 }
 
-func TestConvertResponsesToAnthropic_NoToolsSetsToolChoiceNone(t *testing.T) {
+func TestConvertResponsesToAnthropic_NoToolsNoToolChoice(t *testing.T) {
 	opts := &ConvertOptions{Model: "claude-sonnet-4-20250514", MaxTokens: 8192}
 	body := `{"model":"gpt-4o","input":"hello"}`
 	b, err := ConvertResponsesToAnthropic([]byte(body), opts)
@@ -256,11 +256,8 @@ func TestConvertResponsesToAnthropic_NoToolsSetsToolChoiceNone(t *testing.T) {
 	if err := json.Unmarshal(b, &anth); err != nil {
 		t.Fatalf("unmarshal error: %v\nbody: %s", err, b)
 	}
-	if anth.ToolChoice == nil {
-		t.Fatal("expected tool_choice to be set")
-	}
-	if anth.ToolChoice.Type != "none" {
-		t.Fatalf("tool_choice: want none, got %s", anth.ToolChoice.Type)
+	if anth.ToolChoice != nil {
+		t.Fatalf("tool_choice: want nil (no tools), got %+v", anth.ToolChoice)
 	}
 }
 
@@ -580,7 +577,7 @@ func TestConvert_ResponsesToChatRoundTrip(t *testing.T) {
 	if extractTextContent(chat.Messages[0].Content) != "hello world" {
 		t.Fatalf("content: want 'hello world', got %q", extractTextContent(chat.Messages[0].Content))
 	}
-	
+
 }
 
 func TestConvert_ResponsesRequestWithMessagesInput(t *testing.T) {

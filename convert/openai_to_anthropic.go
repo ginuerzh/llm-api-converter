@@ -264,10 +264,6 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 				}
 			}
 		}
-	} else {
-		// No tools declared — explicitly disable tool choice to prevent
-		// upstream models from hallucinating tool calls.
-		anthropic.ToolChoice = &AnthropicToolChoice{Type: "none"}
 	}
 
 	// Messages.

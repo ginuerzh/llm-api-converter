@@ -342,8 +342,6 @@ func ConvertResponsesToAnthropic(body []byte, opts *ConvertOptions) ([]byte, err
 		if req.ToolChoice != nil {
 			anth.ToolChoice = mapResponsesToolChoiceAnthropic(req.ToolChoice)
 		}
-	} else {
-		anth.ToolChoice = &AnthropicToolChoice{Type: "none"}
 	}
 
 	// Edge case: Anthropic requires at least one message.

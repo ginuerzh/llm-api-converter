@@ -639,7 +639,7 @@ func TestConvert_ToolChoiceSpecificFunction(t *testing.T) {
 	}
 }
 
-func TestConvert_NoToolsSetsToolChoiceNone(t *testing.T) {
+func TestConvert_NoToolsNoToolChoice(t *testing.T) {
 	body := `{
 		"model":"gpt-4",
 		"messages":[{"role":"user","content":"hi"}]
@@ -652,8 +652,8 @@ func TestConvert_NoToolsSetsToolChoiceNone(t *testing.T) {
 	if err := json.Unmarshal(b, &a); err != nil {
 		t.Fatal(err)
 	}
-	if a.ToolChoice == nil || a.ToolChoice.Type != "none" {
-		t.Fatalf("tool_choice: want none (no tools), got %+v", a.ToolChoice)
+	if a.ToolChoice != nil {
+		t.Fatalf("tool_choice: want nil (no tools), got %+v", a.ToolChoice)
 	}
 }
 

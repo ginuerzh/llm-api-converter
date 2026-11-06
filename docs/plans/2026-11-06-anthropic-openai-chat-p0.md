@@ -354,13 +354,22 @@ git commit -m "fix(convert): omit tool choice when no tools"
 
 **Implementation record**
 
-- Status: Pending
-- Date:
-- Repository / commit:
+- Status: Done
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter`, branch `feat/anthropic-openai-p0`, commit `fix(convert): omit tool choice when no tools` (2026-11-06), which contains the fix, the tests, and this record. A commit cannot embed its own hash, so the resolved SHA is recorded in the Task 2 report (`.superpowers/sdd/2026-11-06-anthropic-openai-chat-p0/task-2-report.md`) and can be obtained with `git log -1 --format=%H -- convert/openai_to_anthropic.go`.
 - Files changed:
+  - `convert/openai_to_anthropic.go` — removed the no-tools `else` branch in `convertOpenAIRequestToAnthropic`; `ToolChoice` stays nil when `len(req.Tools) == 0`, so `omitempty` removes the field.
+  - `convert/responses.go` — removed the equivalent no-tools `else` in `ConvertResponsesToAnthropic`.
+  - `convert/anthropic_openai_p0_test.go` — added `TestP0_OpenAIToAnthropicNoToolsNoToolChoice` and `TestP0_ResponsesToAnthropicNoToolsNoToolChoice`; both assert the serialized body has no `tool_choice` key and that the decoded `ToolChoice` is nil.
+  - `convert/convert_test.go` — renamed `TestConvert_NoToolsSetsToolChoiceNone` to `TestConvert_NoToolsNoToolChoice` and now asserts `a.ToolChoice == nil`.
+  - `convert/responses_test.go` — renamed `TestConvertResponsesToAnthropic_NoToolsSetsToolChoiceNone` to `TestConvertResponsesToAnthropic_NoToolsNoToolChoice` and now asserts `anth.ToolChoice == nil`.
 - Tests / commands:
-- Review findings / fixes:
-- Deferred:
+  - RED: `go test ./convert -run 'TestP0_(OpenAIToAnthropicNoToolsNoToolChoice|ResponsesToAnthropicNoToolsNoToolChoice)|TestConvert_NoTools|TestConvertResponsesToAnthropic_NoTools' -v` → all four FAIL; the Chat body contained `"tool_choice":{"type":"none"}` and the Responses body did too, while the updated legacy tests saw `&{Type:none Name:}`.
+  - GREEN: same command after the fix → all four PASS.
+  - `go test ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `go vet ./...` → clean.
+- Review findings / fixes: self-review confirmed the fix is limited to the two no-tools branches; explicit `tool_choice` mapping when tools are present is untouched (`TestConvert_ToolChoice{Auto,None,Required,SpecificFunction}` still pass, and `TestConvertResponsesToAnthropic_WithTools` still expects nil for an omitted choice). The pairwise registry, model map, and same-protocol passthrough are unaffected, and no dependency was added. The editor auto-formatted two pre-existing unformatted spots in `convert_test.go` and `responses_test.go`; both hunks were reverted so the diff stays scoped to this task.
+- Deferred: `convert/anthropic_to_gemini.go` still emits `tool_choice: none` on the Gemini→Anthropic no-tools path (different conversion direction, outside P0-2). Updating the review-document status table and ticking the plan checkboxes belongs to Task 5.
 
 ---
 

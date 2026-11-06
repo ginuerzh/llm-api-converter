@@ -68,6 +68,42 @@ func TestP0_OpenAIToAnthropicAllEmptyMessagesStillHaveUser(t *testing.T) {
 	}
 }
 
+func TestP0_OpenAIToAnthropicNoToolsNoToolChoice(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`
+	b, err := Convert([]byte(body), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(b, []byte(`"tool_choice"`)) {
+		t.Fatalf("tool_choice emitted without tools: %s", b)
+	}
+	var a AnthropicRequest
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.ToolChoice != nil {
+		t.Fatalf("tool_choice = %+v, want nil", a.ToolChoice)
+	}
+}
+
+func TestP0_ResponsesToAnthropicNoToolsNoToolChoice(t *testing.T) {
+	body := `{"model":"gpt-4o","input":"hello"}`
+	b, err := ConvertResponsesToAnthropic([]byte(body), &ConvertOptions{Model: "claude", MaxTokens: 8192})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(b, []byte(`"tool_choice"`)) {
+		t.Fatalf("tool_choice emitted without tools from Responses: %s", b)
+	}
+	var a AnthropicRequest
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.ToolChoice != nil {
+		t.Fatalf("tool_choice = %+v, want nil", a.ToolChoice)
+	}
+}
+
 func TestP0_ResponsesToAnthropicToolOnlyAssistantHasNoEmptyText(t *testing.T) {
 	body := `{"model":"gpt-5","instructions":"be brief","input":[
 		{"type":"message","role":"user","content":"weather?"},
