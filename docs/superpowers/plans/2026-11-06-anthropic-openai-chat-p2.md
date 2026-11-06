@@ -44,7 +44,7 @@
 - Produces: `memoryStore.Set` replaces the map entry pointer instead of mutating the existing entry.
 - No exported API changes.
 
-- [ ] **Step 1: Write the failing race test**
+- [x] **Step 1: Write the failing race test**
 
 ```go
 package convert
@@ -79,13 +79,13 @@ func TestP2_ReasoningCacheConcurrentGetPut(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the race test and capture RED**
+- [x] **Step 2: Run the race test and capture RED**
 
 Run: `CGO_ENABLED=1 go test -race -count=1 -run TestP2_ReasoningCacheConcurrentGetPut ./convert`
 
 Expected on the base revision: `WARNING: DATA RACE` between `memoryStore.Get` reading `entry.AddedAt`/`entry.Reasoning` and `memoryStore.Set` writing `existing.Reasoning`/`existing.AddedAt`.
 
-- [ ] **Step 3: Implement the copy-on-read and replace-on-write behavior**
+- [x] **Step 3: Implement the copy-on-read and replace-on-write behavior**
 
 In `convert/reasoning_cache.go`:
 
@@ -118,7 +118,7 @@ func (ms *memoryStore) Set(key string, entry *cacheEntry) {
 
 Do not change `ReasoningCache.getFromStore`; it reads the copied entry safely now.
 
-- [ ] **Step 4: Run the race test and the package tests**
+- [x] **Step 4: Run the race test and the package tests**
 
 Run: `CGO_ENABLED=1 go test -race -count=1 -run TestP2_ReasoningCacheConcurrentGetPut ./convert`
 
@@ -128,7 +128,7 @@ Run: `go test -count=1 ./...`
 
 Expected: all packages PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/reasoning_cache.go convert/anthropic_openai_p2_test.go
@@ -136,12 +136,12 @@ git commit -m "fix(convert): make reasoning cache concurrency-safe"
 ```
 
 **Implementation record:**
-- Date/status:
-- Repository/commit:
-- Files changed:
-- Tests/commands/results:
-- Review findings/fixes:
-- Deferred/limitations:
+- Date/status: 2026-11-06 / complete
+- Repository/commit: `llm-api-converter` `1bca7bd`
+- Files changed: `convert/reasoning_cache.go`, `convert/anthropic_openai_p2_test.go`
+- Tests/commands/results: RED `CGO_ENABLED=1 go test -race -count=1 -run TestP2_ReasoningCacheConcurrentGetPut ./convert` → `WARNING: DATA RACE` between `memoryStore.Set` and `ReasoningCache.getFromStore`; GREEN same command → PASS. `go test -count=1 ./...` → all packages PASS. A stale released `llm-api-converter` process was holding `:18080` and caused an e2e 404; killed it, reran green.
+- Review findings/fixes: none.
+- Deferred/limitations: none.
 
 ---
 
