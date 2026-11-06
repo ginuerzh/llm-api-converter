@@ -5,19 +5,19 @@ import (
 	"os"
 	"strings"
 
-	"llm-api-converter/rewriter"
+	"github.com/ginuerzh/llm-api-converter/rewriter"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	addr                  string
-	model                 string
-	maxTokens             int
-	modelMap              string
-	logLevel              string
-	logFormat             string
-	cacheBackend          string
+	addr                   string
+	model                  string
+	maxTokens              int
+	modelMap               string
+	logLevel               string
+	logFormat              string
+	cacheBackend           string
 	filterRedactedThinking bool
 )
 
@@ -52,10 +52,10 @@ var rootCmd = &cobra.Command{
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return rewriter.ListenAndServe(addr, &rewriter.Options{
-			Model:                 model,
-			MaxTokens:             maxTokens,
-			Cache:                 cacheBackend,
-			ModelMap:              modelMap,
+			Model:                  model,
+			MaxTokens:              maxTokens,
+			Cache:                  cacheBackend,
+			ModelMap:               modelMap,
 			FilterRedactedThinking: filterRedactedThinking,
 		})
 	},

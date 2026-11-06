@@ -8,8 +8,8 @@ import (
 	"net"
 	"net/http"
 
-	"llm-api-converter/convert"
-	"llm-api-converter/engine"
+	"github.com/ginuerzh/llm-api-converter/convert"
+	"github.com/ginuerzh/llm-api-converter/engine"
 )
 
 // Options holds the configuration for the rewriter plugin server.

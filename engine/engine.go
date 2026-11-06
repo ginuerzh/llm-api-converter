@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"llm-api-converter/convert"
+	"github.com/ginuerzh/llm-api-converter/convert"
 )
 
 // Options configures an Engine.
