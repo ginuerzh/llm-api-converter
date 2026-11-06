@@ -86,7 +86,10 @@ The implementation plan is `docs/plans/2026-11-06-anthropic-openai-chat-p0.md`.
 P0 was verified on `feat/anthropic-openai-p0` at `4d77eb1` with
 `go test -count=1 ./...` (including a fresh e2e run),
 `CGO_ENABLED=1 go test -race ./convert ./rewriter`, and `go vet ./...`; all
-passed. P2 findings below are unchanged and still open.
+passed. A later fix wave after the final whole-branch review hardened
+additional P0 edge cases at `8eb988a`
+(`fix(convert): harden P0 conversion edge cases`); see the P0 plan's
+Post-review fix wave. P2 findings below are unchanged and still open.
 
 ## P1 Status
 
@@ -110,9 +113,15 @@ passed. P2 findings below are unchanged and still open.
 
 P1 was verified on `feat/anthropic-openai-p1` at `40e70e9` with
 `go test -count=1 ./...`,
-`CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter`, and
-`go vet ./...`; all passed. The implementation plan is
+`CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter`,
+`go vet ./...`, and `git diff --check`; all passed. The implementation plan is
 `docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p1.md`.
+
+A final whole-branch review at `68dd7c3` returned **With fixes** (one Critical,
+four Important). The fixes are `3425a4e`
+(`fix(convert): reject truncated tool streams and repair histories`); the
+same verification commands pass at that revision. See the P1 plan's Final
+review fix wave record.
 
 ## P0 findings
 
@@ -345,10 +354,10 @@ Magpie preserves URLs (`internal/gateway/chat.go:239-248`, `:282-287`).
 
 Location: `convert/types.go` (missing fields), both request directions
 
-OpenAI `response_format` and Anthropic `output_config.format` are not modeled
-and are silently dropped. This is already listed as P1 in
-`docs/MAGPIE_EVALUATION.md`; it remains unfixed. Magpie normalizes the field
-(`internal/gateway/format.go`).
+OpenAI `response_format` and Anthropic `output_config.format` were not modeled
+and were silently dropped. This is also listed as P1 in
+`docs/MAGPIE_EVALUATION.md`; it was fixed by `1ee9c9f` (see the P1 Status
+table). Magpie normalizes the field (`internal/gateway/format.go`).
 
 ### P1-11: No tool-stop inference
 
@@ -480,5 +489,5 @@ P1 implementation plan:
 `docs/superpowers/plans/2026-11-06-anthropic-openai-chat-p1.md`
 
 P2 work is intentionally not scheduled in either plan. See
-`docs/MAGPIE_EVALUATION.md` for the previously known structured-output and
-thinking-signature gaps.
+`docs/MAGPIE_EVALUATION.md` for the previously known thinking-signature gap;
+the structured-output gap noted there was fixed by `1ee9c9f` (P1-10).

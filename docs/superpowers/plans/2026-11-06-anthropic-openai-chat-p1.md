@@ -1238,3 +1238,42 @@ cannot contain its own SHA, use the same follow-up docs commit pattern as P0.
   shared helpers, and `provider/`-prefix stripping.
 - All new helper names used by later tasks are defined in the `Interfaces`
   blocks.
+
+---
+
+## Final review fix wave
+
+The final whole-branch review of `feat/anthropic-openai-p1` returned **With
+fixes** at head `68dd7c3`: one Critical and four Important findings.
+
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit:
+  - `llm-api-converter` @ `3425a4e` (`fix(convert): reject truncated tool streams and repair histories`, branch `feat/anthropic-openai-p1`) — code and tests.
+  - The docs commit on the same branch carries this record and the review-doc corrections; its SHA is recorded in the final fix report because a commit cannot contain its own SHA.
+- Files changed:
+  - `convert/stream.go` — `HandleStreamEnd` validates every accumulated tool call (open and held) before the normal close. Empty or whitespace-only arguments are complete; anything else must parse as a JSON object, otherwise the stream returns a terminal `event: error`. An interrupted stream with tool calls returns an error too, leaving the `[stream interrupted]` marker only for no-tool streams. Added `streamToolArgsComplete`.
+  - `convert/stream_anthropic_to_openai.go` — accumulates `input_json_delta` arguments per Anthropic block in a new `toolArgs` map, including a complete start-event input, and validates them in `finish()`. An incomplete block returns only the terminal OpenAI error chunk, with no finish chunk and no `[DONE]`. Added `hasIncompleteToolArgs`.
+  - `convert/message_normalize.go` — merges consecutive same-role messages before tool-pair repair, so adjacent assistant tool-call turns keep their real results instead of synthesizing one for the earlier turn. After the final merge, prepends a minimal user text turn when the history starts with an assistant turn.
+  - `convert/openai_to_anthropic.go` — `convertAssistantContent` and `convertOpenAIMessageToContent` synthesize a `tool_use.id` with `ensureToolID("")` when a legacy `function_call` has none, so the normalizer can pair a synthetic result.
+  - `convert/stream_responses.go` — `ResponsesStreamConverter.HandleChunk` checks `chunk.Error` before the no-choices branch and returns `EmitError`, so an OpenAI error chunk becomes `response.failed` instead of a completed response.
+  - `convert/stream_anthropic.go` — `AnthropicStreamConverter.HandleChunk` handles `type: "error"` through `EmitError`; `isAnthropicStreamEvent` accepts `error`.
+  - `convert/detect.go` — `detectSource` treats a `type: "error"` payload as an Anthropic stream event, so an error as the first event selects the Anthropic converter.
+  - `convert/anthropic_openai_p1_test.go` — new tests `TestP1_TruncatedToolStreamErrors`, `TestP1_CompleteToolStreamsStillInferToolStop`, `TestP1_InterruptedToolStreamErrors`, `TestP1_AssistantFirstHistoryGetsUserTurn`, `TestP1_AdjacentAssistantToolCallsMergeBeforeRepair`, `TestP1_ResponsesErrorEventFromOpenAIChunk`, `TestP1_ResponsesErrorEventFromAnthropicStream`, `TestP1_AnthropicErrorEventDetection`, `TestP1_ResponsesErrorFirstEventSelectsAnthropicConverter`, and `TestP1_LegacyFunctionCallGetsToolID`; updated the assistant-first expectations in `TestP1_SyntheticAndOrphanResultText`, `TestP1_UserRunKeepsResultsFirst`, and `TestP1_UnsignedThinkingDroppedForAnthropic`.
+  - `convert/convert_test.go` — `TestConvert_FunctionCallToToolUse` now asserts a non-empty `tool_use.id`, the trailing synthetic user turn, and a matching `tool_result`.
+- Tests / commands:
+  - RED: `go test -count=1 ./convert -run '<final-wave tests>' -v` → a truncated OpenAI stream ended with `"stop_reason":"tool_use"` and `message_stop`; an interrupted tool stream emitted `[stream interrupted]`, a tool stop, and `message_stop`; an assistant-first history produced one message; adjacent assistant turns produced five messages with a synthetic `"Tool result missing."` and the real `ra` demoted to text; the Responses error chunk and Anthropic error event produced no output; `isAnthropicStreamEvent(error)` was false; the legacy `function_call` produced a `tool_use` without an id; the three updated normalizer tests failed on their old counts and indices.
+  - GREEN: the same targeted command → PASS (including all subtests). `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS.
+  - `go vet ./...` → clean; `git diff --check` → clean.
+- Findings fixed:
+  - Critical 1 — a truncated stream (partial arguments plus a clean EOF) now emits an error in both directions and never a normal tool stop; empty/no-argument calls remain complete and still infer `tool_use`/`tool_calls`.
+  - Important 2 — assistant-first histories get a prepended minimal user turn.
+  - Important 3 — adjacent assistant tool-call messages are merged before repair, so later real results stay `tool_result` blocks.
+  - Important 4 — an OpenAI error chunk and an Anthropic `error` event both produce `response.failed` and suppress `response.completed`; an error first event selects the Anthropic converter.
+  - Important 5 — legacy `function_call` histories get a synthesized `tool_use.id` and a matching synthetic `tool_result`.
+- Deferred:
+  - P2 findings remain open; this wave only addressed the final-review findings above.
+  - The Anthropic→OpenAI half of `TestP1_TruncatedToolStreamErrors` follows the OpenAI→Anthropic half, so its RED capture stopped at the first failure; the code path is covered by the GREEN run.
+  - `isAnthropicStreamEvent`/`detectSource` now classify any `type: "error"` payload as Anthropic, including an OpenAI Responses error event that reuses that type. Such an event is handled by the Anthropic converter, still fails the response, and uses the default message when `error.message` is absent.
+  - `anthropicToolStartInput` still treats any non-`{}`/`null` start input, including malformed JSON, as complete; unchanged from the P1 behaviour and outside this wave.
