@@ -707,7 +707,7 @@ git commit -m "fix(convert): accept reasoning aliases"
 - Behavior: every tool block close with empty accumulated args emits
   `input_json_delta` `{}` first.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append:
 
@@ -840,13 +840,13 @@ func TestP2_EmptyInterruptedStreamSingleTextBlock(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests and capture RED**
+- [x] **Step 2: Run the tests and capture RED**
 
 Run: `go test -count=1 -run 'TestP2_(StreamBlockStartPayloads|GeminiAnthropicBlockStarts|NoArgumentToolEmitsEmptyObject|TwoNoArgumentToolsBothClose|InterruptedStreamSingleTextBlock|EmptyInterruptedStreamSingleTextBlock)' ./convert`
 
 Expected: text/thinking start payloads missing (both OpenAI→Anthropic and Gemini→Anthropic), no `{}` delta, two no-arg tools not both closing, and two text blocks on the interrupted stream.
 
-- [ ] **Step 3: Implement the stream changes**
+- [x] **Step 3: Implement the stream changes**
 
 In `convert/stream.go`:
 
@@ -956,7 +956,7 @@ t.Run("Anthropic stream text start without text", func(t *testing.T) {
 })
 ```
 
-- [ ] **Step 4: Run the focused and contract tests**
+- [x] **Step 4: Run the focused and contract tests**
 
 Run: `go test -count=1 -run 'TestP2_(StreamBlockStartPayloads|GeminiAnthropicBlockStarts|NoArgumentToolEmitsEmptyObject|TwoNoArgumentToolsBothClose|InterruptedStreamSingleTextBlock|EmptyInterruptedStreamSingleTextBlock)|TestContract' ./convert`
 
@@ -966,7 +966,7 @@ Run: `go test -count=1 ./...`
 
 Expected: all packages PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/stream.go convert/stream_gemini.go convert/contract_test.go convert/anthropic_openai_p2_test.go
@@ -974,12 +974,12 @@ git commit -m "fix(convert): complete stream block payloads and tool closes"
 ```
 
 **Implementation record:**
-- Date/status:
-- Repository/commit:
-- Files changed:
-- Tests/commands/results:
-- Review findings/fixes:
-- Deferred/limitations:
+- Date/status: 2026-11-06 / complete
+- Repository/commit: `llm-api-converter` `48e248a`
+- Files changed: `convert/stream.go`, `convert/stream_gemini.go`, `convert/contract_test.go`, `convert/anthropic_openai_p2_test.go`
+- Tests/commands/results: RED focused run showed missing text/thinking start fields, one `{}` delta for two no-arg tools, and two text blocks on the interrupted stream; GREEN focused + `TestContract` → PASS; `go test -count=1 ./...` → all packages PASS; `go vet ./...` and `git diff --check` clean.
+- Review findings/fixes: the empty-text placeholder moved before block close so it appends to the interruption marker block; both `StreamConverter` and `GeminiToAnthropicStreamConverter` now emit complete block-start payloads. Contract validator now rejects a text start without `text`.
+- Deferred/limitations: none.
 
 ---
 
