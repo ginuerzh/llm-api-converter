@@ -434,8 +434,16 @@ func (c *GeminiToAnthropicStreamConverter) ensureBlock(blockType, meta string) [
 		`data: {"type":"content_block_start","index":%d,"content_block":{"type":"%s"`,
 		idx, blockType,
 	)
-	if meta != "" {
-		startPayload += "," + meta
+	switch blockType {
+	case "text":
+		startPayload += `,"text":""`
+	case "thinking":
+		startPayload += `,"thinking":"","signature":""`
+	case "tool_use":
+		if meta != "" {
+			startPayload += "," + meta
+		}
+		startPayload += `,"input":{}`
 	}
 	startPayload += `}}`
 	return [][]byte{[]byte("event: content_block_start\n" + startPayload)}

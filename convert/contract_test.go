@@ -538,6 +538,23 @@ func validateAnthropicSSE(data []byte) []string {
 			block, _ := payload["content_block"].(map[string]any)
 			openBlock = idx
 			blockType[idx], _ = block["type"].(string)
+			switch blockType[idx] {
+			case "text":
+				if _, ok := block["text"].(string); !ok {
+					contractAdd(&errs, "%s: text block start has no text field", where)
+				}
+			case "thinking":
+				if _, ok := block["thinking"].(string); !ok {
+					contractAdd(&errs, "%s: thinking block start has no thinking field", where)
+				}
+				if _, ok := block["signature"].(string); !ok {
+					contractAdd(&errs, "%s: thinking block start has no signature field", where)
+				}
+			case "tool_use":
+				if _, ok := block["input"].(map[string]any); !ok {
+					contractAdd(&errs, "%s: tool_use block start has no input object", where)
+				}
+			}
 			if blockType[idx] == "tool_use" {
 				hasTool = true
 				id, _ := block["id"].(string)
@@ -1069,6 +1086,15 @@ func TestContractValidatorsRejectKnownInvalid(t *testing.T) {
 	t.Run("OpenAI response stop with tools", func(t *testing.T) {
 		if errs := validateOpenAIChatResponse([]byte(`{"id":"x","model":"gpt-4","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}`)); len(errs) == 0 {
 			t.Fatal("validator accepted stop with tool_calls")
+		}
+	})
+	t.Run("Anthropic stream text start without text", func(t *testing.T) {
+		stream := []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude\"}}\n\n" +
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n" +
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}")
+		if errs := validateAnthropicSSE(stream); len(errs) == 0 {
+			t.Fatal("validator accepted a text block start without text")
 		}
 	})
 }

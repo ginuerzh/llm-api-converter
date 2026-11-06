@@ -297,3 +297,130 @@ func TestP2_ReasoningAliasResponse(t *testing.T) {
 		t.Fatalf("content = %+v, want thinking chain", resp.Content)
 	}
 }
+
+func TestP2_StreamBlockStartPayloads(t *testing.T) {
+	t.Run("text", func(t *testing.T) {
+		sc := NewStreamConverter("claude", nil, nil)
+		sc.HandleStreamStart()
+		out, _ := sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`))
+		if !strings.Contains(string(out), `"content_block":{"type":"text","text":""}`) {
+			t.Fatalf("text start = %s", out)
+		}
+	})
+
+	t.Run("thinking", func(t *testing.T) {
+		sc := NewStreamConverter("claude", nil, nil)
+		sc.HandleStreamStart()
+		out, _ := sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"reasoning_content":"think"},"finish_reason":null}]}`))
+		if !strings.Contains(string(out), `"content_block":{"type":"thinking","thinking":"","signature":""}`) {
+			t.Fatalf("thinking start = %s", out)
+		}
+	})
+
+	t.Run("tool", func(t *testing.T) {
+		sc := NewStreamConverter("claude", nil, nil)
+		sc.HandleStreamStart()
+		out, _ := sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":null}]}`))
+		if !strings.Contains(string(out), `"input":{}`) {
+			t.Fatalf("tool start = %s", out)
+		}
+	})
+}
+
+func TestP2_GeminiAnthropicBlockStarts(t *testing.T) {
+	t.Run("text", func(t *testing.T) {
+		c := NewGeminiToAnthropicStreamConverter("claude")
+		c.HandleStreamStart()
+		out, err := c.HandleChunk([]byte(`{"candidates":[{"content":{"parts":[{"text":"hi"}],"role":"model"}}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), `"content_block":{"type":"text","text":""`) {
+			t.Fatalf("gemini text start = %s", out)
+		}
+	})
+
+	t.Run("thinking", func(t *testing.T) {
+		c := NewGeminiToAnthropicStreamConverter("claude")
+		c.HandleStreamStart()
+		out, err := c.HandleChunk([]byte(`{"candidates":[{"content":{"parts":[{"text":"think","thought":true}],"role":"model"}}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), `"content_block":{"type":"thinking","thinking":"","signature":""`) {
+			t.Fatalf("gemini thinking start = %s", out)
+		}
+	})
+
+	t.Run("tool", func(t *testing.T) {
+		c := NewGeminiToAnthropicStreamConverter("claude")
+		c.HandleStreamStart()
+		out, err := c.HandleChunk([]byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"f","args":{}}}],"role":"model"},"finishReason":"STOP"}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), `"input":{}`) {
+			t.Fatalf("gemini tool start = %s", out)
+		}
+	})
+}
+
+func TestP2_NoArgumentToolEmitsEmptyObject(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	first, _ := sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"f","arguments":""}}]},"finish_reason":null}]}`))
+	end := string(sc.HandleStreamEnd())
+	all := string(first) + end
+	if !strings.Contains(all, `"partial_json":"{}"`) {
+		t.Fatalf("no empty object for no-arg tool: %s", all)
+	}
+	if strings.Index(all, `"partial_json":"{}"`) > strings.Index(all, `"content_block_stop"`) {
+		t.Fatalf("empty object emitted after block stop: %s", all)
+	}
+}
+
+func TestP2_TwoNoArgumentToolsBothClose(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	out1, _ := sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"f","arguments":""}}]},"finish_reason":null}]}`))
+	out2, _ := sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"b","type":"function","function":{"name":"g","arguments":""}}]},"finish_reason":null}]}`))
+	end := string(sc.HandleStreamEnd())
+	all := string(out1) + string(out2) + end
+	if got := strings.Count(all, `"partial_json":"{}"`); got != 2 {
+		t.Fatalf("empty object deltas = %d, want 2: %s", got, all)
+	}
+	if got := strings.Count(all, "event: content_block_start"); got != 2 {
+		t.Fatalf("tool block starts = %d, want 2: %s", got, all)
+	}
+}
+
+func TestP2_InterruptedStreamSingleTextBlock(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	out, _ := sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`))
+	sc.SetInterrupted()
+	end := sc.HandleStreamEnd()
+	all := string(out) + string(end)
+	if got := strings.Count(all, "event: content_block_start"); got != 1 {
+		t.Fatalf("text block starts = %d, want 1: %s", got, all)
+	}
+	if got := strings.Count(all, "event: content_block_stop"); got != 1 {
+		t.Fatalf("text block stops = %d, want 1: %s", got, all)
+	}
+	if !strings.Contains(all, "[stream interrupted]") {
+		t.Fatalf("interruption marker missing: %s", all)
+	}
+}
+
+func TestP2_EmptyInterruptedStreamSingleTextBlock(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	sc.SetInterrupted()
+	end := string(sc.HandleStreamEnd())
+	if got := strings.Count(end, "event: content_block_start"); got != 1 {
+		t.Fatalf("text block starts = %d, want 1: %s", got, end)
+	}
+	if !strings.Contains(end, "[stream interrupted]") {
+		t.Fatalf("interruption marker missing: %s", end)
+	}
+}
