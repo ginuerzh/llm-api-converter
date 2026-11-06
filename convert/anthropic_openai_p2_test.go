@@ -424,3 +424,92 @@ func TestP2_EmptyInterruptedStreamSingleTextBlock(t *testing.T) {
 		t.Fatalf("interruption marker missing: %s", end)
 	}
 }
+
+func assertAnthropicToolID(t *testing.T, id string) {
+	t.Helper()
+	if id == "" {
+		t.Fatal("empty tool ID")
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' {
+			continue
+		}
+		t.Fatalf("tool ID %q contains invalid byte %q", id, c)
+	}
+}
+
+func TestP2_ToolIDRequestPairing(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":null,"tool_calls":[{"id":"call.a/b","type":"function","function":{"name":"f","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"call.a/b","content":"ok"},
+		{"role":"user","content":"done"}],
+		"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}]}`
+	out, err := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{ResolvedModel: "claude-sonnet"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req AnthropicRequest
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatal(err)
+	}
+	var toolUseID, resultID string
+	for _, msg := range req.Messages {
+		for _, block := range msg.Content {
+			switch block.Type {
+			case "tool_use":
+				toolUseID = block.ID
+			case "tool_result":
+				resultID = block.ToolUseID
+			}
+		}
+	}
+	assertAnthropicToolID(t, toolUseID)
+	if toolUseID != "call_a_b" || resultID != "call_a_b" {
+		t.Fatalf("tool_use=%q result=%q, want call_a_b for both", toolUseID, resultID)
+	}
+}
+
+func TestP2_ToolIDResponseSanitized(t *testing.T) {
+	body := `{"id":"x","model":"gpt-4","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"call.a/b","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}`
+	out, err := convertOpenAIResponseToAnthropic([]byte(body), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp AnthropicResponse
+	_ = json.Unmarshal(out, &resp)
+	if len(resp.Content) == 0 || resp.Content[0].Type != "tool_use" {
+		t.Fatalf("content = %+v", resp.Content)
+	}
+	assertAnthropicToolID(t, resp.Content[0].ID)
+	if resp.Content[0].ID != "call_a_b" {
+		t.Fatalf("id = %q, want call_a_b", resp.Content[0].ID)
+	}
+}
+
+func TestP2_ToolIDStreamSanitized(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	out, err := sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call.a/b","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":null}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"id":"call_a_b"`) {
+		t.Fatalf("stream tool ID not sanitized: %s", out)
+	}
+}
+
+func TestP2_ToolIDCacheUsesSanitizedID(t *testing.T) {
+	cache := NewReasoningCache(8)
+	body := `{"id":"x","model":"gpt-4","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","reasoning_content":"chain","tool_calls":[{"id":"call.a/b","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}`
+	if _, err := convertOpenAIResponseToAnthropic([]byte(body), &ConvertOptions{ReasoningCache: cache}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := cache.Get([]string{"call_a_b"}); !ok || got != "chain" {
+		t.Fatalf("cache.Get(call_a_b) = %q, %v; want chain, true", got, ok)
+	}
+	if _, ok := cache.Get([]string{"call.a/b"}); ok {
+		t.Fatal("cache stored the raw invalid ID")
+	}
+}

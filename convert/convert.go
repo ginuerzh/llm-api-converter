@@ -1225,6 +1225,27 @@ func ensureToolID(id string) string {
 	return "toolu_" + randHex(24)
 }
 
+// sanitizeAnthropicToolID maps a provider tool ID into the character set
+// Anthropic accepts: [A-Za-z0-9_-]. The mapping is deterministic so an
+// assistant tool_use and its matching tool_result still compare equal.
+func sanitizeAnthropicToolID(id string) string {
+	if id == "" {
+		return ensureToolID("")
+	}
+	var b strings.Builder
+	b.Grow(len(id))
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
 // intPtr returns a pointer to v, for optional numeric fields.
 func intPtr(v int) *int { return &v }
 

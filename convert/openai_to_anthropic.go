@@ -578,10 +578,7 @@ func convertAssistantContent(msg OpenAIMessage, model string) []AnthropicContent
 		for _, tc := range toolCalls {
 			// A legacy function_call has no id; Anthropic requires one and
 			// the synthesized result must reuse it.
-			id := tc.ID
-			if id == "" {
-				id = ensureToolID("")
-			}
+			id := sanitizeAnthropicToolID(tc.ID)
 			blocks = append(blocks, AnthropicContent{
 				Type:  "tool_use",
 				ID:    id, // clients match the synthesized tool_result by this id
@@ -608,7 +605,7 @@ func convertToolResultContent(msg OpenAIMessage) []AnthropicContent {
 	return []AnthropicContent{
 		{
 			Type:      "tool_result",
-			ToolUseID: msg.ToolCallID,
+			ToolUseID: sanitizeAnthropicToolID(msg.ToolCallID),
 			Content:   extractTextContent(msg.Content),
 		},
 	}
@@ -685,7 +682,7 @@ func convertOpenAIResponseToAnthropic(body []byte, opts *ConvertOptions) ([]byte
 			if len(msg.ToolCalls) > 0 {
 				ids := make([]string, len(msg.ToolCalls))
 				for i, tc := range msg.ToolCalls {
-					ids[i] = tc.ID
+					ids[i] = sanitizeAnthropicToolID(tc.ID)
 				}
 				opts.ReasoningCache.Put(ids, msg.ReasoningContent)
 			}
@@ -765,10 +762,7 @@ func convertOpenAIMessageToContent(msg OpenAIMessage) []AnthropicContent {
 		}
 		for _, tc := range calls {
 			// A legacy function_call has no id; Anthropic requires one.
-			id := tc.ID
-			if id == "" {
-				id = ensureToolID("")
-			}
+			id := sanitizeAnthropicToolID(tc.ID)
 			blocks = append(blocks, AnthropicContent{
 				Type:  "tool_use",
 				ID:    id,

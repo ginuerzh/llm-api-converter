@@ -565,10 +565,7 @@ func (sc *StreamConverter) handleToolCallDelta(tc OpenAIDeltaToolCall) [][]byte 
 	}
 
 	// First appearance of this tool call.
-	toolID := tc.ID
-	if toolID == "" {
-		toolID = ensureToolID("")
-	}
+	toolID := sanitizeAnthropicToolID(tc.ID)
 
 	state := &streamToolState{
 		ID:        toolID,
