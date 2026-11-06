@@ -1277,3 +1277,32 @@ fixes** at head `68dd7c3`: one Critical and four Important findings.
   - The Anthropic→OpenAI half of `TestP1_TruncatedToolStreamErrors` follows the OpenAI→Anthropic half, so its RED capture stopped at the first failure; the code path is covered by the GREEN run.
   - `isAnthropicStreamEvent`/`detectSource` now classify any `type: "error"` payload as Anthropic, including an OpenAI Responses error event that reuses that type. Such an event is handled by the Anthropic converter, still fails the response, and uses the default message when `error.message` is absent.
   - `anthropicToolStartInput` still treats any non-`{}`/`null` start input, including malformed JSON, as complete; unchanged from the P1 behaviour and outside this wave.
+
+---
+
+## Post-final-review regression fix
+
+The final scoped re-review of `feat/anthropic-openai-p1` found one new
+Important regression introduced by the final fix wave: `detectSource` now
+classifies every `{"type":"error"}` body as Anthropic, including non-stream
+bodies. `Convert` then dispatched to `convertAnthropicResponseToOpenAI`, which
+ignores `error` and emitted an empty successful ChatCompletion.
+
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit:
+  - `llm-api-converter` @ `f8fc11c` (`fix(convert): pass through non-stream error bodies unchanged`, branch `feat/anthropic-openai-p1`) — code and test.
+  - The docs commit on the same branch carries this record; its SHA is recorded in the post-fix report because a commit cannot contain its own SHA.
+- Files changed:
+  - `convert/convert.go` — in `Convert`, immediately after the existing `raw["error"]` logging block and before `detectSource(raw)`, added an early passthrough: when the top-level `error` field is present and non-nil, return the original body unchanged. This preserves upstream error bodies for every protocol instead of converting them into a successful empty response. `detectSource` and stream error handling are unchanged.
+  - `convert/anthropic_openai_p1_test.go` — added `TestP1_NonStreamErrorBodyPassthrough`, covering an Anthropic `type: "error"` body and a plain OpenAI-style `{"error": ...}` body; both must be returned byte-identical and must not contain `chat.completion`.
+- Tests / commands:
+  - `go test -count=1 -run 'TestP1_NonStreamErrorBodyPassthrough' ./convert -v` → PASS.
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`; `llm-api-converter` and `cmd` have no test files).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS (`convert` 1.226s, `engine` 1.018s, `rewriter` 1.031s).
+  - `go vet ./...` → clean; `git diff --check` → clean.
+- Findings fixed:
+  - Important — non-stream error bodies are passed through unchanged; the Anthropic classification in `detectSource` is still correct for Anthropic stream error events, which remain handled by the stream converters.
+- Deferred:
+  - P2 findings remain open.
+  - The regression is fixed with a guard in `Convert` rather than narrowing `detectSource`, because the Anthropic error-event classification is required for streaming.
