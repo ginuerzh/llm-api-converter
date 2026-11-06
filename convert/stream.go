@@ -245,16 +245,16 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 		events = append(events, sc.contentBlockStop())
 	}
 
-	// message_delta with stop_reason.
+	// message_delta with stop_reason. When tools were emitted, an empty or
+	// "stop" upstream finish reason is ambiguous: OpenAI-compatible backends
+	// often report it for a tool-calling turn, so infer tool_use. Explicit
+	// reasons such as length or content_filter are preserved.
 	stopReason := "end_turn"
-	if sc.finishReason != "" {
-		stopReason = sc.finishReason
-		// If the upstream said "stop" but we accumulated tool calls, override
-		// to "tool_calls" so Claude Code knows tools were requested.
-		if stopReason == "stop" && len(sc.toolCallByIndex) > 0 {
-			stopReason = "tool_calls"
-		}
-		stopReason = mapOpenAIStreamFinish(stopReason)
+	switch {
+	case len(sc.toolCallByIndex) > 0 && (sc.finishReason == "" || sc.finishReason == "stop"):
+		stopReason = "tool_use"
+	case sc.finishReason != "":
+		stopReason = mapOpenAIStreamFinish(sc.finishReason)
 	}
 	usageMap := map[string]any{
 		"output_tokens": 0,

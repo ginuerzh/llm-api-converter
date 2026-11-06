@@ -190,6 +190,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 		outputModel = resolveModelTarget(req.Model, opts.ModelMap)
 	}
 	profile := classifyModel(outputModel)
+	reasoningModel := isOpenAIReasoningModel(outputModel)
 
 	oai := OpenAIChatRequest{
 		Model:  outputModel,
@@ -197,13 +198,22 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	}
 
 	if req.MaxTokens > 0 {
-		oai.MaxTokens = &req.MaxTokens
+		if reasoningModel {
+			// OpenAI reasoning models reject max_tokens and require
+			// max_completion_tokens instead.
+			oai.MaxCompletionTokens = &req.MaxTokens
+		} else {
+			oai.MaxTokens = &req.MaxTokens
+		}
 	}
-	if req.Temperature != nil {
-		oai.Temperature = req.Temperature
-	}
-	if req.TopP != nil {
-		oai.TopP = req.TopP
+	if !reasoningModel {
+		// Reasoning models reject sampling parameters; other models keep them.
+		if req.Temperature != nil {
+			oai.Temperature = req.Temperature
+		}
+		if req.TopP != nil {
+			oai.TopP = req.TopP
+		}
 	}
 	// Anthropic metadata (user_id etc.) is NOT forwarded: most OpenAI-compatible
 	// endpoints reject unknown params ("Invalid API parameter").
@@ -589,11 +599,20 @@ func convertAnthropicResponseToOpenAI(body []byte) ([]byte, error) {
 		msg.Content = strings.Join(textParts, "")
 	}
 
+	finishReason := mapFinishReason(resp.StopReason)
+	// Some Anthropic-compatible upstreams end a tool-calling turn with
+	// end_turn (or omit stop_reason). OpenAI clients only run tools when
+	// finish_reason is tool_calls, so infer it from the emitted calls while
+	// leaving explicit reasons alone.
+	if len(msg.ToolCalls) > 0 && (resp.StopReason == nil || *resp.StopReason == "end_turn") {
+		finishReason = &strToolCalls
+	}
+
 	openai.Choices = []OpenAIChoice{
 		{
 			Index:        0,
 			Message:      msg,
-			FinishReason: mapFinishReason(resp.StopReason),
+			FinishReason: finishReason,
 		},
 	}
 

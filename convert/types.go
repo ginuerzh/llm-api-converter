@@ -242,6 +242,20 @@ func isOpenAIStyleModel(model string) bool {
 	return false
 }
 
+// isOpenAIReasoningModel reports whether model is an OpenAI reasoning model.
+// These models reject max_tokens, temperature, and top_p, and require
+// max_completion_tokens instead. A provider/ prefix is ignored.
+func isOpenAIReasoningModel(model string) bool {
+	ml := strings.ToLower(StripProviderPrefix(model))
+	prefixes := []string{"o1", "o3", "o4", "gpt-5"}
+	for _, p := range prefixes {
+		if strings.HasPrefix(ml, p) {
+			return true
+		}
+	}
+	return false
+}
+
 type AnthropicMessage struct {
 	Role    string             `json:"role"`
 	Content []AnthropicContent `json:"content"`

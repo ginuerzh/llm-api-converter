@@ -508,3 +508,180 @@ func TestP1_GLMReplaysReasoningWithoutPlaceholder(t *testing.T) {
 		t.Fatalf("glm placeholder: %q", oai.Messages[0].ReasoningContent)
 	}
 }
+
+func TestP1_ReasoningModelUsesMaxCompletionTokens(t *testing.T) {
+	body := `{"model":"claude","max_tokens":100,"temperature":0.5,"top_p":0.9,
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "o3-mini"})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	if oai.MaxCompletionTokens == nil || *oai.MaxCompletionTokens != 100 {
+		t.Fatalf("max_completion_tokens = %v, want 100", oai.MaxCompletionTokens)
+	}
+	if oai.MaxTokens != nil || oai.Temperature != nil || oai.TopP != nil {
+		t.Fatalf("reasoning model kept unsupported params: %s", b)
+	}
+
+	b, _ = convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "gpt-4o"})
+	_ = json.Unmarshal(b, &oai)
+	if oai.MaxTokens == nil || *oai.MaxTokens != 100 {
+		t.Fatalf("non-reasoning max_tokens = %v, want 100", oai.MaxTokens)
+	}
+	if oai.Temperature == nil || oai.TopP == nil {
+		t.Fatalf("non-reasoning sampling params dropped: %s", b)
+	}
+}
+
+func TestP1_NonStreamToolStopInference(t *testing.T) {
+	body := `{"id":"x","model":"gpt-4","choices":[{"index":0,"finish_reason":"stop",
+		"message":{"role":"assistant","tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}`
+	b, _ := convertOpenAIResponseToAnthropic([]byte(body), nil)
+	var anth AnthropicResponse
+	_ = json.Unmarshal(b, &anth)
+	if anth.StopReason == nil || *anth.StopReason != "tool_use" {
+		t.Fatalf("stop_reason = %v, want tool_use", anth.StopReason)
+	}
+
+	body = `{"id":"x","model":"gpt-4","choices":[{"index":0,"finish_reason":"content_filter",
+		"message":{"role":"assistant","tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}`
+	b, _ = convertOpenAIResponseToAnthropic([]byte(body), nil)
+	_ = json.Unmarshal(b, &anth)
+	if anth.StopReason == nil || *anth.StopReason != "end_turn" {
+		t.Fatalf("content_filter stop_reason = %v, want end_turn", anth.StopReason)
+	}
+
+	body = `{"id":"msg_1","model":"claude","stop_reason":"end_turn",
+		"content":[{"type":"tool_use","id":"a","name":"f","input":{}}]}`
+	b, _ = convertAnthropicResponseToOpenAI([]byte(body))
+	var oai OpenAIChatResponse
+	_ = json.Unmarshal(b, &oai)
+	if oai.Choices[0].FinishReason == nil || *oai.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %v, want tool_calls", oai.Choices[0].FinishReason)
+	}
+}
+
+func TestP1_StreamToolStopInference(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":null}]}`))
+	out := string(sc.HandleStreamEnd())
+	if !strings.Contains(out, `"stop_reason":"tool_use"`) {
+		t.Fatalf("OpenAI→Anthropic stop = %s", out)
+	}
+
+	c := NewAnthropicToOpenAIStreamConverter("claude")
+	_, _ = c.HandleChunk([]byte(`{"type":"message_start","message":{"id":"msg_1","model":"claude"}}`))
+	_, _ = c.HandleChunk([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"f"}}`))
+	_, _ = c.HandleChunk([]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`))
+	out = string(c.HandleStreamEnd())
+	if !strings.Contains(out, `"finish_reason":"tool_calls"`) {
+		t.Fatalf("Anthropic→OpenAI finish = %s", out)
+	}
+}
+
+func TestP1_ReasoningModelDetection(t *testing.T) {
+	cases := map[string]bool{
+		"o1":             true,
+		"o1-mini":        true,
+		"o3-mini":        true,
+		"o4-mini":        true,
+		"gpt-5":          true,
+		"gpt-5.1-codex":  true,
+		"openai/o3-mini": true,
+		"openai/gpt-5":   true,
+		"O3-MINI":        true,
+		"gpt-4o":         false,
+		"gpt-4.1":        false,
+		"openai/gpt-4o":  false,
+		"claude-opus-4":  false,
+		"deepseek-chat":  false,
+		"":               false,
+	}
+	for model, want := range cases {
+		if got := isOpenAIReasoningModel(model); got != want {
+			t.Errorf("isOpenAIReasoningModel(%q) = %v, want %v", model, got, want)
+		}
+	}
+}
+
+func TestP1_ReasoningModelProviderPrefixMapping(t *testing.T) {
+	body := `{"model":"claude","max_tokens":64,"temperature":0.2,
+		"messages":[{"role":"user","content":"hi"}]}`
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "openai/gpt-5"})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	if oai.MaxCompletionTokens == nil || *oai.MaxCompletionTokens != 64 {
+		t.Fatalf("max_completion_tokens = %v, want 64: %s", oai.MaxCompletionTokens, b)
+	}
+	if oai.MaxTokens != nil || oai.Temperature != nil {
+		t.Fatalf("provider-prefixed reasoning model kept unsupported params: %s", b)
+	}
+}
+
+func TestP1_ToolStopExplicitReasonsPreserved(t *testing.T) {
+	cases := []struct {
+		finishReason string
+		want         string
+	}{
+		{"length", "max_tokens"},
+		{"tool_calls", "tool_use"},
+	}
+	for _, tc := range cases {
+		body := `{"id":"x","model":"gpt-4","choices":[{"index":0,"finish_reason":"` + tc.finishReason + `",
+			"message":{"role":"assistant","tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}`
+		b, _ := convertOpenAIResponseToAnthropic([]byte(body), nil)
+		var anth AnthropicResponse
+		_ = json.Unmarshal(b, &anth)
+		if anth.StopReason == nil || *anth.StopReason != tc.want {
+			t.Fatalf("finish_reason %q → stop_reason %v, want %s", tc.finishReason, anth.StopReason, tc.want)
+		}
+	}
+
+	// A missing OpenAI finish_reason with tool calls still infers tool_use.
+	body := `{"id":"x","model":"gpt-4","choices":[{"index":0,
+		"message":{"role":"assistant","tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}`
+	b, _ := convertOpenAIResponseToAnthropic([]byte(body), nil)
+	var anth AnthropicResponse
+	_ = json.Unmarshal(b, &anth)
+	if anth.StopReason == nil || *anth.StopReason != "tool_use" {
+		t.Fatalf("nil finish_reason stop_reason = %v, want tool_use", anth.StopReason)
+	}
+
+	// Anthropic max_tokens with tools keeps length.
+	body = `{"id":"msg_1","model":"claude","stop_reason":"max_tokens",
+		"content":[{"type":"tool_use","id":"a","name":"f","input":{}}]}`
+	b, _ = convertAnthropicResponseToOpenAI([]byte(body))
+	var oai OpenAIChatResponse
+	_ = json.Unmarshal(b, &oai)
+	if oai.Choices[0].FinishReason == nil || *oai.Choices[0].FinishReason != "length" {
+		t.Fatalf("max_tokens finish_reason = %v, want length", oai.Choices[0].FinishReason)
+	}
+
+	// Anthropic missing stop_reason with tools infers tool_calls.
+	body = `{"id":"msg_1","model":"claude",
+		"content":[{"type":"tool_use","id":"a","name":"f","input":{}}]}`
+	b, _ = convertAnthropicResponseToOpenAI([]byte(body))
+	oai = OpenAIChatResponse{}
+	_ = json.Unmarshal(b, &oai)
+	if oai.Choices[0].FinishReason == nil || *oai.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("nil stop_reason finish_reason = %v, want tool_calls", oai.Choices[0].FinishReason)
+	}
+}
+
+func TestP1_StreamToolStopExplicitReasonsPreserved(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":null}]}`))
+	_, _ = sc.HandleChunk([]byte(`{"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`))
+	if out := string(sc.HandleStreamEnd()); !strings.Contains(out, `"stop_reason":"max_tokens"`) {
+		t.Fatalf("length stream stop = %s", out)
+	}
+
+	c := NewAnthropicToOpenAIStreamConverter("claude")
+	_, _ = c.HandleChunk([]byte(`{"type":"message_start","message":{"id":"msg_1","model":"claude"}}`))
+	_, _ = c.HandleChunk([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"a","name":"f"}}`))
+	_, _ = c.HandleChunk([]byte(`{"type":"message_delta","delta":{"stop_reason":"max_tokens"}}`))
+	if out := string(c.HandleStreamEnd()); !strings.Contains(out, `"finish_reason":"length"`) {
+		t.Fatalf("max_tokens stream finish = %s", out)
+	}
+}

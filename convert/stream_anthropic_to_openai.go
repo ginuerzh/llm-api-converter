@@ -269,7 +269,14 @@ func (c *AnthropicToOpenAIStreamConverter) finish() [][]byte {
 	if !c.started {
 		c.emitRole(&events)
 	}
+	// Anthropic-compatible upstreams sometimes end a tool-calling turn with
+	// end_turn (or omit the stop reason). OpenAI clients only run tools when
+	// finish_reason is tool_calls, so infer it from the emitted calls while
+	// preserving explicit reasons such as max_tokens.
 	fr := mapAnthropicStopToOpenAI(c.stop)
+	if c.nextTool > 0 && (c.stop == "" || c.stop == "end_turn") {
+		fr = "tool_calls"
+	}
 	b, _ := json.Marshal(OpenAIStreamChunk{
 		ID: c.id, Object: "chat.completion.chunk", Created: c.created, Model: c.model,
 		Choices: []OpenAIStreamChoice{{Delta: OpenAIDelta{}, FinishReason: &fr}},

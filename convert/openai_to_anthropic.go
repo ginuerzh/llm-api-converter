@@ -601,9 +601,18 @@ func convertOpenAIResponseToAnthropic(body []byte, opts *ConvertOptions) ([]byte
 	}
 
 	if len(resp.Choices) > 0 {
-		msg := resp.Choices[0].Message
-		anth.StopReason = mapOpenAIFinishReason(resp.Choices[0].FinishReason)
+		choice := resp.Choices[0]
+		msg := choice.Message
+		anth.StopReason = mapOpenAIFinishReason(choice.FinishReason)
 		anth.Content = convertOpenAIMessageToContent(msg)
+		// OpenAI-compatible backends commonly report "stop" (or no reason)
+		// for a tool-calling turn. Anthropic clients only run tools when
+		// stop_reason is tool_use, so infer it from the emitted blocks while
+		// leaving explicit reasons (content_filter, length, ...) untouched.
+		if (choice.FinishReason == nil || *choice.FinishReason == "stop") && hasAnthropicToolUse(anth.Content) {
+			stopReason := "tool_use"
+			anth.StopReason = &stopReason
+		}
 	}
 
 	// Cache reasoning_content for tool call replay (DeepSeek V4 requirement).
@@ -648,6 +657,16 @@ func mapOpenAIFinishReason(reason *string) *string {
 	default:
 		return reason
 	}
+}
+
+// hasAnthropicToolUse reports whether blocks contain a tool_use block.
+func hasAnthropicToolUse(blocks []AnthropicContent) bool {
+	for _, block := range blocks {
+		if block.Type == "tool_use" {
+			return true
+		}
+	}
+	return false
 }
 
 func convertOpenAIMessageToContent(msg OpenAIMessage) []AnthropicContent {

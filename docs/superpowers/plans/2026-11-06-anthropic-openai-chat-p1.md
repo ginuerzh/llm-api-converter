@@ -705,13 +705,33 @@ git commit -m "fix(convert): map reasoning-model params and tool stops"
 
 **Implementation record**
 
-- Status: Pending
-- Date:
-- Repository / commit:
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter` @ `pending` (`fix(convert): map reasoning-model params and tool stops`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-3.
 - Files changed:
+  - `convert/types.go` — added `isOpenAIReasoningModel`: strips a `provider/` prefix with `StripProviderPrefix`, lowercases, and matches the `o1`, `o3`, `o4`, and `gpt-5` prefixes.
+  - `convert/anthropic_to_openai.go` — `convertAnthropicRequestToOpenAI` computes the reasoning-model flag from the resolved output model; reasoning targets emit `max_completion_tokens` and omit `max_tokens`, `temperature`, and `top_p`, while all other targets keep the previous behavior. The Task 3 DeepSeek `thinking`/`reasoning_effort` gating and GLM thinking mapping are untouched. In `convertAnthropicResponseToOpenAI`, the finish reason is inferred from the raw `stop_reason` (nil or `end_turn`) plus emitted `tool_calls` before mapping; explicit reasons still go through `mapFinishReason`.
+  - `convert/openai_to_anthropic.go` — after `anth.Content` is built, a nil or `stop` raw `finish_reason` with a converted `tool_use` block sets `stop_reason: tool_use`. Added `hasAnthropicToolUse` for that check. `content_filter`, `length`, and other explicit reasons keep their existing mapping.
+  - `convert/stream.go` — `HandleStreamEnd` infers `stop_reason: tool_use` from the raw `finish_reason` being empty or `stop` when any tool call was accumulated (including calls held until stream end); explicit reasons still pass through `mapOpenAIStreamFinish`.
+  - `convert/stream_anthropic_to_openai.go` — `finish` infers `finish_reason: tool_calls` when a tool block was emitted and the raw `stop_reason` is empty or `end_turn`; `max_tokens` and other explicit reasons keep their mapping.
+  - `convert/anthropic_openai_p1_test.go` — the three plan tests plus a detection table (provider prefix, case, `o4`/`gpt-5`, non-reasoning names), a provider-prefixed reasoning-parameter test, explicit-stop preservation tests for both non-stream directions, and a stream explicit-stop test.
 - Tests / commands:
+  - RED: `go test ./convert -run 'TestP1_(ReasoningModelUsesMaxCompletionTokens|NonStreamToolStopInference|StreamToolStopInference)' -v` → build failure `undefined: isOpenAIReasoningModel`; with a temporary passthrough stub the three tests failed for the expected reasons: `max_completion_tokens = <nil>, want 100`; `stop_reason = <end_turn>, want tool_use`; OpenAI→Anthropic stream emitted `"stop_reason":"end_turn"` after a tool call. The extra tests separately showed `isOpenAIReasoningModel` returning false for `o1`/`o3`/`o4`/`gpt-5` names, sampling params retained for `openai/gpt-5`, and a nil `finish_reason` left as nil.
+  - GREEN: `go test ./convert -run 'TestP1_' -v` → PASS (all Task 1-4 tests).
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS.
+  - `go vet ./...` → clean; `gofmt -l` on the six changed files → clean; `git diff --check` → clean.
 - Review findings:
+  - The inference reads the raw reason before mapping, as required, so `content_filter` and `length`/`max_tokens` are never rewritten; the explicit-stop tests cover both directions.
+  - Held tool calls are already present in `toolCallByIndex` (the map is only cleared for `heldTools`), so the stream inference naturally counts them; tool calls skipped by the declared-tools restriction are absent and therefore do not force a tool stop.
+  - Reasoning detection uses the resolved output model, not the client model, so a Claude request routed to `o3-mini` gets reasoning parameters.
+  - Task 3's effort gating and GLM thinking mapping were preserved; no dependency, registry/model-map, routing, or same-protocol passthrough changes. No pre-existing test contradicted P1-6/P1-11, so none needed updating.
 - Deferred:
+  - Detection is prefix-based by design, so a hypothetical `gpt-5-chat-*` or `o10` name would be treated as a reasoning model and lose sampling parameters; no such model is in use.
+  - A provider that sends a literal empty-string non-stream `finish_reason` is treated as an explicit reason (the plan and design only specify nil/`stop`); stream handling does treat empty as missing because the accumulated reason is a plain string.
+  - The Anthropic→OpenAI stream inference counts a tool synthesized from a bare `input_json_delta`, because the converter emits a tool-call delta for it.
+  - `gofmt -l convert/` still lists the same eight pre-existing unformatted files noted in Task 1; this task did not touch them.
+  - The resolved SHA is recorded by the follow-up docs commit, matching Tasks 1-3.
 
 ---
 
