@@ -339,7 +339,7 @@ git commit -m "fix(convert): normalize Anthropic tool histories"
 
 - Status: Complete
 - Date: 2026-11-06
-- Repository / commit: `llm-api-converter` @ `<resolved by the follow-up docs commit that carries this line>` (`fix(convert): normalize Anthropic tool histories`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA is added by the follow-up docs commit, matching Task 1.
+- Repository / commit: `llm-api-converter` @ `7620613` (`fix(convert): normalize Anthropic tool histories`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Task 1.
 - Files changed:
   - `convert/message_normalize.go` — new: `normalizeAnthropicMessages` processes each run of consecutive user messages as one turn (so parallel tool results coalesce and all `tool_result` blocks precede text/image blocks), keeps results whose ID is open and unanswered, converts orphan/duplicate results to text (`"Tool result received."` when empty), appends synthetic `is_error` results (`"Tool result missing."`) for unanswered calls, closes a trailing open exchange, and merges consecutive same-role messages. `stubHistoryTools` adds one deduplicated stub declaration per distinct history `tool_use` name (description `"Tool from earlier conversation. Do not call."`, schema `{"type":"object","properties":{}}`) and sets `tool_choice: {"type":"none"}`; it is a no-op when tools are already declared or no history names exist.
   - `convert/openai_to_anthropic.go` — calls the normalizer after the message loop and before the empty-history fallback; calls `stubHistoryTools` when no tools are declared.
