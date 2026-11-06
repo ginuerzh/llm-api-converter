@@ -995,7 +995,7 @@ git commit -m "fix(convert): complete stream block payloads and tool closes"
 - Produces: `func sanitizeAnthropicToolID(id string) string`
 - Behavior: empty IDs use `ensureToolID`; valid IDs are unchanged; every other byte becomes `_`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append:
 
@@ -1090,13 +1090,13 @@ func TestP2_ToolIDCacheUsesSanitizedID(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests and capture RED**
+- [x] **Step 2: Run the tests and capture RED**
 
 Run: `go test -count=1 -run 'TestP2_ToolID' ./convert`
 
 Expected: invalid IDs pass through unchanged and the cache is keyed by the raw ID.
 
-- [ ] **Step 3: Implement sanitization**
+- [x] **Step 3: Implement sanitization**
 
 In `convert/convert.go`, next to `ensureToolID`:
 
@@ -1129,7 +1129,7 @@ Apply it:
 - `convertOpenAIResponseToAnthropic` cache block: `ids[i] = sanitizeAnthropicToolID(tc.ID)`.
 - `StreamConverter.HandleStreamEnd` cache block already uses `state.ID`, which is sanitized when the state is created.
 
-- [ ] **Step 4: Run the focused and full tests**
+- [x] **Step 4: Run the focused and full tests**
 
 Run: `go test -count=1 -run 'TestP2_ToolID' ./convert`
 
@@ -1139,7 +1139,7 @@ Run: `go test -count=1 ./...`
 
 Expected: all packages PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/convert.go convert/openai_to_anthropic.go convert/stream.go convert/anthropic_openai_p2_test.go
@@ -1147,12 +1147,12 @@ git commit -m "fix(convert): sanitize anthropic tool ids"
 ```
 
 **Implementation record:**
-- Date/status:
-- Repository/commit:
-- Files changed:
-- Tests/commands/results:
-- Review findings/fixes:
-- Deferred/limitations:
+- Date/status: 2026-11-06 / complete
+- Repository/commit: `llm-api-converter` `f8d9aec`
+- Files changed: `convert/convert.go`, `convert/openai_to_anthropic.go`, `convert/stream.go`, `convert/anthropic_openai_p2_test.go`
+- Tests/commands/results: RED `go test -count=1 -run 'TestP2_ToolID' ./convert` → `call.a/b` passed through and cache missed `call_a_b`; GREEN same command → PASS; `go test -count=1 ./...` → all packages PASS; `go vet ./...` and `git diff --check` clean.
+- Review findings/fixes: none.
+- Deferred/limitations: two distinct invalid IDs that collapse to the same sanitized string are accepted as a known risk; hashing is not used.
 
 ---
 
