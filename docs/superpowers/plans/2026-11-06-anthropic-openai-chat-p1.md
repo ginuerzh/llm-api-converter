@@ -590,7 +590,7 @@ git commit -m "fix(convert): gate reasoning replay and whitelist metadata"
 - `isOpenAIReasoningModel` strips a `provider/` prefix and matches `o1`,
   `o3`, `o4`, or `gpt-5` prefixes.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestP1_ReasoningModelUsesMaxCompletionTokens(t *testing.T) {
@@ -664,13 +664,13 @@ func TestP1_StreamToolStopInference(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP1_(ReasoningModelUsesMaxCompletionTokens|NonStreamToolStopInference|StreamToolStopInference)' -v`
 
 Expected: FAIL — `max_tokens`/sampling still emitted for `o3`, stop reasons remain `end_turn`/`stop` with tools.
 
-- [ ] **Step 3: Implement the mappings**
+- [x] **Step 3: Implement the mappings**
 
 - Add `isOpenAIReasoningModel`.
 - In `convertAnthropicRequestToOpenAI`, when true, set `MaxCompletionTokens`
@@ -686,13 +686,13 @@ Expected: FAIL — `max_tokens`/sampling still emitted for `o3`, stop reasons re
 - Stream Anthropic→OpenAI: if `nextTool > 0` and the raw stop is empty or
   `"end_turn"`, set the finish chunk reason to `"tool_calls"`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP1_' -v`
 
 Expected: PASS.
 
-- [ ] **Step 5: Run the full suite and commit**
+- [x] **Step 5: Run the full suite and commit**
 
 Run: `cd llm-api-converter && go test -count=1 ./... && go vet ./...`
 
@@ -707,7 +707,7 @@ git commit -m "fix(convert): map reasoning-model params and tool stops"
 
 - Status: Complete
 - Date: 2026-11-06
-- Repository / commit: `llm-api-converter` @ `pending` (`fix(convert): map reasoning-model params and tool stops`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-3.
+- Repository / commit: `llm-api-converter` @ `8d9e8d3` (`fix(convert): map reasoning-model params and tool stops`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-3.
 - Files changed:
   - `convert/types.go` — added `isOpenAIReasoningModel`: strips a `provider/` prefix with `StripProviderPrefix`, lowercases, and matches the `o1`, `o3`, `o4`, and `gpt-5` prefixes.
   - `convert/anthropic_to_openai.go` — `convertAnthropicRequestToOpenAI` computes the reasoning-model flag from the resolved output model; reasoning targets emit `max_completion_tokens` and omit `max_tokens`, `temperature`, and `top_p`, while all other targets keep the previous behavior. The Task 3 DeepSeek `thinking`/`reasoning_effort` gating and GLM thinking mapping are untouched. In `convertAnthropicResponseToOpenAI`, the finish reason is inferred from the raw `stop_reason` (nil or `end_turn`) plus emitted `tool_calls` before mapping; explicit reasons still go through `mapFinishReason`.
