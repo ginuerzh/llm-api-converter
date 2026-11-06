@@ -1023,12 +1023,14 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 		// GOST reports interrupted streams through stream_error metadata. An
 		// interrupted stream must surface as an error, not as a normal close:
 		// a synthesized message_stop would report truncated output (including
-		// partial tool arguments) as a successful response.
+		// partial tool arguments) as a successful response. Only the in-scope
+		// Anthropic/OpenAI Chat converters guarantee a terminal, JSON-safe
+		// error event; every other handler keeps its previous end behavior.
 		if opts.ErrorMsg != "" {
-			if _, ok := handler.(*PassthroughStreamHandler); ok {
-				return nil, nil
+			switch handler.(type) {
+			case *StreamConverter, *AnthropicToOpenAIStreamConverter:
+				return handler.EmitError(opts.ErrorMsg), nil
 			}
-			return handler.EmitError(opts.ErrorMsg), nil
 		}
 		// Passthrough: no synthesized closing events needed.
 		if _, ok := handler.(*PassthroughStreamHandler); ok {
@@ -1161,11 +1163,13 @@ func handleResponsesSSEEvent(sid, phase string, _ int, data []byte, opts *Conver
 		if handler == nil {
 			return nil, nil
 		}
+		// End-phase stream errors are only converted for the in-scope
+		// Responses handlers; other handlers keep their previous end behavior.
 		if opts.ErrorMsg != "" {
-			if _, ok := handler.(*PassthroughStreamHandler); ok {
-				return nil, nil
+			switch handler.(type) {
+			case *AnthropicStreamConverter, *ResponsesStreamConverter:
+				return handler.EmitError(opts.ErrorMsg), nil
 			}
-			return handler.EmitError(opts.ErrorMsg), nil
 		}
 		return handler.HandleStreamEnd(), nil
 

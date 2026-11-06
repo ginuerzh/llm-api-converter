@@ -127,9 +127,7 @@ func (sc *StreamConverter) HandleChunk(data []byte) ([]byte, error) {
 		if msg == "" {
 			msg = "upstream stream error"
 		}
-		evt := sc.EmitError(msg)
-		sc.finalized = true
-		return evt, nil
+		return sc.EmitError(msg), nil
 	}
 
 	if len(chunk.Choices) == 0 {
@@ -303,13 +301,15 @@ func (sc *StreamConverter) SetInterrupted() {
 	sc.streamInterrupted = true
 }
 
-// EmitError returns an Anthropic-formatted error SSE event. The payload is
-// JSON-encoded so quotes, newlines, and backslashes in the message cannot
-// corrupt the event.
+// EmitError returns an Anthropic-formatted error SSE event and marks the
+// stream finalized. It is terminal: a stream that already closed (normally or
+// with an error) returns nil. The payload is JSON-encoded so quotes, newlines,
+// and backslashes in the message cannot corrupt the event.
 func (sc *StreamConverter) EmitError(message string) []byte {
 	if sc.finalized {
 		return nil
 	}
+	sc.finalized = true
 	b, _ := json.Marshal(map[string]any{
 		"type":  "error",
 		"error": map[string]any{"type": "stream_error", "message": message},

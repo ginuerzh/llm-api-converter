@@ -253,7 +253,15 @@ func (c *AnthropicToOpenAIStreamConverter) HandleStreamEnd() []byte {
 	return joinSSE(c.finish())
 }
 
+// EmitError returns an OpenAI-formatted error chunk and marks the stream
+// finished. It is terminal: once a normal finish or an upstream error has
+// ended the stream it returns nil, so a late end-phase error cannot follow a
+// completed response.
 func (c *AnthropicToOpenAIStreamConverter) EmitError(message string) []byte {
+	if c.finished {
+		return nil
+	}
+	c.finished = true
 	b, _ := json.Marshal(map[string]any{"error": map[string]any{
 		"type": "stream_error", "message": message,
 	}})

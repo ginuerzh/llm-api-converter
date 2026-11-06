@@ -917,3 +917,66 @@ func TestP1_ResponsesEndPhaseStreamErrorEmitsError(t *testing.T) {
 		t.Fatalf("normal completion after error: %s", out)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Fix round 1: terminal EmitError and scoped end-phase error dispatch
+// ---------------------------------------------------------------------------
+
+func TestP1_AnthropicToOpenAIEmitErrorAfterFinish(t *testing.T) {
+	c := NewAnthropicToOpenAIStreamConverter("claude")
+	_, _ = c.HandleChunk([]byte(`{"type":"message_start","message":{"id":"msg_1","model":"claude"}}`))
+	_, _ = c.HandleChunk([]byte(`{"type":"message_stop"}`))
+	if out := c.EmitError("late error"); out != nil {
+		t.Fatalf("error after message_stop = %s", out)
+	}
+}
+
+func TestP1_AnthropicErrorThenEndPhaseOneError(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("a1", &Session{ID: "a1", StreamHandler: NewAnthropicToOpenAIStreamConverter("claude")})
+	opts := &ConvertOptions{SessionStore: store, Direction: "response", SID: "a1"}
+
+	out, err := HandleSSEEvent("a1", "event", 0, []byte(`data: {"type":"error","error":{"type":"overloaded_error","message":"boom"}}`), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.ErrorMsg = "upstream reset"
+	end, err := HandleSSEEvent("a1", "end", 0, nil, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := string(out) + string(end)
+	if got := strings.Count(all, `"error":`); got != 1 {
+		t.Fatalf("error objects = %d, want 1: %s", got, all)
+	}
+}
+
+func TestP1_GeminiEndPhaseStreamErrorNotDispatched(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("g1", &Session{ID: "g1", StreamHandler: NewGeminiToAnthropicStreamConverter("claude")})
+	opts := &ConvertOptions{SessionStore: store, Direction: "response", SID: "g1", ErrorMsg: `upstream "reset"`}
+	out, err := HandleSSEEvent("g1", "end", 0, nil, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), `event: error`) {
+		t.Fatalf("gemini handler received end-phase error: %s", out)
+	}
+	if !strings.Contains(string(out), "message_stop") {
+		t.Fatalf("gemini normal close missing: %s", out)
+	}
+}
+
+func TestP1_StreamConverterEmitErrorIsTerminal(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	sc.HandleStreamStart()
+	if out := sc.EmitError("boom"); !strings.Contains(string(out), "event: error") {
+		t.Fatalf("first error = %s", out)
+	}
+	if out := sc.EmitError("again"); out != nil {
+		t.Fatalf("second error = %s", out)
+	}
+	if out := sc.HandleStreamEnd(); out != nil {
+		t.Fatalf("normal end after error = %s", out)
+	}
+}
