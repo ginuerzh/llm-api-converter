@@ -539,13 +539,21 @@ git commit -m "fix(convert): normalize tool use input objects"
 
 **Implementation record**
 
-- Status: Pending
-- Date:
-- Repository / commit:
+- Status: Done
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter`, branch `feat/anthropic-openai-p0`, commit `fix(convert): normalize tool use input objects` (2026-11-06), which contains the helpers, the four call-site changes, the regression tests, and this record. A commit cannot embed its own hash, so the resolved SHA is recorded in `.superpowers/sdd/2026-11-06-anthropic-openai-chat-p0/task-3-report.md` and can be obtained with `git log -1 --format=%H -- convert/tool_input.go`.
 - Files changed:
+  - `convert/tool_input.go` — new; `anthropicToolInput` turns OpenAI arguments into an Anthropic input object and `openAIToolArguments` turns an Anthropic input into an OpenAI arguments string. Both guarantee an object: empty/null/invalid → `{}`, non-object JSON wrapped as `{"input": ...}`, valid objects preserved.
+  - `convert/openai_to_anthropic.go` — `convertAssistantContent` (request path) and `convertOpenAIMessageToContent` (response path) use `anthropicToolInput` instead of an inline best-effort unmarshal, so empty arguments no longer drop the `input` field.
+  - `convert/anthropic_to_openai.go` — `convertAnthropicAssistantMessage` (request path) and `convertAnthropicResponseToOpenAI` (response path) use `openAIToolArguments`, so nil/null input serializes as `{}` instead of `""` or `"null"`.
+  - `convert/anthropic_openai_p0_test.go` — added `TestP0_OpenAIToAnthropicEmptyArgumentsBecomeInputObject` and `TestP0_AnthropicToOpenAINullInputBecomesArgumentsObject`.
 - Tests / commands:
-- Review findings / fixes:
-- Deferred:
+  - RED: `go test ./convert -run 'TestP0_(OpenAIToAnthropicEmptyArguments|AnthropicToOpenAINullInput)' -v` → FAIL. The Chat request emitted `{"type":"tool_use","id":"call_1","name":"f"}` with no `input`; the Anthropic response produced `"arguments":"null"`.
+  - GREEN: same command after the fix → both PASS.
+  - `go test ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `go vet ./...` → clean.
+- Review findings / fixes: self-review confirmed all four brief-named call sites use the shared helpers; valid object behavior is unchanged (existing tool-use conversion tests still pass), and no dependency, registry, model-map, or same-protocol passthrough code was touched. Removing the old `args := ""` fallback is intentional: a missing input now yields `{}` rather than an empty arguments string. Go's formatter reports several pre-existing unformatted files (`convert_test.go`, `stream_test.go`, etc.); the four files touched here are gofmt-clean and no unrelated reformatting was included.
+- Deferred: the other conversion pairs still have their own tool-input handling (`convert/anthropic_to_gemini.go`, and the Anthropic→Responses helper in `convert/responses.go`) and are outside P0-3. `openAIToolArguments` treats only `map[string]any` as an object; a typed map supplied programmatically would be wrapped as `{"input": ...}`, which is unreachable through JSON decoding and left as is to match the brief.
 
 ---
 

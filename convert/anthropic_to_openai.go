@@ -465,12 +465,6 @@ func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions
 			}
 			reasoning += t
 		case "tool_use":
-			args := ""
-			if block.Input != nil {
-				if b, err := json.Marshal(block.Input); err == nil {
-					args = string(b)
-				}
-			}
 			id := block.ID
 			if id == "" {
 				id = ensureToolID("")
@@ -480,7 +474,7 @@ func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions
 				Type: "function",
 				Function: OpenAIFunctionCall{
 					Name:      block.Name,
-					Arguments: args,
+					Arguments: openAIToolArguments(block.Input),
 				},
 			})
 		}
@@ -561,13 +555,12 @@ func convertAnthropicResponseToOpenAI(body []byte) ([]byte, error) {
 			if msg.ToolCalls == nil {
 				msg.ToolCalls = []OpenAIToolCall{}
 			}
-			argsBytes, _ := json.Marshal(block.Input)
 			msg.ToolCalls = append(msg.ToolCalls, OpenAIToolCall{
 				ID:   block.ID,
 				Type: "function",
 				Function: OpenAIFunctionCall{
 					Name:      block.Name,
-					Arguments: string(argsBytes),
+					Arguments: openAIToolArguments(block.Input),
 				},
 			})
 			// signature and other blocks are ignored.

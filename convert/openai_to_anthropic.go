@@ -484,15 +484,11 @@ func convertAssistantContent(msg OpenAIMessage) []AnthropicContent {
 		}
 		blocks = appendTextBlock(blocks, extractTextContent(msg.Content))
 		for _, tc := range toolCalls {
-			var input any
-			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &input)
-			}
 			blocks = append(blocks, AnthropicContent{
 				Type:  "tool_use",
 				ID:    tc.ID, // preserve original ID — client uses it for tool_result matching
 				Name:  tc.Function.Name,
-				Input: input,
+				Input: anthropicToolInput(tc.Function.Arguments),
 			})
 		}
 		return blocks
@@ -635,15 +631,11 @@ func convertOpenAIMessageToContent(msg OpenAIMessage) []AnthropicContent {
 			blocks = append(blocks, AnthropicContent{Type: "text", Text: text})
 		}
 		for _, tc := range calls {
-			var input any
-			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &input)
-			}
 			blocks = append(blocks, AnthropicContent{
 				Type:  "tool_use",
 				ID:    tc.ID,
 				Name:  tc.Function.Name,
-				Input: input,
+				Input: anthropicToolInput(tc.Function.Arguments),
 			})
 		}
 	} else {

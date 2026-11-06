@@ -120,3 +120,51 @@ func TestP0_ResponsesToAnthropicToolOnlyAssistantHasNoEmptyText(t *testing.T) {
 		t.Fatalf("empty text block leaked from Responses path: %s", b)
 	}
 }
+
+func TestP0_OpenAIToAnthropicEmptyArgumentsBecomeInputObject(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":null,"tool_calls":[
+			{"id":"call_1","type":"function","function":{"name":"f","arguments":""}}
+		]},
+		{"role":"tool","tool_call_id":"call_1","content":"ok"}
+	]}`
+	b, err := Convert([]byte(body), opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(b, []byte(`"input":{}`)) {
+		t.Fatalf("tool_use.input missing: %s", b)
+	}
+	var a AnthropicRequest
+	if err := json.Unmarshal(b, &a); err != nil {
+		t.Fatal(err)
+	}
+	var input any
+	for _, c := range a.Messages[1].Content {
+		if c.Type == "tool_use" {
+			input = c.Input
+		}
+	}
+	if _, ok := input.(map[string]any); !ok {
+		t.Fatalf("input type = %T, want object", input)
+	}
+}
+
+func TestP0_AnthropicToOpenAINullInputBecomesArgumentsObject(t *testing.T) {
+	body := `{"id":"msg_1","type":"message","role":"assistant","model":"claude",
+		"content":[{"type":"tool_use","id":"toolu_1","name":"f","input":null}],
+		"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":2}}`
+	b, err := convertAnthropicResponseToOpenAI([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o OpenAIChatResponse
+	if err := json.Unmarshal(b, &o); err != nil {
+		t.Fatal(err)
+	}
+	got := o.Choices[0].Message.ToolCalls[0].Function.Arguments
+	if got != "{}" {
+		t.Fatalf("arguments = %q, want {}", got)
+	}
+}
