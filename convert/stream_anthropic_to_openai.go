@@ -222,15 +222,27 @@ func (c *AnthropicToOpenAIStreamConverter) EmitError(message string) []byte {
 	return []byte("data: " + string(b) + "\n\n")
 }
 
+// setUsage merges the usage fields reported by one Anthropic stream event.
+// Providers spread usage across message_start (input and cache counts) and
+// message_delta (output count), and often omit fields in later events, so each
+// field is updated only when the new value is non-zero. Zero means "not
+// reported here", not "reset to zero".
 func (c *AnthropicToOpenAIStreamConverter) setUsage(input, output, cacheRead, cacheCreate int) {
-	if input == 0 && output == 0 && cacheRead == 0 && cacheCreate == 0 {
-		return
+	if input > 0 {
+		c.usage.InputTokens = input
 	}
-	c.usage.InputTokens = input
-	c.usage.OutputTokens = output
-	c.usage.CacheReadInputTokens = cacheRead
-	c.usage.CacheCreationInputTokens = cacheCreate
-	c.hasUsage = true
+	if output > 0 {
+		c.usage.OutputTokens = output
+	}
+	if cacheRead > 0 {
+		c.usage.CacheReadInputTokens = cacheRead
+	}
+	if cacheCreate > 0 {
+		c.usage.CacheCreationInputTokens = cacheCreate
+	}
+	if input > 0 || output > 0 || cacheRead > 0 || cacheCreate > 0 {
+		c.hasUsage = true
+	}
 }
 
 func (c *AnthropicToOpenAIStreamConverter) emitRole(events *[][]byte) {

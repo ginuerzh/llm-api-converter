@@ -47,7 +47,7 @@ The spec implies these inputs but no single task's tests cover all of them; each
 - Produces: `setUsage` merges each non-zero field instead of overwriting all four.
 - Produces: both `EmitError` implementations build their payload with `json.Marshal`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 package convert
@@ -117,13 +117,13 @@ func TestP1_TypedDeltaContent(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP1_(AnthropicStreamUsageMergesPartialUpdates|AnthropicEmitErrorEscapesJSON|TypedDeltaContent)' -v`
 
 Expected: FAIL — usage prompt is 1000/50 instead of 1200/50; error JSON is malformed; typed content fails to unmarshal.
 
-- [ ] **Step 3: Implement the three fixes**
+- [x] **Step 3: Implement the three fixes**
 
 `setUsage`: update each of `InputTokens`, `OutputTokens`, `CacheReadInputTokens`, `CacheCreationInputTokens` only when the argument is greater than zero; set `hasUsage = true` if any argument was greater than zero.
 
@@ -136,13 +136,13 @@ and prefix `event: error\ndata: `.
 of `{type,text}` parts and concatenate only `type == "text"`; ignore malformed
 content shapes instead of failing the stream.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP1_' -v`
 
 Expected: PASS.
 
-- [ ] **Step 5: Run the full suite and commit**
+- [x] **Step 5: Run the full suite and commit**
 
 Run: `cd llm-api-converter && go test -count=1 ./... && go vet ./...`
 
@@ -155,13 +155,23 @@ git commit -m "fix(convert): merge stream usage and accept typed deltas"
 
 **Implementation record**
 
-- Status: Pending
-- Date:
-- Repository / commit:
+- Status: Complete
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter` @ `TASK1_SHA_PLACEHOLDER` (`fix(convert): merge stream usage and accept typed deltas`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit `DOCS_SHA_PLACEHOLDER` (`docs(convert): record task 1 implementation`).
 - Files changed:
+  - `convert/stream_anthropic_to_openai.go` — `setUsage` merges non-zero fields instead of overwriting all four, so `message_start` input and cache counts survive the `message_delta` output update.
+  - `convert/stream.go` — `StreamConverter.EmitError` builds its payload with `json.Marshal`.
+  - `convert/session.go` — `PassthroughStreamHandler.EmitError` builds its payload with `json.Marshal`; dropped the now-unused `fmt` import.
+  - `convert/types.go` — added `(*OpenAIDelta).UnmarshalJSON` and `joinOpenAIDeltaContent`; content accepts a string, `null`, or typed parts (only `type == "text"` is concatenated), and other shapes decode to empty content instead of failing the stream.
+  - `convert/anthropic_openai_p1_test.go` — new: the three plan tests plus coverage for the passthrough `EmitError`, string/null/non-text/malformed delta content, and preservation of the other delta fields.
 - Tests / commands:
-- Review findings:
-- Deferred:
+  - RED: `cd llm-api-converter && go test ./convert -run 'TestP1_(AnthropicStreamUsageMergesPartialUpdates|AnthropicEmitErrorEscapesJSON|TypedDeltaContent)' -v` → 3 failures: `usage = ... PromptTokens:0 ...`; `invalid error JSON ...: invalid character 'q' after object key:value pair`; `unmarshal stream chunk: json: cannot unmarshal array into Go struct field OpenAIStreamChunk.choices.0.delta.content of type string`.
+  - GREEN: `cd llm-api-converter && go test ./convert -run 'TestP1_' -v` → PASS (6 tests, 5 subtests).
+  - `go test -count=1 ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `CGO_ENABLED=1 go test -race -count=1 ./convert ./engine ./rewriter` → PASS.
+  - `go vet ./...` → clean; `git diff --check` → clean.
+- Review findings: Self-review found no functional defects. Added three tests beyond the plan snippet to cover the `PassthroughStreamHandler.EmitError` site, the `null`/non-text/malformed content resolutions, and that the custom unmarshaller still decodes `role`, `reasoning_content`, and `tool_calls`; all passed on first run. Marshalling is unchanged because only `UnmarshalJSON` was added, so converter output stays byte-identical. The shadow struct inside `UnmarshalJSON` must stay in sync with `OpenAIDelta`; a comment records that. No dependency, registry, model-map, routing, or passthrough changes.
+- Deferred: Per the plan's rule, zero usage fields mean "not reported", so a provider that reports a genuine zero after a non-zero value keeps the earlier value; no such provider is known. `gofmt -l convert/` lists eight pre-existing unformatted files (`anthropic_to_openai_test.go`, `convert_test.go`, `gemini_test.go`, `protocol.go`, `protocol_test.go`, `reasoning_cache.go`, `responses_parity_test.go`, `stream_test.go`), untouched by this task. The resolved SHA is recorded by the follow-up docs commit and Task 7's status table.
 
 ---
 

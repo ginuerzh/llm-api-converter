@@ -289,15 +289,18 @@ func (sc *StreamConverter) SetInterrupted() {
 	sc.streamInterrupted = true
 }
 
-// EmitError returns an Anthropic-formatted error SSE event.
+// EmitError returns an Anthropic-formatted error SSE event. The payload is
+// JSON-encoded so quotes, newlines, and backslashes in the message cannot
+// corrupt the event.
 func (sc *StreamConverter) EmitError(message string) []byte {
 	if sc.finalized {
 		return nil
 	}
-	return []byte(fmt.Sprintf(
-		`event: error`+"\n"+`data: {"type":"error","error":{"type":"stream_error","message":"%s"}}`,
-		message,
-	))
+	b, _ := json.Marshal(map[string]any{
+		"type":  "error",
+		"error": map[string]any{"type": "stream_error", "message": message},
+	})
+	return []byte("event: error\ndata: " + string(b))
 }
 
 // ensureBlock transitions to a new content block if needed.

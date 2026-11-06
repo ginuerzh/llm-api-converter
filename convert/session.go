@@ -2,7 +2,6 @@ package convert
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"sync"
 )
@@ -181,11 +180,15 @@ func (p *PassthroughStreamHandler) HandleChunk(data []byte) ([]byte, error) {
 
 func (p *PassthroughStreamHandler) HandleStreamEnd() []byte { return nil }
 
+// EmitError returns an Anthropic-formatted error SSE event. The payload is
+// JSON-encoded so quotes, newlines, and backslashes in the message cannot
+// corrupt the event.
 func (p *PassthroughStreamHandler) EmitError(message string) []byte {
-	return []byte(fmt.Sprintf(
-		`event: error`+"\n"+`data: {"type":"error","error":{"type":"stream_error","message":"%s"}}`,
-		message,
-	))
+	b, _ := json.Marshal(map[string]any{
+		"type":  "error",
+		"error": map[string]any{"type": "stream_error", "message": message},
+	})
+	return []byte("event: error\ndata: " + string(b))
 }
 
 // ---------------------------------------------------------------------------

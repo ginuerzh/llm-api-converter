@@ -513,6 +513,58 @@ type OpenAIDelta struct {
 	FunctionCall     *OpenAIFunctionCall   `json:"function_call,omitempty"`
 }
 
+// UnmarshalJSON accepts delta content as either a plain string or an array of
+// typed content parts. Some providers stream content as
+// [{"type":"text","text":"..."}]; only "text" parts are joined, and any other
+// shape is treated as empty content so one variant cannot fail the stream.
+func (d *OpenAIDelta) UnmarshalJSON(data []byte) error {
+	// Shadow type mirroring OpenAIDelta with Content kept raw; keep in sync
+	// when fields are added to the struct.
+	var aux struct {
+		Role             string                `json:"role,omitempty"`
+		Content          json.RawMessage       `json:"content,omitempty"`
+		ReasoningContent string                `json:"reasoning_content,omitempty"`
+		ToolCalls        []OpenAIDeltaToolCall `json:"tool_calls,omitempty"`
+		FunctionCall     *OpenAIFunctionCall   `json:"function_call,omitempty"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	d.Role = aux.Role
+	d.Content = joinOpenAIDeltaContent(aux.Content)
+	d.ReasoningContent = aux.ReasoningContent
+	d.ToolCalls = aux.ToolCalls
+	d.FunctionCall = aux.FunctionCall
+	return nil
+}
+
+// joinOpenAIDeltaContent decodes a delta content value. A string is returned
+// as-is, an array contributes only its "text" parts, and anything else (null,
+// objects, malformed shapes) yields an empty string.
+func joinOpenAIDeltaContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, part := range parts {
+		if part.Type == "text" {
+			b.WriteString(part.Text)
+		}
+	}
+	return b.String()
+}
+
 // OpenAIDeltaToolCall is a tool call entry inside a streaming delta.
 // Unlike OpenAIToolCall (which has no array index since non-streaming
 // tool_calls are plain arrays), streaming tool calls carry an .index
