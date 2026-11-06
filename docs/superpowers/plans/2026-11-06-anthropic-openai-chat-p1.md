@@ -1087,7 +1087,7 @@ git commit -m "fix(convert): surface stream errors and block-start payloads"
 
 - Status: Complete
 - Date: 2026-11-06
-- Repository / commit: `llm-api-converter` @ `pending` (`fix(convert): surface stream errors and block-start payloads`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-5.
+- Repository / commit: `llm-api-converter` @ `0f53577` (`fix(convert): surface stream errors and block-start payloads`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line, matching Tasks 1-5.
 - Files changed:
   - `convert/types.go` — added `OpenAIStreamError{Type, Message, Code}` and `OpenAIStreamChunk.Error`.
   - `convert/stream.go` — `StreamConverter.HandleChunk` checks `chunk.Error` before the no-choices branch: it returns the JSON-safe `EmitError` event (default message `upstream stream error`) and sets `finalized`, so `HandleStreamEnd` emits no `message_delta`/`message_stop`. `SetInterrupted` is not used on this path.
