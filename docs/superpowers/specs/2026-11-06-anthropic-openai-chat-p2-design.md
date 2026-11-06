@@ -96,8 +96,10 @@ lifecycle without a session. Both are recorded as deferred.
 
 ### P2-1: Stream block starts carry their empty payload
 
-`StreamConverter.ensureBlock` currently emits `{"type":"text"}` and
-`{"type":"thinking"}` without the fields strict Anthropic decoders require.
+`StreamConverter.ensureBlock` and
+`GeminiToAnthropicStreamConverter.ensureBlock` currently emit
+`{"type":"text"}` and `{"type":"thinking"}` without the fields strict Anthropic
+decoders require; the Gemini path's tool start also omits `input`.
 
 - text start: `{"type":"text","text":""}`
 - thinking start: `{"type":"thinking","thinking":"","signature":""}`
