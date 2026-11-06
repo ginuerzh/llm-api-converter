@@ -52,6 +52,7 @@ type StreamConverter struct {
 	// Accumulated reasoning and text across streaming deltas.
 	accumulatedReasoning string
 	accumulatedText      string
+	sawRefusal           bool
 
 	// Usage accumulated from the final chunk.
 	usage *OpenAIUsage
@@ -173,6 +174,15 @@ func (sc *StreamConverter) HandleChunk(data []byte) ([]byte, error) {
 		}
 	}
 
+	// Refusal text → text delta.
+	if delta.Refusal != "" {
+		sc.sawRefusal = true
+		sc.accumulatedText += delta.Refusal
+		sc.stopThinkingBlock()
+		events = append(events, sc.ensureBlock("text", "", "")...)
+		events = append(events, sc.textDelta(delta.Refusal)...)
+	}
+
 	// Tool calls.
 	if len(delta.ToolCalls) > 0 {
 		for _, tc := range delta.ToolCalls {
@@ -272,14 +282,14 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 		events = append(events, sc.contentBlockStop())
 	}
 
-	// message_delta with stop_reason. When tools were emitted, an empty or
-	// "stop" upstream finish reason is ambiguous: OpenAI-compatible backends
-	// often report it for a tool-calling turn, so infer tool_use. Explicit
-	// reasons such as length or content_filter are preserved.
+	// message_delta with stop_reason. Tool content wins unless the upstream
+	// explicitly truncated with length; refusals keep their own stop reason.
 	stopReason := "end_turn"
 	switch {
-	case len(sc.toolCallByIndex) > 0 && (sc.finishReason == "" || sc.finishReason == "stop"):
+	case len(sc.toolCallByIndex) > 0 && sc.finishReason != "length":
 		stopReason = "tool_use"
+	case sc.sawRefusal && (sc.finishReason == "" || sc.finishReason == "stop"):
+		stopReason = "refusal"
 	case sc.finishReason != "":
 		stopReason = mapOpenAIStreamFinish(sc.finishReason)
 	}

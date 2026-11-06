@@ -633,11 +633,12 @@ func convertOpenAIResponseToAnthropic(body []byte, opts *ConvertOptions) ([]byte
 	}
 
 	anth := AnthropicResponse{
-		ID:    id,
-		Type:  "message",
-		Role:  "assistant",
-		Model: resp.Model,
-		Usage: anthropicUsageFromOpenAI(&resp.Usage),
+		ID:      id,
+		Type:    "message",
+		Role:    "assistant",
+		Model:   resp.Model,
+		Content: []AnthropicContent{},
+		Usage:   anthropicUsageFromOpenAI(&resp.Usage),
 	}
 
 	// Rewrite model to the original client-facing name so that Claude Code's
@@ -656,14 +657,24 @@ func convertOpenAIResponseToAnthropic(body []byte, opts *ConvertOptions) ([]byte
 		msg := choice.Message
 		anth.StopReason = mapOpenAIFinishReason(choice.FinishReason)
 		anth.Content = convertOpenAIMessageToContent(msg)
-		// OpenAI-compatible backends commonly report "stop" (or no reason)
-		// for a tool-calling turn. Anthropic clients only run tools when
-		// stop_reason is tool_use, so infer it from the emitted blocks while
-		// leaving explicit reasons (content_filter, length, ...) untouched.
-		if (choice.FinishReason == nil || *choice.FinishReason == "stop") && hasAnthropicToolUse(anth.Content) {
+		// OpenAI-compatible backends commonly report "stop", no reason, or a
+		// safety filter for a tool-calling turn. Anthropic clients only run
+		// tools when stop_reason is tool_use, so tool content wins unless the
+		// upstream explicitly truncated with length.
+		if hasAnthropicToolUse(anth.Content) &&
+			(choice.FinishReason == nil || *choice.FinishReason != "length") {
 			stopReason := "tool_use"
 			anth.StopReason = &stopReason
 		}
+		if msg.Refusal != "" && len(msg.ToolCalls) == 0 &&
+			(choice.FinishReason == nil || *choice.FinishReason == "stop") {
+			stopReason := "refusal"
+			anth.StopReason = &stopReason
+		}
+	}
+	if anth.StopReason == nil {
+		stopReason := "end_turn"
+		anth.StopReason = &stopReason
 	}
 
 	// Cache reasoning_content for tool call replay (DeepSeek V4 requirement).
@@ -688,26 +699,28 @@ func convertOpenAIResponseToAnthropic(body []byte, opts *ConvertOptions) ([]byte
 	return json.Marshal(anth)
 }
 
+func normalizeOpenAIStopReason(reason string) string {
+	switch reason {
+	case "stop":
+		return "end_turn"
+	case "length":
+		return "max_tokens"
+	case "tool_calls", "function_call":
+		return "tool_use"
+	case "content_filter":
+		return "refusal"
+	default:
+		return "end_turn"
+	}
+}
+
 func mapOpenAIFinishReason(reason *string) *string {
 	if reason == nil {
-		return nil
-	}
-	switch *reason {
-	case "stop":
 		s := "end_turn"
 		return &s
-	case "length":
-		s := "max_tokens"
-		return &s
-	case "tool_calls":
-		s := "tool_use"
-		return &s
-	case "content_filter":
-		s := "end_turn"
-		return &s
-	default:
-		return reason
 	}
+	s := normalizeOpenAIStopReason(*reason)
+	return &s
 }
 
 // hasAnthropicToolUse reports whether blocks contain a tool_use block.
@@ -733,6 +746,9 @@ func convertOpenAIMessageToContent(msg OpenAIMessage) []AnthropicContent {
 
 	// Text content.
 	text := extractTextContent(msg.Content)
+	if text == "" && msg.Refusal != "" {
+		text = msg.Refusal
+	}
 
 	// Tool calls.
 	calls := msg.ToolCalls

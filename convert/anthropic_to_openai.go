@@ -682,26 +682,25 @@ func convertAnthropicResponseToOpenAI(body []byte) ([]byte, error) {
 
 func mapFinishReason(reason *string) *string {
 	if reason == nil {
-		return &strStop // default to "stop" instead of nil to avoid NPE
+		return &strStop
 	}
 	switch *reason {
-	case "end_turn":
+	case "end_turn", "stop_sequence", "pause_turn":
 		return &strStop
 	case "max_tokens":
 		return &strLength
 	case "tool_use":
 		return &strToolCalls
-	case "stop_sequence":
-		return &strStop
-	case "content_filter":
-		return &strStop
+	case "refusal", "content_filter":
+		return &strContentFilter
 	default:
-		return reason
+		return &strStop
 	}
 }
 
 var (
-	strStop      = "stop"
-	strLength    = "length"
-	strToolCalls = "tool_calls"
+	strStop          = "stop"
+	strLength        = "length"
+	strToolCalls     = "tool_calls"
+	strContentFilter = "content_filter"
 )

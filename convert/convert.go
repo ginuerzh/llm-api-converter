@@ -375,16 +375,7 @@ func isOpenRouterProcessingEvent(evt *SSEEvent) bool {
 
 // mapOpenAIStreamFinish converts an OpenAI finish_reason to an Anthropic stop_reason.
 func mapOpenAIStreamFinish(reason string) string {
-	switch reason {
-	case "stop":
-		return "end_turn"
-	case "length":
-		return "max_tokens"
-	case "tool_calls":
-		return "tool_use"
-	default:
-		return reason
-	}
+	return normalizeOpenAIStopReason(reason)
 }
 
 // ---------------------------------------------------------------------------

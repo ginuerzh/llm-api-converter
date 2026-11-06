@@ -43,6 +43,7 @@ type OpenAIMessage struct {
 	ToolCallID       string              `json:"tool_call_id,omitempty"`      // tool role
 	Name             string              `json:"name,omitempty"`              // function role
 	ReasoningContent string              `json:"reasoning_content,omitempty"` // DeepSeek/GLM thinking
+	Refusal          string              `json:"refusal,omitempty"`           // OpenAI safety refusal
 }
 
 // OpenAIContentPart is an element in a multi-part user message.
@@ -571,6 +572,7 @@ type OpenAIDelta struct {
 	Role             string                `json:"role,omitempty"`
 	Content          string                `json:"content,omitempty"`
 	ReasoningContent string                `json:"reasoning_content,omitempty"`
+	Refusal          string                `json:"refusal,omitempty"`
 	ToolCalls        []OpenAIDeltaToolCall `json:"tool_calls,omitempty"`
 	FunctionCall     *OpenAIFunctionCall   `json:"function_call,omitempty"`
 }
@@ -586,6 +588,7 @@ func (d *OpenAIDelta) UnmarshalJSON(data []byte) error {
 		Role             string                `json:"role,omitempty"`
 		Content          json.RawMessage       `json:"content,omitempty"`
 		ReasoningContent string                `json:"reasoning_content,omitempty"`
+		Refusal          string                `json:"refusal,omitempty"`
 		ToolCalls        []OpenAIDeltaToolCall `json:"tool_calls,omitempty"`
 		FunctionCall     *OpenAIFunctionCall   `json:"function_call,omitempty"`
 	}
@@ -595,6 +598,7 @@ func (d *OpenAIDelta) UnmarshalJSON(data []byte) error {
 	d.Role = aux.Role
 	d.Content = joinOpenAIDeltaContent(aux.Content)
 	d.ReasoningContent = aux.ReasoningContent
+	d.Refusal = aux.Refusal
 	d.ToolCalls = aux.ToolCalls
 	d.FunctionCall = aux.FunctionCall
 	return nil

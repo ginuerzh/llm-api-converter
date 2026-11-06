@@ -479,8 +479,8 @@ func TestConvert_ContentFilterFinishReason(t *testing.T) {
 	if err := json.Unmarshal(b, &o); err != nil {
 		t.Fatal(err)
 	}
-	if o.Choices[0].FinishReason == nil || *o.Choices[0].FinishReason != "stop" {
-		t.Fatalf("finish_reason: want 'stop' got %v", o.Choices[0].FinishReason)
+	if o.Choices[0].FinishReason == nil || *o.Choices[0].FinishReason != "content_filter" {
+		t.Fatalf("finish_reason: want 'content_filter' got %v", o.Choices[0].FinishReason)
 	}
 }
 

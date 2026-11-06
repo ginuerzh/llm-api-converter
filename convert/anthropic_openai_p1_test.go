@@ -559,8 +559,8 @@ func TestP1_NonStreamToolStopInference(t *testing.T) {
 		"message":{"role":"assistant","tool_calls":[{"id":"a","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}`
 	b, _ = convertOpenAIResponseToAnthropic([]byte(body), nil)
 	_ = json.Unmarshal(b, &anth)
-	if anth.StopReason == nil || *anth.StopReason != "end_turn" {
-		t.Fatalf("content_filter stop_reason = %v, want end_turn", anth.StopReason)
+	if anth.StopReason == nil || *anth.StopReason != "tool_use" {
+		t.Fatalf("content_filter stop_reason = %v, want tool_use", anth.StopReason)
 	}
 
 	body = `{"id":"msg_1","model":"claude","stop_reason":"end_turn",
