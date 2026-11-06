@@ -513,3 +513,116 @@ func TestP2_ToolIDCacheUsesSanitizedID(t *testing.T) {
 		t.Fatal("cache stored the raw invalid ID")
 	}
 }
+
+func TestP2_DeveloperRoleBecomesSystem(t *testing.T) {
+	body := `{"model":"gpt-4","messages":[
+		{"role":"developer","content":"be brief"},
+		{"role":"user","content":"hi"}]}`
+	out, err := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{ResolvedModel: "claude-sonnet"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req AnthropicRequest
+	_ = json.Unmarshal(out, &req)
+	if len(req.System) != 1 || req.System[0].Text != "be brief" {
+		t.Fatalf("system = %+v, want developer text", req.System)
+	}
+	for _, msg := range req.Messages {
+		if msg.Role == "user" && len(msg.Content) == 1 && msg.Content[0].Text == "be brief" {
+			t.Fatal("developer text leaked into a user message")
+		}
+	}
+}
+
+func TestP2_ParallelToolCallsChat(t *testing.T) {
+	tools := `"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object"}}}]`
+	cases := []struct {
+		name        string
+		extra       string
+		wantDisable *bool
+	}{
+		{"false", `"parallel_tool_calls":false,`, boolPtr(true)},
+		{"true", `"parallel_tool_calls":true,`, boolPtr(false)},
+		{"none choice", `"parallel_tool_calls":false,"tool_choice":"none",`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"model":"gpt-4",` + tc.extra + tools + `,"messages":[{"role":"user","content":"hi"}]}`
+			out, err := convertOpenAIRequestToAnthropic([]byte(body), &ConvertOptions{ResolvedModel: "claude-sonnet"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var req AnthropicRequest
+			_ = json.Unmarshal(out, &req)
+			if tc.wantDisable == nil {
+				if req.ToolChoice != nil && req.ToolChoice.DisableParallelToolUse != nil {
+					t.Fatalf("disable_parallel_tool_use = %v, want absent", *req.ToolChoice.DisableParallelToolUse)
+				}
+				return
+			}
+			if req.ToolChoice == nil || req.ToolChoice.DisableParallelToolUse == nil ||
+				*req.ToolChoice.DisableParallelToolUse != *tc.wantDisable {
+				t.Fatalf("tool_choice = %+v, want disable=%v", req.ToolChoice, *tc.wantDisable)
+			}
+		})
+	}
+}
+
+func TestP2_ParallelToolCallsReverse(t *testing.T) {
+	body := `{"model":"claude","max_tokens":10,"tool_choice":{"type":"auto","disable_parallel_tool_use":true},
+		"tools":[{"name":"f","input_schema":{"type":"object"}}],
+		"messages":[{"role":"user","content":"hi"}]}`
+	out, err := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "gpt-4o"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req OpenAIChatRequest
+	_ = json.Unmarshal(out, &req)
+	if req.ParallelToolCalls == nil || *req.ParallelToolCalls != false {
+		t.Fatalf("parallel_tool_calls = %v, want false", req.ParallelToolCalls)
+	}
+}
+
+func TestP2_ResponsesParallelToolCalls(t *testing.T) {
+	body := `{"model":"gpt-5","parallel_tool_calls":false,"input":"hi",
+		"tools":[{"type":"function","name":"f","parameters":{"type":"object"}}]}`
+	out, err := ConvertResponsesToAnthropic([]byte(body), &ConvertOptions{Model: "claude-sonnet"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req AnthropicRequest
+	_ = json.Unmarshal(out, &req)
+	if req.ToolChoice == nil || req.ToolChoice.DisableParallelToolUse == nil ||
+		!*req.ToolChoice.DisableParallelToolUse {
+		t.Fatalf("tool_choice = %+v, want disable_parallel_tool_use=true", req.ToolChoice)
+	}
+}
+
+func TestP2_TopKProviderGating(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"groq/llama-3.3-70b", true},
+		{"openrouter/meta-llama/llama-3.1-70b", true},
+		{"vllm/mistral-7b", true},
+		{"openrouter/openai/gpt-5", false},
+		{"gpt-4o", false},
+		{"o3-mini", false},
+		{"deepseek-chat", false},
+	}
+	body := `{"model":"claude","max_tokens":10,"top_k":40,"messages":[{"role":"user","content":"hi"}]}`
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			out, err := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: tc.model})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var req OpenAIChatRequest
+			_ = json.Unmarshal(out, &req)
+			if (req.TopK != nil) != tc.want {
+				t.Fatalf("top_k present = %v, want %v (top_k=%v)", req.TopK != nil, tc.want, req.TopK)
+			}
+		})
+	}
+}

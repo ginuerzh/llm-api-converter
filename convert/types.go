@@ -33,6 +33,7 @@ type OpenAIChatRequest struct {
 	LogitBias            any                   `json:"logit_bias,omitempty"`        // ignored
 	User                 string                `json:"user,omitempty"`              // ignored
 	Metadata             any                   `json:"metadata,omitempty"`
+	ParallelToolCalls    *bool                 `json:"parallel_tool_calls,omitempty"`
 }
 
 type OpenAIMessage struct {
@@ -413,8 +414,9 @@ type AnthropicImageSource struct {
 }
 
 type AnthropicToolChoice struct {
-	Type string `json:"type"`
-	Name string `json:"name,omitempty"`
+	Type                   string `json:"type"`
+	Name                   string `json:"name,omitempty"`
+	DisableParallelToolUse *bool  `json:"disable_parallel_tool_use,omitempty"`
 }
 
 type AnthropicTool struct {

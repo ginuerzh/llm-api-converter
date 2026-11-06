@@ -341,6 +341,15 @@ func ConvertResponsesToAnthropic(body []byte, opts *ConvertOptions) ([]byte, err
 			anth.ToolChoice = mapResponsesToolChoiceAnthropic(req.ToolChoice)
 		}
 	}
+	if len(anth.Tools) > 0 && req.ParallelToolCalls != nil {
+		if anth.ToolChoice == nil {
+			anth.ToolChoice = &AnthropicToolChoice{Type: "auto"}
+		}
+		if anth.ToolChoice.Type != "none" {
+			disable := !*req.ParallelToolCalls
+			anth.ToolChoice.DisableParallelToolUse = &disable
+		}
+	}
 
 	// Repair tool_use/tool_result pairing and coalesce same-role turns.
 	anth.Messages = normalizeAnthropicMessages(anth.Messages)

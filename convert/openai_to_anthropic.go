@@ -278,12 +278,22 @@ func convertOpenAIRequestToAnthropic(body []byte, opts *ConvertOptions) ([]byte,
 				}
 			}
 		}
+
+		if req.ParallelToolCalls != nil {
+			if anthropic.ToolChoice == nil {
+				anthropic.ToolChoice = &AnthropicToolChoice{Type: "auto"}
+			}
+			if anthropic.ToolChoice.Type != "none" {
+				disable := !*req.ParallelToolCalls
+				anthropic.ToolChoice.DisableParallelToolUse = &disable
+			}
+		}
 	}
 
 	// Messages.
 	var systemTexts []string
 	for _, m := range req.Messages {
-		if m.Role == "system" {
+		if m.Role == "system" || m.Role == "developer" {
 			systemTexts = append(systemTexts, extractTextContent(m.Content))
 			continue
 		}
