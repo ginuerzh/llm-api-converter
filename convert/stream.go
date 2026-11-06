@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
 // StreamConverter converts OpenAI streaming delta chunks into the proper
@@ -32,6 +33,12 @@ type StreamConverter struct {
 	nextToolIndex int
 	lastToolIndex int
 	openToolID    string
+
+	// The tool call index whose content block is currently open (-1 when
+	// none), and calls that arrived while that block's arguments were still
+	// incomplete. Held calls are released when the stream ends.
+	openToolIndex int
+	heldTools     map[int]*streamToolState
 
 	// Tool calls suppressed by declaredTools, so later fragments of the same
 	// call cannot open an unnamed tool_use block.
@@ -71,6 +78,8 @@ func NewStreamConverter(model string, reasoningCache *ReasoningCache, declaredTo
 		toolCallByIndex: make(map[int]*streamToolState),
 		skippedCalls:    make(map[int]bool),
 		lastToolIndex:   -1,
+		openToolIndex:   -1,
+		heldTools:       make(map[int]*streamToolState),
 		reasoningCache:  reasoningCache,
 	}
 	if len(declaredTools) > 0 {
@@ -192,7 +201,12 @@ func (sc *StreamConverter) HandleStreamEnd() []byte {
 	if sc.curBlockType != "" {
 		events = append(events, sc.contentBlockStop())
 		sc.curBlockType = ""
+		sc.openToolIndex = -1
 	}
+
+	// Release tool calls that interleaved with a tool block whose arguments
+	// were still incomplete when they arrived.
+	events = append(events, sc.releaseHeldTools()...)
 
 	// Cache accumulated reasoning for tool call replay (DeepSeek V4).
 	// Store in both tool call ID and text-based caches.
@@ -304,6 +318,9 @@ func (sc *StreamConverter) ensureBlock(blockType, toolMeta string) [][]byte {
 			sc.thinkingBlockStopped = true
 		} else {
 			events = append(events, sc.contentBlockStop())
+			if sc.curBlockType == "tool_use" {
+				sc.openToolIndex = -1
+			}
 		}
 	}
 
@@ -408,6 +425,12 @@ func (sc *StreamConverter) toolIndex(tc OpenAIDeltaToolCall) int {
 	return sc.lastToolIndex
 }
 
+// toolArgsComplete reports whether args is a complete JSON object.
+func toolArgsComplete(args string) bool {
+	var v map[string]any
+	return json.Unmarshal([]byte(args), &v) == nil
+}
+
 func (sc *StreamConverter) handleToolCallDelta(tc OpenAIDeltaToolCall) [][]byte {
 	idx := sc.toolIndex(tc)
 
@@ -429,54 +452,114 @@ func (sc *StreamConverter) handleToolCallDelta(tc OpenAIDeltaToolCall) [][]byte 
 	// Check if we've already seen this tool call index.
 	existing, seen := sc.toolCallByIndex[idx]
 
-	if !seen {
-		// First appearance of this tool call — start a tool_use block.
-		toolID := tc.ID
-		if toolID == "" {
-			toolID = ensureToolID("")
+	if seen {
+		// Fragments only reach the wire for the currently open block. A
+		// call that is held (or whose block already closed) keeps
+		// accumulating silently until the stream ends.
+		existing.Arguments += tc.Function.Arguments
+		if idx != sc.openToolIndex || sc.curBlockType != "tool_use" {
+			return nil
 		}
-		name := tc.Function.Name
-
-		sc.toolCallByIndex[idx] = &streamToolState{
-			ID:   toolID,
-			Name: name,
-		}
-
-		meta := fmt.Sprintf(`"id":"%s","name":"%s"`, toolID, name)
-
-		// If we're in a thinking block, stop it before tool_use.
-		var events [][]byte
-		if sc.curBlockType == "thinking" {
-			events = append(events, sc.thinkingBlockStop())
-			sc.thinkingBlockStopped = true
-			sc.curBlockType = ""
-		}
-
-		// If we're already in a tool_use block for a different tool call,
-		// stop it before starting the new one.
-		if sc.curBlockType == "tool_use" {
-			events = append(events, sc.contentBlockStop())
-			sc.curBlockType = ""
-		}
-
-		events = append(events, sc.ensureBlock("tool_use", meta)...)
-
-		// If there's initial arguments, emit them as input_json_delta.
-		if tc.Function.Arguments != "" {
-			sc.toolCallByIndex[idx].Arguments = tc.Function.Arguments
-			events = append(events, sc.inputJSONDelta(tc.Function.Arguments)...)
-		}
-
-		return events
+		return sc.inputJSONDelta(existing.BlockIndex, tc.Function.Arguments)
 	}
 
-	// Accumulate arguments to existing tool call state.
-	existing.Arguments += tc.Function.Arguments
-	return sc.inputJSONDelta(tc.Function.Arguments)
+	// First appearance of this tool call.
+	toolID := tc.ID
+	if toolID == "" {
+		toolID = ensureToolID("")
+	}
+
+	state := &streamToolState{
+		ID:        toolID,
+		Name:      name,
+		Arguments: tc.Function.Arguments,
+	}
+
+	// Anthropic content blocks are sequential: a call that interleaves with
+	// a tool block whose arguments are still incomplete cannot open its own
+	// block yet, because doing so would send its fragments to the open
+	// block's index. Hold it and release it when the stream ends.
+	if sc.curBlockType == "tool_use" && sc.openToolIndex >= 0 {
+		if open := sc.toolCallByIndex[sc.openToolIndex]; open != nil && !toolArgsComplete(open.Arguments) {
+			sc.toolCallByIndex[idx] = state
+			sc.heldTools[idx] = state
+			return nil
+		}
+	}
+
+	sc.toolCallByIndex[idx] = state
+
+	meta := fmt.Sprintf(`"id":"%s","name":"%s"`, toolID, name)
+
+	// If we're in a thinking block, stop it before tool_use.
+	var events [][]byte
+	if sc.curBlockType == "thinking" {
+		events = append(events, sc.thinkingBlockStop())
+		sc.thinkingBlockStopped = true
+		sc.curBlockType = ""
+	}
+
+	// If we're already in a tool_use block for a different tool call,
+	// stop it before starting the new one.
+	if sc.curBlockType == "tool_use" {
+		events = append(events, sc.contentBlockStop())
+		sc.curBlockType = ""
+		sc.openToolIndex = -1
+	}
+
+	events = append(events, sc.ensureBlock("tool_use", meta)...)
+	state.BlockIndex = sc.curBlockIndex
+	sc.openToolIndex = idx
+
+	// If there's initial arguments, emit them as input_json_delta.
+	if state.Arguments != "" {
+		events = append(events, sc.inputJSONDelta(state.BlockIndex, state.Arguments)...)
+	}
+
+	return events
 }
 
-// inputJSONDelta returns content_block_delta with input_json_delta.
-func (sc *StreamConverter) inputJSONDelta(partialJSON string) [][]byte {
+// releaseHeldTools emits content blocks for the calls that were held back
+// while an earlier tool block was still streaming incomplete arguments.
+// Calls are released in ascending OpenAI index order at stream end.
+func (sc *StreamConverter) releaseHeldTools() [][]byte {
+	if len(sc.heldTools) == 0 {
+		return nil
+	}
+
+	indices := make([]int, 0, len(sc.heldTools))
+	for idx := range sc.heldTools {
+		indices = append(indices, idx)
+	}
+	sort.Ints(indices)
+
+	var events [][]byte
+	for _, idx := range indices {
+		state := sc.heldTools[idx]
+		blockIndex := sc.nextBlockIndex
+		sc.nextBlockIndex++
+
+		start := fmt.Sprintf(
+			`event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":%d,"content_block":{"type":"tool_use","id":"%s","name":"%s","input":{}}}`,
+			blockIndex, state.ID, state.Name,
+		)
+		events = append(events, []byte(start))
+
+		args := state.Arguments
+		if args == "" {
+			args = "{}"
+		}
+		events = append(events, sc.inputJSONDelta(blockIndex, args)...)
+		events = append(events, contentBlockStopAt(blockIndex))
+	}
+	clear(sc.heldTools)
+
+	return events
+}
+
+// inputJSONDelta returns content_block_delta with input_json_delta for the
+// given content block index.
+func (sc *StreamConverter) inputJSONDelta(blockIndex int, partialJSON string) [][]byte {
 	escaped, _ := json.Marshal(partialJSON)
 	raw := string(escaped)
 	if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
@@ -484,17 +567,22 @@ func (sc *StreamConverter) inputJSONDelta(partialJSON string) [][]byte {
 	}
 	evt := fmt.Sprintf(
 		`event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":"%s"}}`,
-		sc.curBlockIndex, raw,
+		blockIndex, raw,
 	)
 	return [][]byte{[]byte(evt)}
 }
 
-// contentBlockStop returns a content_block_stop event.
-func (sc *StreamConverter) contentBlockStop() []byte {
+// contentBlockStopAt returns a content_block_stop event for the given index.
+func contentBlockStopAt(index int) []byte {
 	return []byte(fmt.Sprintf(
 		`event: content_block_stop`+"\n"+`data: {"type":"content_block_stop","index":%d}`,
-		sc.curBlockIndex,
+		index,
 	))
+}
+
+// contentBlockStop returns a content_block_stop event.
+func (sc *StreamConverter) contentBlockStop() []byte {
+	return contentBlockStopAt(sc.curBlockIndex)
 }
 
 // toJSON marshals v to a JSON string, returns "{}" on error.

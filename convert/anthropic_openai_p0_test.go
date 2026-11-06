@@ -168,3 +168,99 @@ func TestP0_AnthropicToOpenAINullInputBecomesArgumentsObject(t *testing.T) {
 		t.Fatalf("arguments = %q, want {}", got)
 	}
 }
+
+func TestP0_StreamInterleavedToolCallsKeepArguments(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	_ = sc.HandleStreamStart()
+
+	chunks := []string{
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_0","type":"function","function":{"name":"f","arguments":"{\"a\":"}}]},"finish_reason":null}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_1","type":"function","function":{"name":"g","arguments":"{\"b\":"}}]},"finish_reason":null}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]},"finish_reason":null}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"2}"}}]},"finish_reason":null}]}`,
+	}
+	var out []byte
+	for _, chunk := range chunks {
+		b, err := sc.HandleChunk([]byte(chunk))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, b...)
+		// HandleChunk returns no trailing delimiter; frame each phase
+		// payload so consecutive payloads cannot merge into one SSE line.
+		out = append(out, '\n', '\n')
+	}
+	out = append(out, sc.HandleStreamEnd()...)
+
+	args := map[string]string{} // tool ID -> concatenated partial_json
+	var currentID string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "data: ") {
+			line = strings.TrimPrefix(line, "data: ")
+		}
+		var evt struct {
+			Type         string `json:"type"`
+			ContentBlock struct {
+				ID string `json:"id"`
+			} `json:"content_block"`
+			Delta struct {
+				PartialJSON string `json:"partial_json"`
+			} `json:"delta"`
+		}
+		if json.Unmarshal([]byte(line), &evt) != nil {
+			continue
+		}
+		switch evt.Type {
+		case "content_block_start":
+			currentID = evt.ContentBlock.ID
+		case "content_block_delta":
+			args[currentID] += evt.Delta.PartialJSON
+		}
+	}
+	if args["call_0"] != `{"a":1}` {
+		t.Fatalf("call_0 arguments = %q", args["call_0"])
+	}
+	if args["call_1"] != `{"b":2}` {
+		t.Fatalf("call_1 arguments = %q", args["call_1"])
+	}
+}
+
+func TestP0_StreamHeldToolCallsReleaseInIndexOrder(t *testing.T) {
+	sc := NewStreamConverter("claude", nil, nil)
+	_ = sc.HandleStreamStart()
+
+	// Call 0 opens with incomplete arguments, so calls 2 and 1 (in that
+	// arrival order) are held. Call 1 carries no arguments at all.
+	chunks := []string{
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_0","type":"function","function":{"name":"f","arguments":"{\"a\":"}}]},"finish_reason":null}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":2,"id":"call_2","type":"function","function":{"name":"h","arguments":"{\"c\":"}}]},"finish_reason":null}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_1","type":"function","function":{"name":"g","arguments":""}}]},"finish_reason":null}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]},"finish_reason":null}]}`,
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":2,"function":{"arguments":"3}"}}]},"finish_reason":null}]}`,
+	}
+	for _, chunk := range chunks {
+		if _, err := sc.HandleChunk([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	end := string(sc.HandleStreamEnd())
+
+	call1 := strings.Index(end, `"id":"call_1"`)
+	call2 := strings.Index(end, `"id":"call_2"`)
+	if call1 < 0 || call2 < 0 {
+		t.Fatalf("held calls not released:\n%s", end)
+	}
+	if call1 > call2 {
+		t.Fatalf("held calls released out of index order:\n%s", end)
+	}
+	if !strings.Contains(end, `"type":"tool_use","id":"call_1","name":"g","input":{}`) {
+		t.Fatalf("call_1 start missing empty input object:\n%s", end)
+	}
+	if !strings.Contains(end, `"partial_json":"{}"`) {
+		t.Fatalf("call_1 empty arguments not released as an object:\n%s", end)
+	}
+	if !strings.Contains(end, `"partial_json":"{\"c\":3}"`) {
+		t.Fatalf("call_2 arguments wrong:\n%s", end)
+	}
+}

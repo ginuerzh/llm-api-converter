@@ -730,13 +730,21 @@ git commit -m "fix(convert): keep interleaved stream tool calls separate"
 
 **Implementation record**
 
-- Status: Pending
-- Date:
-- Repository / commit:
+- Status: Done
+- Date: 2026-11-06
+- Repository / commit: `llm-api-converter`, branch `feat/anthropic-openai-p0`, commit `fix(convert): keep interleaved stream tool calls separate` (2026-11-06), which contains the converter changes, the regression tests, and this record. A commit cannot embed its own hash, so the resolved SHA is recorded in `.superpowers/sdd/2026-11-06-anthropic-openai-chat-p0/task-4-report.md` and can be obtained with `git log -1 --format=%H -- convert/stream.go`.
 - Files changed:
+  - `convert/types.go` — `streamToolState` gains `BlockIndex`, so each tool call remembers the Anthropic content block index it owns.
+  - `convert/stream.go` — `StreamConverter` gains `openToolIndex` (initialized to -1) and `heldTools`; `toolArgsComplete` detects a complete JSON object; `handleToolCallDelta` emits fragments only for the currently open call and holds a new call in both `toolCallByIndex` and `heldTools` while the open call's arguments are incomplete; `inputJSONDelta` takes an explicit block index; `ensureBlock` and `HandleStreamEnd` reset `openToolIndex` whenever a tool block closes; `releaseHeldTools` emits held calls at stream end in ascending index order (`content_block_start` with `"input":{}`, then `input_json_delta` with the accumulated arguments or `{}`, then `content_block_stop`) before `message_delta`.
+  - `convert/anthropic_openai_p0_test.go` — added `TestP0_StreamInterleavedToolCallsKeepArguments` (the brief's test, with `\n\n` framing inserted between phase payloads because `HandleChunk` returns no trailing delimiter) and `TestP0_StreamHeldToolCallsReleaseInIndexOrder` covering ascending release order, `"input":{}`, and the empty-arguments `{}` delta.
 - Tests / commands:
-- Review findings / fixes:
-- Deferred:
+  - RED: `go test ./convert -run TestP0_StreamInterleavedToolCallsKeepArguments -v` → FAIL, `call_0 arguments = "{\"a\":"`; the later `1}` fragment was written to the block index opened by `call_1`.
+  - GREEN: same command after the fix → PASS.
+  - `go test ./convert -run 'TestP0_StreamInterleavedToolCallsKeepArguments|TestStream_' -v` → PASS, including the existing sequential tool-call tests that require an immediate `content_block_start`.
+  - `go test ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
+  - `go test -race ./convert` → PASS; `go vet ./...` → clean.
+- Review findings / fixes: self-review found the brief's test as written loses the last event of each phase because `HandleChunk` documents that it returns no trailing `\n\n`; the test harness now inserts the separator between phase payloads (production code already frames phases), and the assertions are unchanged. Sequential calls still open and close immediately once the open call's arguments form a complete object, as required by the existing tests. Verified that no third-party dependency, converter registry, model-map, or same-protocol passthrough code changed. `releaseHeldTools` clears `heldTools`, so a second `HandleStreamEnd` cannot emit duplicate blocks (it is also guarded by `finalized`).
+- Deferred: providers that omit `tool_calls[].index` cannot disambiguate a continuation fragment that arrives after another index-less call was held; it attaches to `lastToolIndex`. This is inherent to the index-less stream format and outside P0-4. Released held calls keep their accumulated arguments even if they are not a complete JSON object, matching the brief's "accumulated arguments" rule; clients see the same partial JSON they would have received sequentially.
 
 ---
 
