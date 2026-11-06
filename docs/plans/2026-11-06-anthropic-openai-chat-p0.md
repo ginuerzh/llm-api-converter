@@ -62,7 +62,7 @@ sequentially to avoid conflicts. Total estimate: ~2.5 dev days.
   - `convertMessageContent` may now return an empty slice; callers must skip empty messages.
   - `convertUserContent` and `convertAssistantContent` return no empty/whitespace-only text blocks.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `convert/anthropic_openai_p0_test.go`:
 
@@ -155,14 +155,14 @@ func TestP0_ResponsesToAnthropicToolOnlyAssistantHasNoEmptyText(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP0_(OpenAI|Responses)ToAnthropic' -v`
 
 Expected: FAIL. The first test prints an empty text block; the empty-user test
 sees two messages.
 
-- [ ] **Step 3: Implement `appendTextBlock` and use it**
+- [x] **Step 3: Implement `appendTextBlock` and use it**
 
 In `convert/openai_to_anthropic.go`, add near `extractTextContent`:
 
@@ -202,25 +202,25 @@ anthropic.Messages = append(anthropic.Messages, am)
 Apply the same `if len(am.Content) == 0 { continue }` rule in
 `convert/responses.go` around `:315-318`.
 
-- [ ] **Step 4: Update the old assertion**
+- [x] **Step 4: Update the old assertion**
 
 `convert/convert_test.go:242` currently expects `len(...) == 2` for
 “empty text + tool_use”. Change it to expect one block (the `tool_use`) and
 add an assertion that no text block is empty.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP0_|TestConvert_AssistantToolCalls|TestConvert_NoTools' -v`
 
 Expected: PASS.
 
-- [ ] **Step 6: Run the full suite**
+- [x] **Step 6: Run the full suite**
 
 Run: `cd llm-api-converter && go test ./...`
 
 Expected: PASS.
 
-- [ ] **Step 7: Fill the implementation record and commit**
+- [x] **Step 7: Fill the implementation record and commit**
 
 Record status, date, commit SHA, files changed, commands/results, review
 findings, and deferred items in the block below.
@@ -234,7 +234,7 @@ git commit -m "fix(convert): drop empty Anthropic text blocks"
 
 - Status: Done
 - Date: 2026-11-06
-- Repository / commit: `llm-api-converter` @ `ef2230b` (`fix(convert): drop empty Anthropic text blocks`, branch `feat/anthropic-openai-p0`); the record itself lands in the follow-up docs commit `docs(convert): record task 1 implementation`.
+- Repository / commit: `llm-api-converter` @ `ef2230b` (`fix(convert): drop empty Anthropic text blocks`, branch `feat/anthropic-openai-p0`); the original record landed in the follow-up docs commit `cacff37` (`docs(convert): record task 1 implementation`).
 - Files changed:
   - `convert/openai_to_anthropic.go` — added `appendTextBlock`; `convertUserContent`/`convertAssistantContent` no longer emit empty or whitespace-only text blocks and return `nil` when nothing valid remains; `convertOpenAIRequestToAnthropic` skips messages whose content is empty.
   - `convert/responses.go` — `ConvertResponsesToAnthropic` applies the same skip rule in the shared Chat→Anthropic message loop.
@@ -265,7 +265,7 @@ git commit -m "fix(convert): drop empty Anthropic text blocks"
 - Produces: no behavioral signature change; `ToolChoice` remains `nil` when
   `len(req.Tools) == 0`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `convert/anthropic_openai_p0_test.go`:
 
@@ -307,13 +307,13 @@ func TestP0_ResponsesToAnthropicNoToolsNoToolChoice(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP0_(OpenAIToAnthropicNoToolsNoToolChoice|ResponsesToAnthropicNoToolsNoToolChoice)' -v`
 
 Expected: FAIL because the output contains `"tool_choice":{"type":"none"}`.
 
-- [ ] **Step 3: Remove the orphan `else` branch**
+- [x] **Step 3: Remove the orphan `else` branch**
 
 In `convert/openai_to_anthropic.go`, delete the `else` that sets
 `AnthropicToolChoice{Type: "none"}`. Keep `ToolChoice` at its zero value when
@@ -322,7 +322,7 @@ there are no tools.
 In `convert/responses.go`, remove the corresponding `else` at `:339-340`.
 `ToolChoice` remains nil when `req.Tools` is empty.
 
-- [ ] **Step 4: Update the old assertions**
+- [x] **Step 4: Update the old assertions**
 
 `convert/convert_test.go:653` currently expects `ToolChoice` to be non-nil
 with type `none`. Rename `TestConvert_NoToolsSetsToolChoiceNone` to
@@ -333,19 +333,19 @@ path. Rename `TestConvertResponsesToAnthropic_NoToolsSetsToolChoiceNone` to
 `TestConvertResponsesToAnthropic_NoToolsNoToolChoice` and assert
 `anth.ToolChoice == nil`.
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP0_OpenAIToAnthropicNoToolsNoToolChoice|TestConvert_NoTools' -v`
 
 Expected: PASS.
 
-- [ ] **Step 6: Run the full suite**
+- [x] **Step 6: Run the full suite**
 
 Run: `cd llm-api-converter && go test ./...`
 
 Expected: PASS.
 
-- [ ] **Step 7: Fill the implementation record and commit**
+- [x] **Step 7: Fill the implementation record and commit**
 
 ```bash
 git add convert/openai_to_anthropic.go convert/responses.go convert/anthropic_openai_p0_test.go convert/convert_test.go docs/plans/2026-11-06-anthropic-openai-chat-p0.md
@@ -356,7 +356,7 @@ git commit -m "fix(convert): omit tool choice when no tools"
 
 - Status: Done
 - Date: 2026-11-06
-- Repository / commit: `llm-api-converter`, branch `feat/anthropic-openai-p0`, commit `fix(convert): omit tool choice when no tools` (2026-11-06), which contains the fix, the tests, and this record. A commit cannot embed its own hash, so the resolved SHA is recorded in the Task 2 report (`.superpowers/sdd/2026-11-06-anthropic-openai-chat-p0/task-2-report.md`) and can be obtained with `git log -1 --format=%H -- convert/openai_to_anthropic.go`.
+- Repository / commit: `llm-api-converter` @ `612b033` (`fix(convert): omit tool choice when no tools`, branch `feat/anthropic-openai-p0`). The commit contains the fix, the tests, and the original record; the resolved SHA was added by the Task 5 documentation commit.
 - Files changed:
   - `convert/openai_to_anthropic.go` — removed the no-tools `else` branch in `convertOpenAIRequestToAnthropic`; `ToolChoice` stays nil when `len(req.Tools) == 0`, so `omitempty` removes the field.
   - `convert/responses.go` — removed the equivalent no-tools `else` in `ConvertResponsesToAnthropic`.
@@ -368,8 +368,8 @@ git commit -m "fix(convert): omit tool choice when no tools"
   - GREEN: same command after the fix → all four PASS.
   - `go test ./...` → PASS (`convert`, `engine`, `rewriter`, `tests/e2e`).
   - `go vet ./...` → clean.
-- Review findings / fixes: self-review confirmed the fix is limited to the two no-tools branches; explicit `tool_choice` mapping when tools are present is untouched (`TestConvert_ToolChoice{Auto,None,Required,SpecificFunction}` still pass, and `TestConvertResponsesToAnthropic_WithTools` still expects nil for an omitted choice). The pairwise registry, model map, and same-protocol passthrough are unaffected, and no dependency was added. The editor auto-formatted two pre-existing unformatted spots in `convert_test.go` and `responses_test.go`; both hunks were reverted so the diff stays scoped to this task.
-- Deferred: `convert/anthropic_to_gemini.go` still emits `tool_choice: none` on the Gemini→Anthropic no-tools path (different conversion direction, outside P0-2). Updating the review-document status table and ticking the plan checkboxes belongs to Task 5.
+- Review findings / fixes: self-review confirmed the fix is limited to the two no-tools branches; explicit `tool_choice` mapping when tools are present is untouched (`TestConvert_ToolChoice{Auto,None,Required,SpecificFunction}` still pass, and `TestConvertResponsesToAnthropic_WithTools` still expects nil for an omitted choice). The pairwise registry, model map, and same-protocol passthrough are unaffected, and no dependency was added. The editor auto-formatted two pre-existing unformatted spots: a struct alignment in `convert_test.go` and a whitespace-only line at the end of `TestConvert_ResponsesToChatRoundTrip` in `convert/responses_test.go`. Only the `convert_test.go` hunk was reverted; the `responses_test.go` whitespace hunk remained in `612b033` (`@@ -580,7 +577,7 @@`). That hunk is whitespace-only and behavior-neutral, but the commit is not perfectly scoped.
+- Deferred: the whole `ToolConfig` switch in `convert/anthropic_to_gemini.go:482-500` still sets `tool_choice` whenever `ToolConfig.FunctionCallingConfig` is present — `NONE` → `none`, `ANY` → `tool`/`any`, and the default branch → `auto` — without checking whether any tools were actually converted. That is a different conversion direction and outside P0-2. Updating the review-document status table and ticking the plan checkboxes belongs to Task 5.
 
 ---
 
@@ -389,7 +389,7 @@ git commit -m "fix(convert): omit tool choice when no tools"
   - Both guarantee a JSON object result (`map[string]any` or object JSON
     string), never nil/empty/`"null"`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `convert/anthropic_openai_p0_test.go`:
 
@@ -443,14 +443,14 @@ func TestP0_AnthropicToOpenAINullInputBecomesArgumentsObject(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP0_(OpenAIToAnthropicEmptyArguments|AnthropicToOpenAINullInput)' -v`
 
 Expected: FAIL. The first output has no `input`; the second has
 `"arguments":"null"`.
 
-- [ ] **Step 3: Implement the shared helpers**
+- [x] **Step 3: Implement the shared helpers**
 
 Create `convert/tool_input.go`:
 
@@ -518,19 +518,19 @@ Use them:
 
 Do not change valid object/string behavior.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP0_(OpenAIToAnthropicEmptyArguments|AnthropicToOpenAINullInput)' -v`
 
 Expected: PASS.
 
-- [ ] **Step 5: Run the full suite**
+- [x] **Step 5: Run the full suite**
 
 Run: `cd llm-api-converter && go test ./...`
 
 Expected: PASS.
 
-- [ ] **Step 6: Fill the implementation record and commit**
+- [x] **Step 6: Fill the implementation record and commit**
 
 ```bash
 git add convert/tool_input.go convert/openai_to_anthropic.go convert/anthropic_to_openai.go convert/anthropic_openai_p0_test.go docs/plans/2026-11-06-anthropic-openai-chat-p0.md
@@ -541,7 +541,7 @@ git commit -m "fix(convert): normalize tool use input objects"
 
 - Status: Done
 - Date: 2026-11-06
-- Repository / commit: `llm-api-converter`, branch `feat/anthropic-openai-p0`, commit `fix(convert): normalize tool use input objects` (2026-11-06), which contains the helpers, the four call-site changes, the regression tests, and this record. A commit cannot embed its own hash, so the resolved SHA is recorded in `.superpowers/sdd/2026-11-06-anthropic-openai-chat-p0/task-3-report.md` and can be obtained with `git log -1 --format=%H -- convert/tool_input.go`.
+- Repository / commit: `llm-api-converter` @ `dbf50b8` (`fix(convert): normalize tool use input objects`, branch `feat/anthropic-openai-p0`). The commit contains the helpers, the four call-site changes, the regression tests, and the original record; the resolved SHA was added by the Task 5 documentation commit.
 - Files changed:
   - `convert/tool_input.go` — new; `anthropicToolInput` turns OpenAI arguments into an Anthropic input object and `openAIToolArguments` turns an Anthropic input into an OpenAI arguments string. Both guarantee an object: empty/null/invalid → `{}`, non-object JSON wrapped as `{"input": ...}`, valid objects preserved.
   - `convert/openai_to_anthropic.go` — `convertAssistantContent` (request path) and `convertOpenAIMessageToContent` (response path) use `anthropicToolInput` instead of an inline best-effort unmarshal, so empty arguments no longer drop the `input` field.
@@ -573,7 +573,7 @@ git commit -m "fix(convert): normalize tool use input objects"
   - `StreamConverter` gains `openToolIndex int` and
     `heldTools map[int]*streamToolState`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `convert/anthropic_openai_p0_test.go`:
 
@@ -637,14 +637,14 @@ Note: the test accumulates the chunk and end-phase bytes, then parses the
 resulting SSE. A held call is released in the end phase; a sequential call
 streams in its chunk output. Both must reach the same per-call arguments.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cd llm-api-converter && go test ./convert -run TestP0_StreamInterleavedToolCallsKeepArguments -v`
 
 Expected: FAIL. `call_1` receives `{"b":1}2}` or `call_0` receives the wrong
 fragment.
 
-- [ ] **Step 3: Add state fields and helpers**
+- [x] **Step 3: Add state fields and helpers**
 
 In `convert/types.go`, add `BlockIndex int` to `streamToolState`.
 
@@ -674,7 +674,7 @@ func toolArgsComplete(args string) bool {
 In `inputJSONDelta`, take the block index explicitly and use it instead of
 `sc.curBlockIndex`.
 
-- [ ] **Step 4: Change `handleToolCallDelta`**
+- [x] **Step 4: Change `handleToolCallDelta`**
 
 Rules:
 
@@ -694,7 +694,7 @@ Rules:
    inside `ensureBlock` when a text/thinking block replaces an open tool block,
    and in `HandleStreamEnd` when the final block is closed.
 
-- [ ] **Step 5: Release held calls in `HandleStreamEnd`**
+- [x] **Step 5: Release held calls in `HandleStreamEnd`**
 
 After closing the currently open block(s) and before `message_delta`:
 
@@ -708,20 +708,20 @@ After closing the currently open block(s) and before `message_delta`:
 Do not emit a second block for a call that already had its block closed;
 only calls in `heldTools` are released.
 
-- [ ] **Step 6: Run the new test and the existing stream tests**
+- [x] **Step 6: Run the new test and the existing stream tests**
 
 Run: `cd llm-api-converter && go test ./convert -run 'TestP0_StreamInterleavedToolCallsKeepArguments|TestStream_' -v`
 
 Expected: PASS. Existing sequential tool-call tests must keep their immediate
 `content_block_start` behavior.
 
-- [ ] **Step 7: Run the full suite**
+- [x] **Step 7: Run the full suite**
 
 Run: `cd llm-api-converter && go test ./...`
 
 Expected: PASS.
 
-- [ ] **Step 8: Fill the implementation record and commit**
+- [x] **Step 8: Fill the implementation record and commit**
 
 ```bash
 git add convert/types.go convert/stream.go convert/anthropic_openai_p0_test.go docs/plans/2026-11-06-anthropic-openai-chat-p0.md
@@ -732,7 +732,7 @@ git commit -m "fix(convert): keep interleaved stream tool calls separate"
 
 - Status: Done
 - Date: 2026-11-06
-- Repository / commit: `llm-api-converter`, branch `feat/anthropic-openai-p0`, commit `fix(convert): keep interleaved stream tool calls separate` (2026-11-06), which contains the converter changes, the regression tests, and this record. A commit cannot embed its own hash, so the resolved SHA is recorded in `.superpowers/sdd/2026-11-06-anthropic-openai-chat-p0/task-4-report.md` and can be obtained with `git log -1 --format=%H -- convert/stream.go`.
+- Repository / commit: `llm-api-converter` @ `4d77eb1` (`fix(convert): keep interleaved stream tool calls separate`, branch `feat/anthropic-openai-p0`). The commit contains the converter changes, the regression tests, and the original record; the resolved SHA was added by the Task 5 documentation commit.
 - Files changed:
   - `convert/types.go` — `streamToolState` gains `BlockIndex`, so each tool call remembers the Anthropic content block index it owns.
   - `convert/stream.go` — `StreamConverter` gains `openToolIndex` (initialized to -1) and `heldTools`; `toolArgsComplete` detects a complete JSON object; `handleToolCallDelta` emits fragments only for the currently open call and holds a new call in both `toolCallByIndex` and `heldTools` while the open call's arguments are incomplete; `inputJSONDelta` takes an explicit block index; `ensureBlock` and `HandleStreamEnd` reset `openToolIndex` whenever a tool block closes; `releaseHeldTools` emits held calls at stream end in ascending index order (`content_block_start` with `"input":{}`, then `input_json_delta` with the accumulated arguments or `{}`, then `content_block_stop`) before `message_delta`.
@@ -761,13 +761,13 @@ git commit -m "fix(convert): keep interleaved stream tool calls separate"
 - Produces: a verified P0 status, filled implementation records, and a durable
   memory note.
 
-- [ ] **Step 1: Run the full test suite**
+- [x] **Step 1: Run the full test suite**
 
-Run: `cd llm-api-converter && go test ./...`
+Run: `cd llm-api-converter && go test -count=1 ./...`
 
-Expected: PASS, including the e2e package.
+Expected: PASS, including a fresh (not cached) e2e package.
 
-- [ ] **Step 2: Run the race and vet gates**
+- [x] **Step 2: Run the race and vet gates**
 
 Run:
 
@@ -779,7 +779,7 @@ go vet ./...
 
 Expected: PASS, no data race or vet diagnostics.
 
-- [ ] **Step 3: Update the review document**
+- [x] **Step 3: Update the review document**
 
 Update the existing “P0 Status” table in the review document:
 
@@ -794,21 +794,26 @@ Update the existing “P0 Status” table in the review document:
 
 If any P0 item was deferred, mark it `deferred` and record why.
 
-- [ ] **Step 4: Fill the remaining implementation records**
+- [x] **Step 4: Fill the remaining implementation records**
 
 Ensure Tasks 1–4 have date, commit SHA, actual files, commands/results,
-review findings, and deferred items. Do not leave `Pending`.
+review findings, and deferred items. Do not leave `Pending`. Tick the completed
+checkboxes for Tasks 1–4. Correct the Task 2 record's claim that the unrelated
+`convert/responses_test.go` whitespace hunk was reverted (it was not), and widen
+its deferred Gemini note to the whole `ToolConfig` switch, not only the `none`
+case.
 
-- [ ] **Step 5: Update project memory**
+- [x] **Step 5: Update project memory**
 
 The 2026-11-06 review observation already exists in
 `.memory/notes/llm-api-converter-magpie-eval.md`. After the fixes, update its
 status from `open` to `fixed` and add the four commit SHAs. Do not append a
-duplicate observation.
+duplicate observation. Also update the corresponding `MEMORY.md` index line if
+its status or paths need correction.
 
 No new memory note is needed unless the fixes establish a new convention.
 
-- [ ] **Step 6: Verify the working tree and commit both repositories**
+- [x] **Step 6: Verify the working tree and commit both repositories**
 
 `llm-api-converter` and the workspace root are separate Git repositories.
 Commit the docs in `llm-api-converter`, then the memory note in
@@ -841,13 +846,30 @@ this task. Record both commit SHAs in the implementation record.
 
 **Implementation record**
 
-- Status: Pending
-- Date:
+- Status: Done
+- Date: 2026-11-06
 - Repository / commit:
+  - `llm-api-converter` @ `DOCS_SHA_PENDING` (`docs(convert): record P0 review status`, branch `feat/anthropic-openai-p0`).
+  - `/root/code/go-gost` @ `MEMORY_SHA_PENDING` (`docs(memory): record llm-api-converter P0 review`).
+  - A commit cannot contain its own SHA; these two SHAs are filled in by the follow-up docs commit `docs(convert): record task 5 commit SHAs` in `llm-api-converter`.
 - Files changed:
+  - `docs/reviews/2026-11-06-anthropic-openai-chat-review.md` — header status changed to “P0 fixed and verified; P1/P2 findings remain open”; the P0 Status table now lists P0-1…P0-4 as fixed with `ef2230b`, `612b033`, `dbf50b8`, `4d77eb1`; added the verification commands and result at `4d77eb1`.
+  - `docs/plans/2026-11-06-anthropic-openai-chat-p0.md` — ticked the completed step checkboxes in Tasks 1–5; filled the Task 2 and Task 3 resolved SHAs; added Task 4’s resolved SHA; recorded Task 1’s follow-up docs commit; corrected Task 2’s whitespace-hunk claim (the `responses_test.go` hunk was not reverted); widened Task 2’s deferred Gemini note to the whole `ToolConfig` switch; filled this Task 5 record.
+  - `/root/code/go-gost/.memory/notes/llm-api-converter-magpie-eval.md` — changed the 2026-11-06 review observation status from `open` to `fixed` and added the four SHAs plus the verification commands. `.memory/MEMORY.md` was intentionally not staged because it already contained unrelated modifications; its index line needs no status change.
 - Tests / commands:
+  - `go test -count=1 ./...` → PASS: `convert 0.040s`, `engine 0.004s`, `rewriter 0.009s`, `tests/e2e 12.286s` (fresh e2e run, not cached).
+  - `CGO_ENABLED=1 go test -race ./convert ./rewriter` → PASS; `convert` was reported cached, so `CGO_ENABLED=1 go test -race -count=1 ./convert ./rewriter` was also run → PASS (`convert 1.202s`, `rewriter 1.031s`).
+  - `go vet ./...` → PASS, no diagnostics.
+  - `git status --short` before the docs commit showed only the review doc and plan modified in `llm-api-converter` (plus the memory note in the workspace root); no Go source or test file was modified.
 - Review findings / fixes:
+  - Confirmed the four code commits are on `feat/anthropic-openai-p0` in the required order and that the P0 items are fixed, so no P0 item was marked deferred.
+  - Verified commit `612b033` really contains the `convert/responses_test.go` whitespace hunk (`@@ -580,7 +577,7 @@`), so the Task 2 record’s “both hunks were reverted” claim was wrong and is now corrected.
+  - Verified `convert/anthropic_to_gemini.go:482-500` sets `tool_choice` for all three `ToolConfig` branches (`NONE`, `ANY`, default `auto`) without checking whether any tools were converted, and widened the deferred note accordingly.
+  - No production code, test, dependency, or registry behavior changed in this task.
 - Deferred:
+  - P1/P2 findings in the review document remain open.
+  - The Task 2 whitespace hunk is in published branch history and is behavior-neutral; it is left in place rather than rewriting history.
+  - The whole `ToolConfig` → `tool_choice` switch in `convert/anthropic_to_gemini.go`, not only the `NONE` branch, still needs the no-tools guard in a future task.
 
 ---
 

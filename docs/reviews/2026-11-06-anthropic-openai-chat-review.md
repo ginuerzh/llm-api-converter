@@ -4,7 +4,7 @@ Date: 2026-11-06
 Reviewed repository: `llm-api-converter`
 Reviewed revision: `e4c7c1a` (`feat(engine): expose the resolved logical model`)
 Comparison implementation: `magpie` at `e17b6ce`
-Status: Findings recorded; P0 plan written, implementation not started.
+Status: P0 fixed and verified; P1/P2 findings remain open.
 
 ## Scope
 
@@ -77,12 +77,16 @@ errors, and non-zero-safe usage merging.
 
 | ID | Status | Commit |
 |---|---|---|
-| P0-1 empty/missing text block | open | — |
-| P0-2 `tool_choice` without tools | open | — |
-| P0-3 missing `tool_use.input` | open | — |
-| P0-4 interleaved stream tool calls | open | — |
+| P0-1 empty/missing text block | fixed | `ef2230b` |
+| P0-2 `tool_choice` without tools | fixed | `612b033` |
+| P0-3 missing `tool_use.input` | fixed | `dbf50b8` |
+| P0-4 interleaved stream tool calls | fixed | `4d77eb1` |
 
 The implementation plan is `docs/plans/2026-11-06-anthropic-openai-chat-p0.md`.
+P0 was verified on `feat/anthropic-openai-p0` at `4d77eb1` with
+`go test -count=1 ./...` (including a fresh e2e run),
+`CGO_ENABLED=1 go test -race ./convert ./rewriter`, and `go vet ./...`; all
+passed. P1/P2 findings below are unchanged and still open.
 
 ## P0 findings
 
