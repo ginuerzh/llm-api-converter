@@ -157,7 +157,7 @@ git commit -m "fix(convert): merge stream usage and accept typed deltas"
 
 - Status: Complete
 - Date: 2026-11-06
-- Repository / commit: `llm-api-converter` @ `TASK1_SHA_PLACEHOLDER` (`fix(convert): merge stream usage and accept typed deltas`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit `DOCS_SHA_PLACEHOLDER` (`docs(convert): record task 1 implementation`).
+- Repository / commit: `llm-api-converter` @ `e534397` (`fix(convert): merge stream usage and accept typed deltas`, branch `feat/anthropic-openai-p1`). The task commit contains the code, the tests, and this record; the resolved SHA was added by the follow-up docs commit that carries this line.
 - Files changed:
   - `convert/stream_anthropic_to_openai.go` — `setUsage` merges non-zero fields instead of overwriting all four, so `message_start` input and cache counts survive the `message_delta` output update.
   - `convert/stream.go` — `StreamConverter.EmitError` builds its payload with `json.Marshal`.
