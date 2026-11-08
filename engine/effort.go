@@ -23,6 +23,11 @@ type requestProbe struct {
 		Type         string `json:"type"`
 		BudgetTokens int    `json:"budget_tokens"`
 	} `json:"thinking"`
+	// Anthropic's newer clients send thinking.type="adaptive" with the band in
+	// output_config.effort instead of a thinking budget.
+	OutputConfig struct {
+		Effort string `json:"effort"`
+	} `json:"output_config"`
 	GenerationConfig struct {
 		ThinkingConfig struct {
 			ThinkingLevel  string `json:"thinkingLevel"`
@@ -51,6 +56,9 @@ func normalizeEffort(p requestProbe) string {
 	if v := strings.ToLower(strings.TrimSpace(p.Reasoning.Effort)); v != "" {
 		return effortFromString(v)
 	}
+	if v := strings.ToLower(strings.TrimSpace(p.OutputConfig.Effort)); v != "" {
+		return effortFromString(v)
+	}
 	if strings.EqualFold(p.Thinking.Type, "enabled") && p.Thinking.BudgetTokens > 0 {
 		return effortFromBudget(p.Thinking.BudgetTokens)
 	}
@@ -69,7 +77,7 @@ func effortFromString(v string) string {
 		return "low"
 	case "medium":
 		return "medium"
-	case "high", "xhigh":
+	case "high", "xhigh", "max":
 		return "high"
 	}
 	return "none"

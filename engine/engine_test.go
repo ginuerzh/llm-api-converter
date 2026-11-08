@@ -111,6 +111,9 @@ func TestNormalizeEffort(t *testing.T) {
 		{"anthropic medium", `{"model":"m","thinking":{"type":"enabled","budget_tokens":4096}}`, "medium"},
 		{"anthropic low", `{"model":"m","thinking":{"type":"enabled","budget_tokens":1024}}`, "low"},
 		{"anthropic disabled", `{"model":"m","thinking":{"type":"disabled","budget_tokens":99999}}`, "none"},
+		{"anthropic adaptive effort", `{"model":"m","thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}`, "high"},
+		{"anthropic max effort", `{"model":"m","output_config":{"effort":"max"}}`, "high"},
+		{"anthropic output_config medium", `{"model":"m","output_config":{"effort":"medium"}}`, "medium"},
 		{"gemini level", `{"model":"m","generationConfig":{"thinkingConfig":{"thinkingLevel":"HIGH"}}}`, "high"},
 		{"gemini budget", `{"model":"m","generationConfig":{"thinkingConfig":{"thinkingBudget":20000}}}`, "high"},
 	}
