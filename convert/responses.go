@@ -186,6 +186,7 @@ type ResponsesStreamEvent struct {
 	Arguments      string                   `json:"arguments,omitempty"`
 	Name           string                   `json:"name,omitempty"`
 	Message        string                   `json:"message,omitempty"`
+	Error          any                      `json:"error,omitempty"`
 	SummaryText    string                   `json:"summary_text,omitempty"`
 }
 

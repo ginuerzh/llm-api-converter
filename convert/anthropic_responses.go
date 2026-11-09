@@ -336,13 +336,13 @@ func responsesTextFromAnthropic(oc *AnthropicOutputConfig) *ResponsesText {
 // response. It differs from AnthropicContent only in being able to emit an
 // explicit empty signature on thinking blocks.
 type anthropicOutBlock struct {
-	Type      string         `json:"type"`
-	Text      string         `json:"text,omitempty"`
-	Thinking  string         `json:"thinking,omitempty"`
-	Signature *string        `json:"signature,omitempty"`
-	ID        string         `json:"id,omitempty"`
-	Name      string         `json:"name,omitempty"`
-	Input     map[string]any `json:"input,omitempty"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature *string         `json:"signature,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     *map[string]any `json:"input,omitempty"`
 }
 
 type anthropicTranslatedResponse struct {
@@ -395,11 +395,12 @@ func responsesResponseToAnthropic(resp *ResponsesResponse, opts *ConvertOptions)
 			if id == "" {
 				id = item.ID
 			}
+			input := parseResponsesArguments(item.Arguments)
 			content = append(content, anthropicOutBlock{
 				Type:  "tool_use",
 				ID:    id,
 				Name:  item.Name,
-				Input: parseResponsesArguments(item.Arguments),
+				Input: &input,
 			})
 		default:
 			slog.Debug("responses: skipping unsupported output item", "type", item.Type)
@@ -487,6 +488,7 @@ func parseResponsesArguments(arguments string) map[string]any {
 		return out
 	}
 	if err := json.Unmarshal([]byte(arguments), &out); err != nil || out == nil {
+		slog.Debug("responses: tool arguments are not an object", "arguments", arguments)
 		return map[string]any{}
 	}
 	return out

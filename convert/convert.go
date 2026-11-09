@@ -696,6 +696,17 @@ func newStreamConverterFromData(data []byte, opts *ConvertOptions) *StreamConver
 	return NewStreamConverter(streamModel, opts.ReasoningCache, opts.DeclaredTools)
 }
 
+// isStreamErrorPayload reports whether an SSE payload is a bare terminal
+// error event rather than a streaming content event.
+func isStreamErrorPayload(payload []byte) bool {
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return false
+	}
+	typ, _ := raw["type"].(string)
+	return typ == "error"
+}
+
 // HandleSSEEvent processes an SSE stream lifecycle event.
 func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *ConvertOptions) ([]byte, error) {
 	store := opts.SessionStore
@@ -779,6 +790,24 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 		// Model map fallback when body + URI can't classify the event.
 		if from == ProtocolUnknown && target != ProtocolUnknown {
 			from = target
+		}
+
+		// A bare error payload with no session must not be mistaken for an
+		// Anthropic client stream and passed through raw. Normalize it for the
+		// Anthropic client instead.
+		if target == ProtocolAnthropic && payload != nil && isStreamErrorPayload(payload) {
+			model := opts.RequestModel
+			if model == "" {
+				model = opts.ResolvedModel
+			}
+			if model == "" {
+				model = opts.Model
+			}
+			handler := NewResponsesToAnthropicStreamConverter(model, opts)
+			if store != nil {
+				store.Set(sid, &Session{ID: sid, From: target, To: ProtocolOpenAIResponses, StreamHandler: handler})
+			}
+			return handler.HandleChunk(payload)
 		}
 
 		// Passthrough: chunk format matches client protocol.

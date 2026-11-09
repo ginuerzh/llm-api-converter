@@ -65,6 +65,9 @@ func (c *ResponsesToAnthropicStreamConverter) HandleStreamStart() []byte {
 
 // HandleChunk processes one Responses SSE data payload.
 func (c *ResponsesToAnthropicStreamConverter) HandleChunk(data []byte) ([]byte, error) {
+	if c.finished {
+		return nil, nil
+	}
 	var ev ResponsesStreamEvent
 	if err := json.Unmarshal(data, &ev); err != nil {
 		return nil, fmt.Errorf("unmarshal Responses stream event: %w", err)
@@ -73,7 +76,7 @@ func (c *ResponsesToAnthropicStreamConverter) HandleChunk(data []byte) ([]byte, 
 	// A call added while another call is open waits its turn. Its own events
 	// are buffered raw and replayed after the open call closes.
 	if ev.Type != ResponseOutputItemAdded {
-		if call := c.pendingFor(ev.ItemID); call != nil {
+		if call := c.pendingFor(eventItemID(ev)); call != nil {
 			call.lines = append(call.lines, append([]byte(nil), data...))
 			return nil, nil
 		}
@@ -233,19 +236,17 @@ func (c *ResponsesToAnthropicStreamConverter) HandleChunk(data []byte) ([]byte, 
 		return c.finish(out), nil
 
 	case ResponseFailed:
-		msg := responseErrorMessage(ev)
-		out := c.start()
-		out = append(out, c.EmitError(msg)...)
-		return out, nil
+		return c.EmitError(responseErrorMessage(ev)), nil
 
 	case "error":
 		msg := ev.Message
 		if msg == "" {
+			msg = nestedErrorMessage(ev.Error)
+		}
+		if msg == "" {
 			msg = "upstream error"
 		}
-		out := c.start()
-		out = append(out, c.EmitError(msg)...)
-		return out, nil
+		return c.EmitError(msg), nil
 
 	default:
 		return c.start(), nil
@@ -262,9 +263,6 @@ func (c *ResponsesToAnthropicStreamConverter) HandleStreamEnd() []byte {
 		return c.EmitError(c.opts.ErrorMsg)
 	}
 	out := c.start()
-	if c.open != nil && c.open.kind == "tool_use" && !json.Valid([]byte(c.open.args.String())) {
-		return c.EmitError("truncated tool arguments")
-	}
 	return c.finish(out)
 }
 
@@ -354,6 +352,47 @@ func (c *ResponsesToAnthropicStreamConverter) closeOpen() []byte {
 	return out
 }
 
+// closeOpenForTerminal closes an open tool block, emitting the empty object a
+// no-argument tool call needs before the block stops. A partially written tool
+// block is left for truncatedToolArgs to reject.
+func (c *ResponsesToAnthropicStreamConverter) closeOpenForTerminal() []byte {
+	if c.open == nil || c.open.closed || c.open.kind != "tool_use" || c.open.argsSent {
+		return c.closeOpen()
+	}
+	args := c.open.args.String()
+	if args != "" {
+		return c.closeOpen()
+	}
+	c.open.args.WriteString("{}")
+	out := c.delta("input_json_delta", map[string]any{"partial_json": "{}"})
+	c.open.argsSent = true
+	return append(out, c.closeOpen()...)
+}
+
+// truncatedToolArgs reports the first tool block whose accumulated arguments
+// are not a complete JSON object. Empty arguments are a valid no-arg call.
+func (c *ResponsesToAnthropicStreamConverter) truncatedToolArgs() string {
+	check := func(b *responsesAnthropicBlock) string {
+		if b == nil || b.kind != "tool_use" {
+			return ""
+		}
+		args := b.args.String()
+		if args == "" || toolArgsComplete(args) {
+			return ""
+		}
+		return "truncated tool arguments"
+	}
+	if msg := check(c.open); msg != "" {
+		return msg
+	}
+	for _, b := range c.blocks {
+		if msg := check(b); msg != "" {
+			return msg
+		}
+	}
+	return ""
+}
+
 func (c *ResponsesToAnthropicStreamConverter) delta(deltaType string, fields map[string]any) []byte {
 	if c.open == nil || c.open.closed {
 		return nil
@@ -406,6 +445,18 @@ func (c *ResponsesToAnthropicStreamConverter) finishTool(ev ResponsesStreamEvent
 	return out
 }
 
+// eventItemID is the item a Responses event refers to. Delta and done events
+// use the top-level item_id, while output_item.done carries only item.id.
+func eventItemID(ev ResponsesStreamEvent) string {
+	if ev.ItemID != "" {
+		return ev.ItemID
+	}
+	if ev.Item != nil {
+		return ev.Item.ID
+	}
+	return ""
+}
+
 func (c *ResponsesToAnthropicStreamConverter) pendingFor(itemID string) *pendingResponsesCall {
 	if itemID == "" {
 		return nil
@@ -415,6 +466,11 @@ func (c *ResponsesToAnthropicStreamConverter) pendingFor(itemID string) *pending
 
 func (c *ResponsesToAnthropicStreamConverter) flushPending(out *[]byte) {
 	for len(c.pending) > 0 {
+		// Never replay a deferred call over an open block: its added event
+		// would close that block early. The caller closes first, then calls us.
+		if c.open != nil && !c.open.closed {
+			return
+		}
 		call := c.pending[0]
 		c.pending = c.pending[1:]
 		delete(c.pendingBy, call.added.Item.ID)
@@ -435,9 +491,17 @@ func (c *ResponsesToAnthropicStreamConverter) flushPending(out *[]byte) {
 }
 
 func (c *ResponsesToAnthropicStreamConverter) finish(out []byte) []byte {
-	out = append(out, c.closeOpen()...)
-	c.flushPending(&out)
-	out = append(out, c.closeOpen()...)
+	// Close the open block, then drain deferred calls. flushPending stops at
+	// the first call it opens, so close and repeat until no deferred call is
+	// left.
+	out = append(out, c.closeOpenForTerminal()...)
+	for len(c.pending) > 0 {
+		c.flushPending(&out)
+		out = append(out, c.closeOpenForTerminal()...)
+	}
+	if msg := c.truncatedToolArgs(); msg != "" {
+		return append(out, c.EmitError(msg)...)
+	}
 	c.finished = true
 	if c.stopReason == "" || (c.stopReason == "end_turn" && c.sawTool) {
 		if c.sawTool {
@@ -504,14 +568,24 @@ func responseErrorMessage(ev ResponsesStreamEvent) string {
 	if ev.Message != "" {
 		return ev.Message
 	}
+	if msg := nestedErrorMessage(ev.Error); msg != "" {
+		return msg
+	}
 	if ev.Response != nil {
-		if m, ok := ev.Response.Error.(map[string]any); ok {
-			if msg, _ := m["message"].(string); msg != "" {
-				return msg
-			}
+		if msg := nestedErrorMessage(ev.Response.Error); msg != "" {
+			return msg
 		}
 	}
 	return "upstream failed"
+}
+
+func nestedErrorMessage(v any) string {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return ""
+	}
+	msg, _ := m["message"].(string)
+	return msg
 }
 
 func anthropicSSE(event string, payload any) []byte {
