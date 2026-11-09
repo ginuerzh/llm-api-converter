@@ -9,23 +9,36 @@ import (
 
 // -------- Responses API (OpenAI /v1/responses) --------
 
+// ResponsesReasoning is the reasoning configuration on a Responses request.
+type ResponsesReasoning struct {
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
+}
+
+// ResponsesText is the text configuration on a Responses request.
+type ResponsesText struct {
+	Format map[string]any `json:"format,omitempty"`
+}
+
 // ResponsesRequest is a POST /v1/responses request body.
 type ResponsesRequest struct {
-	Model              string          `json:"model"`
-	Instructions       json.RawMessage `json:"instructions,omitempty"`
-	Input              json.RawMessage `json:"input,omitempty"` // string or []inputItem
-	MaxOutputTokens    *int            `json:"max_output_tokens,omitempty"`
-	Temperature        *float64        `json:"temperature,omitempty"`
-	TopP               *float64        `json:"top_p,omitempty"`
-	Stream             bool            `json:"stream,omitempty"`
-	StreamOptions      any             `json:"stream_options,omitempty"`
-	Tools              []ResponsesTool `json:"tools,omitempty"`
-	ToolChoice         any             `json:"tool_choice,omitempty"`
-	ParallelToolCalls  *bool           `json:"parallel_tool_calls,omitempty"`
-	PreviousResponseID string          `json:"previous_response_id,omitempty"`
-	Store              *bool           `json:"store,omitempty"`
-	Truncation         string          `json:"truncation,omitempty"`
-	Metadata           any             `json:"metadata,omitempty"`
+	Model              string              `json:"model"`
+	Instructions       json.RawMessage     `json:"instructions,omitempty"`
+	Input              json.RawMessage     `json:"input,omitempty"` // string or []inputItem
+	MaxOutputTokens    *int                `json:"max_output_tokens,omitempty"`
+	Temperature        *float64            `json:"temperature,omitempty"`
+	TopP               *float64            `json:"top_p,omitempty"`
+	Stream             bool                `json:"stream,omitempty"`
+	StreamOptions      any                 `json:"stream_options,omitempty"`
+	Tools              []ResponsesTool     `json:"tools,omitempty"`
+	ToolChoice         any                 `json:"tool_choice,omitempty"`
+	ParallelToolCalls  *bool               `json:"parallel_tool_calls,omitempty"`
+	PreviousResponseID string              `json:"previous_response_id,omitempty"`
+	Reasoning          *ResponsesReasoning `json:"reasoning,omitempty"`
+	Store              *bool               `json:"store,omitempty"`
+	Text               *ResponsesText      `json:"text,omitempty"`
+	Truncation         string              `json:"truncation,omitempty"`
+	Metadata           any                 `json:"metadata,omitempty"`
 }
 
 // responsesInputItem is an element in the input array.
@@ -122,10 +135,11 @@ type ResponsesUsage struct {
 
 // ResponsesUsageDetails holds breakdown details for token usage.
 type ResponsesUsageDetails struct {
-	CachedTokens    int `json:"cached_tokens,omitempty"`
-	TextTokens      int `json:"text_tokens,omitempty"`
-	AudioTokens     int `json:"audio_tokens,omitempty"`
-	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	CachedTokens     int `json:"cached_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	TextTokens       int `json:"text_tokens,omitempty"`
+	AudioTokens      int `json:"audio_tokens,omitempty"`
+	ReasoningTokens  int `json:"reasoning_tokens,omitempty"`
 }
 
 // -------- Responses API Streaming Types --------
@@ -168,6 +182,7 @@ type ResponsesStreamEvent struct {
 	Delta          string                   `json:"delta,omitempty"`
 	TextDone       string                   `json:"text,omitempty"`
 	Arguments      string                   `json:"arguments,omitempty"`
+	Name           string                   `json:"name,omitempty"`
 	SummaryText    string                   `json:"summary_text,omitempty"`
 }
 

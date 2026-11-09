@@ -1,5 +1,7 @@
 package convert
 
+import "strings"
+
 // detectSource detects the protocol from a parsed JSON body using positive
 // structural markers only. No negative exclusions, no hardcoded model prefixes.
 // Returns ProtocolUnknown for minimal requests that lack distinguishing features.
@@ -30,6 +32,12 @@ func detectSource(raw map[string]any) Protocol {
 		if _, ok := raw["usage"]; ok {
 			return ProtocolAnthropic
 		}
+	}
+
+	// OpenAI Responses streaming event: every event type is namespaced
+	// under "response." (response.created, response.output_text.delta, ...).
+	if t, ok := raw["type"].(string); ok && strings.HasPrefix(t, "response.") {
+		return ProtocolOpenAIResponses
 	}
 
 	// Anthropic streaming event: these type names are Anthropic-only. The

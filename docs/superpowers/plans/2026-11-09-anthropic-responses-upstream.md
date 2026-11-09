@@ -115,7 +115,7 @@ git add convert/responses.go convert/detect.go convert/anthropic_responses_test.
 git commit -m "feat(convert): add Responses reasoning types and stream detection"
 ```
 
-**Implementation record:** _Fill after completion: date/status, repo + commit SHA, files changed, tests run and results, review findings/fixes, deferred items._
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `pending`. Files: `convert/responses.go`, `convert/detect.go`, `convert/anthropic_responses_test.go`. Tests: `GOWORK=/tmp/opencode/ws/go.work go test ./convert -run 'TestDetectResponsesStreamingEvents|TestResponsesRequestReasoningMarshal' -v` → PASS. Review findings: none. Deferred: none.
 
 ---
 
