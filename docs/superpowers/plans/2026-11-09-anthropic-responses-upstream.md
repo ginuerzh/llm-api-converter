@@ -506,7 +506,7 @@ git add convert/convert.go convert/anthropic_responses_test.go
 git commit -m "feat(convert): route Anthropic traffic to Responses upstreams"
 ```
 
-**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `pending`. Files: `convert/convert.go`, `convert/anthropic_responses_test.go`. Tests: routing tests → PASS; `go test ./convert -count=1` → PASS. Ruling: the brief's routing bodies were not classifiable and the reply assertion matched raw Responses fields; added a system block/tool_choice marker and asserted the absence of `object:"response"` plus `stop_reason`. Review findings: none. Deferred: Chat/Gemini clients targeting Responses remain unsupported and now fail loudly.
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `7638c43`. Files: `convert/convert.go`, `convert/anthropic_responses_test.go`. Tests: routing tests → PASS; `go test ./convert -count=1` → PASS. Ruling: the brief's routing bodies were not classifiable and the reply assertion matched raw Responses fields; added a system block/tool_choice marker and asserted the absence of `object:"response"` plus `stop_reason`. Review findings: none. Deferred: Chat/Gemini clients targeting Responses remain unsupported and now fail loudly.
 
 ---
 
