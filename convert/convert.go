@@ -754,14 +754,26 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 		// streaming response path); fall back to model-map resolution when no
 		// request session exists (old sniffer, or stateless usage).
 		target := ProtocolUnknown
+		var sess *Session
 		if store != nil {
-			if sess := store.Get(sid); sess != nil {
-				target = sess.From
+			if s := store.Get(sid); s != nil {
+				sess = s
+				target = s.From
 			}
 		}
 		model := extractModelFromData(payload)
 		if target == ProtocolUnknown {
+			target = detectByURI(opts.URI, DirectionRequest)
+		}
+		if target == ProtocolUnknown {
 			_, target = resolveModel(model, from, opts.ModelMap)
+		}
+
+		// The request path records the upstream protocol. When it is a
+		// Responses upstream and the client is Anthropic, do not let a bare
+		// error event classify as Anthropic and take the passthrough branch.
+		if sess != nil && sess.To == ProtocolOpenAIResponses && target == ProtocolAnthropic {
+			from = ProtocolOpenAIResponses
 		}
 
 		// Model map fallback when body + URI can't classify the event.
@@ -825,6 +837,38 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 				}
 				return startData, nil
 			}
+		}
+
+		// Responses SSE -> Anthropic: the client is Anthropic and the
+		// upstream recorded on the request path is Responses.
+		if from == ProtocolOpenAIResponses && target == ProtocolAnthropic {
+			model := opts.RequestModel
+			if model == "" {
+				model = opts.ResolvedModel
+			}
+			if model == "" {
+				model = opts.Model
+			}
+			handler := NewResponsesToAnthropicStreamConverter(model, opts)
+			if store != nil {
+				store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: handler})
+			}
+			startData := handler.HandleStreamStart()
+			if len(data) > 0 {
+				if payload := extractSSEPayload(data); payload != nil {
+					chunkData, err := handler.HandleChunk(payload)
+					if err != nil {
+						return startData, err
+					}
+					if len(chunkData) > 0 {
+						if len(startData) > 0 {
+							return append(startData, append([]byte("\n\n"), chunkData...)...), nil
+						}
+						return chunkData, nil
+					}
+				}
+			}
+			return startData, nil
 		}
 
 		// Anthropic SSE -> OpenAI Chat: the reverse of StreamConverter.
@@ -1036,7 +1080,8 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			switch handler.(type) {
 			case *StreamConverter, *AnthropicToOpenAIStreamConverter,
 				*GeminiToOpenAIStreamConverter, *GeminiToAnthropicStreamConverter,
-				*AnthropicToGeminiStreamConverter, *OpenAIToGeminiStreamConverter:
+				*AnthropicToGeminiStreamConverter, *OpenAIToGeminiStreamConverter,
+				*ResponsesToAnthropicStreamConverter:
 				return handler.EmitError(opts.ErrorMsg), nil
 			}
 		}

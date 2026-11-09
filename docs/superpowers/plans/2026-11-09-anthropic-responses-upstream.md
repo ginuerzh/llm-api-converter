@@ -901,7 +901,7 @@ git add convert/convert.go convert/anthropic_responses_test.go
 git commit -m "feat(convert): route Responses streams to Anthropic clients"
 ```
 
-**Implementation record:** _Fill after completion._
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `pending`. Files: `convert/convert.go`, `convert/anthropic_responses_test.go`. Tests: lifecycle routing, missing-session URI fallback and error-phase tests → PASS; `go test ./convert -count=1` → PASS. Review findings: none. Deferred: a missing session plus a bare error event remains ambiguous; response.created is covered.
 
 ---
 

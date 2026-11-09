@@ -220,3 +220,53 @@ func TestConvertUnknownResponsesPairFails(t *testing.T) {
 		t.Fatalf("err = %v, want a missing-converter diagnostic", err)
 	}
 }
+
+func TestHandleSSEEventResponsesToAnthropic(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("sid-1", &Session{ID: "sid-1", From: ProtocolAnthropic, To: ProtocolOpenAIResponses})
+	opts := &ConvertOptions{SID: "sid-1", SessionStore: store, URI: "/v1/messages", Direction: "response"}
+	start, err := HandleSSEEvent("sid-1", "start", 0, []byte(`data: {"type":"response.created","response":{"id":"resp_1"}}`), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(start), "message_start") {
+		t.Fatalf("start = %s", start)
+	}
+	if _, ok := store.Get("sid-1").StreamHandler.(*ResponsesToAnthropicStreamConverter); !ok {
+		t.Fatalf("handler = %T, want ResponsesToAnthropicStreamConverter", store.Get("sid-1").StreamHandler)
+	}
+	ev, _ := HandleSSEEvent("sid-1", "event", 1, []byte(`data: {"type":"response.output_text.delta","delta":"hi"}`), opts)
+	if !strings.Contains(string(ev), "text_delta") {
+		t.Fatalf("event = %s", ev)
+	}
+	end, _ := HandleSSEEvent("sid-1", "end", 0, nil, opts)
+	if !strings.Contains(string(end), "message_stop") {
+		t.Fatalf("end = %s", end)
+	}
+}
+
+func TestHandleSSEEventMissingSessionUsesURI(t *testing.T) {
+	store := NewSessionStore()
+	opts := &ConvertOptions{SID: "missing", SessionStore: store, URI: "/v1/messages", Direction: "response"}
+	out, err := HandleSSEEvent("missing", "start", 0, []byte(`data: {"type":"response.created","response":{"id":"resp_1"}}`), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "message_start") {
+		t.Fatalf("out = %s", out)
+	}
+	if _, ok := store.Get("missing").StreamHandler.(*ResponsesToAnthropicStreamConverter); !ok {
+		t.Fatalf("handler = %T, want ResponsesToAnthropicStreamConverter", store.Get("missing").StreamHandler)
+	}
+}
+
+func TestHandleSSEEventEndWithErrorMsg(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("sid-1", &Session{ID: "sid-1", From: ProtocolAnthropic, To: ProtocolOpenAIResponses})
+	opts := &ConvertOptions{SID: "sid-1", SessionStore: store, URI: "/v1/messages", Direction: "response", ErrorMsg: "unexpected EOF"}
+	_, _ = HandleSSEEvent("sid-1", "start", 0, []byte(`data: {"type":"response.created","response":{"id":"resp_1"}}`), opts)
+	out, _ := HandleSSEEvent("sid-1", "end", 0, nil, opts)
+	if !strings.Contains(string(out), "event: error") || strings.Contains(string(out), "message_stop") {
+		t.Fatalf("out = %s", out)
+	}
+}
