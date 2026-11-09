@@ -605,7 +605,7 @@ git add convert/stream_responses_to_anthropic.go convert/stream_responses_to_ant
 git commit -m "feat(convert): stream Responses text as Anthropic events"
 ```
 
-**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `pending`. Files: `convert/stream_responses_to_anthropic.go` (new), `convert/stream_responses_to_anthropic_test.go` (new). Tests: `TestResponsesToAnthropicStreamText` → PASS; `go test ./convert -count=1` → PASS. Review findings: none. Deferred: tools/reasoning/errors are Task 6.
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `8ac69de`. Files: `convert/stream_responses_to_anthropic.go` (new), `convert/stream_responses_to_anthropic_test.go` (new). Tests: `TestResponsesToAnthropicStreamText` → PASS; `go test ./convert -count=1` → PASS. Review findings: none. Deferred: tools/reasoning/errors are Task 6.
 
 ---
 
