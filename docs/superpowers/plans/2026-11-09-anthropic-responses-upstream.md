@@ -255,7 +255,7 @@ git add convert/anthropic_responses.go convert/registry.go convert/anthropic_res
 git commit -m "feat(convert): translate Anthropic requests to Responses"
 ```
 
-**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `pending`. Files: `convert/anthropic_responses.go` (new), `convert/registry.go`, `convert/anthropic_responses_test.go`. Tests: `go test ./convert -run 'TestConvertAnthropicRequestToResponses' -v` → PASS; `go test ./convert -count=1` → PASS. Review findings: none. Deferred: thinking replay, stop_sequences/top_k unsupported.
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `41a92f1`. Files: `convert/anthropic_responses.go` (new), `convert/registry.go`, `convert/anthropic_responses_test.go`. Tests: `go test ./convert -run 'TestConvertAnthropicRequestToResponses' -v` → PASS; `go test ./convert -count=1` → PASS. Review findings: none. Deferred: thinking replay, stop_sequences/top_k unsupported.
 
 ---
 
