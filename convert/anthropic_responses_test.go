@@ -108,3 +108,62 @@ func TestConvertAnthropicRequestToResponsesImageAndFormat(t *testing.T) {
 		t.Fatalf("text = %+v", req["text"])
 	}
 }
+
+func TestConvertResponsesResponseToAnthropicText(t *testing.T) {
+	body := `{"id":"resp_1","object":"response","status":"completed","model":"deepseek-v4.1-flash-1017","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}],"usage":{"input_tokens":10,"output_tokens":2}}`
+	out, _ := convertResponsesResponseToAnthropic([]byte(body), &ConvertOptions{RequestModel: "claude-opus-5-5"})
+	var resp AnthropicResponse
+	_ = json.Unmarshal(out, &resp)
+	if resp.Model != "claude-opus-5-5" || resp.Content[0].Type != "text" || resp.Content[0].Text != "Hello" {
+		t.Fatalf("unexpected response: %s", out)
+	}
+	if resp.StopReason == nil || *resp.StopReason != "end_turn" {
+		t.Fatalf("stop = %v", resp.StopReason)
+	}
+}
+
+func TestConvertResponsesResponseToAnthropicReasoning(t *testing.T) {
+	body := `{"id":"resp_1","object":"response","status":"completed","model":"m","output":[{"type":"reasoning","content":[{"type":"reasoning_text","text":"think"}]}]}`
+	out, _ := convertResponsesResponseToAnthropic([]byte(body), &ConvertOptions{})
+	if !strings.Contains(string(out), `"type":"thinking"`) || !strings.Contains(string(out), `"thinking":"think"`) || !strings.Contains(string(out), `"signature":""`) {
+		t.Fatalf("unexpected response: %s", out)
+	}
+}
+
+func TestConvertResponsesResponseToAnthropicToolCall(t *testing.T) {
+	body := `{"id":"resp_1","object":"response","status":"completed","model":"m","output":[{"type":"function_call","call_id":"toolu_1","name":"get_weather","arguments":"{\"city\":\"Beijing\"}"}]}`
+	out, _ := convertResponsesResponseToAnthropic([]byte(body), &ConvertOptions{})
+	var resp AnthropicResponse
+	_ = json.Unmarshal(out, &resp)
+	b := resp.Content[0]
+	if b.Type != "tool_use" || b.ID != "toolu_1" || b.Name != "get_weather" {
+		t.Fatalf("block = %+v", b)
+	}
+	if resp.StopReason == nil || *resp.StopReason != "tool_use" {
+		t.Fatalf("stop = %v", resp.StopReason)
+	}
+	if b.Input.(map[string]any)["city"] != "Beijing" {
+		t.Fatalf("input = %+v", b.Input)
+	}
+}
+
+func TestConvertResponsesResponseToAnthropicUsage(t *testing.T) {
+	body := `{"id":"resp_1","object":"response","status":"completed","model":"m","output":[{"type":"message","content":[{"type":"output_text","text":"x"}]}],"usage":{"input_tokens":100,"output_tokens":20,"input_tokens_details":{"cached_tokens":80,"cache_write_tokens":5}}}`
+	out, _ := convertResponsesResponseToAnthropic([]byte(body), &ConvertOptions{})
+	var resp AnthropicResponse
+	_ = json.Unmarshal(out, &resp)
+	u := resp.Usage
+	if u.InputTokens != 15 || u.CacheReadInputTokens != 80 || u.CacheCreationInputTokens != 5 || u.OutputTokens != 20 {
+		t.Fatalf("usage = %+v", u)
+	}
+}
+
+func TestConvertResponsesResponseToAnthropicIncomplete(t *testing.T) {
+	body := `{"id":"resp_1","object":"response","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"model":"m","output":[]}`
+	out, _ := convertResponsesResponseToAnthropic([]byte(body), &ConvertOptions{})
+	var resp AnthropicResponse
+	_ = json.Unmarshal(out, &resp)
+	if resp.StopReason == nil || *resp.StopReason != "max_tokens" {
+		t.Fatalf("stop = %v", resp.StopReason)
+	}
+}

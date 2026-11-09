@@ -399,7 +399,7 @@ git add convert/anthropic_responses.go convert/registry.go convert/anthropic_res
 git commit -m "feat(convert): translate Responses replies to Anthropic"
 ```
 
-**Implementation record:** _Fill after completion._
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `pending`. Files: `convert/anthropic_responses.go`, `convert/registry.go`, `convert/anthropic_responses_test.go`. Tests: `go test ./convert -run 'TestConvertResponsesResponseToAnthropic' -v` → PASS; `go test ./convert -count=1` → PASS. Review findings: none. Deferred: encrypted reasoning replay, web search and custom tools.
 
 ---
 

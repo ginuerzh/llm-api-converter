@@ -331,3 +331,163 @@ func responsesTextFromAnthropic(oc *AnthropicOutputConfig) *ResponsesText {
 		"schema": oc.Format.Schema,
 	}}
 }
+
+// anthropicOutBlock is the Anthropic content block used by the translated
+// response. It differs from AnthropicContent only in being able to emit an
+// explicit empty signature on thinking blocks.
+type anthropicOutBlock struct {
+	Type      string         `json:"type"`
+	Text      string         `json:"text,omitempty"`
+	Thinking  string         `json:"thinking,omitempty"`
+	Signature *string        `json:"signature,omitempty"`
+	ID        string         `json:"id,omitempty"`
+	Name      string         `json:"name,omitempty"`
+	Input     map[string]any `json:"input,omitempty"`
+}
+
+type anthropicTranslatedResponse struct {
+	ID           string              `json:"id"`
+	Type         string              `json:"type"`
+	Role         string              `json:"role"`
+	Content      []anthropicOutBlock `json:"content"`
+	Model        string              `json:"model"`
+	StopReason   *string             `json:"stop_reason"`
+	StopSequence *string             `json:"stop_sequence"`
+	Usage        AnthropicUsage      `json:"usage"`
+}
+
+// convertResponsesResponseToAnthropic converts a Responses reply body into an
+// Anthropic Messages reply body.
+func convertResponsesResponseToAnthropic(body []byte, opts *ConvertOptions) ([]byte, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("unmarshal Responses reply: %w", err)
+	}
+	var object string
+	_ = json.Unmarshal(raw["object"], &object)
+	if object != "response" {
+		return body, nil
+	}
+	var resp ResponsesResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal Responses reply: %w", err)
+	}
+	return responsesResponseToAnthropic(&resp, opts)
+}
+
+func responsesResponseToAnthropic(resp *ResponsesResponse, opts *ConvertOptions) ([]byte, error) {
+	content := make([]anthropicOutBlock, 0, len(resp.Output))
+	for _, item := range resp.Output {
+		switch item.Type {
+		case "message":
+			for _, part := range item.Content {
+				if part.Type == "output_text" && part.Text != "" {
+					content = append(content, anthropicOutBlock{Type: "text", Text: part.Text})
+				}
+			}
+		case "reasoning":
+			if text := responsesReasoningText(item); text != "" {
+				sig := ""
+				content = append(content, anthropicOutBlock{Type: "thinking", Thinking: text, Signature: &sig})
+			}
+		case "function_call":
+			id := item.CallID
+			if id == "" {
+				id = item.ID
+			}
+			content = append(content, anthropicOutBlock{
+				Type:  "tool_use",
+				ID:    id,
+				Name:  item.Name,
+				Input: parseResponsesArguments(item.Arguments),
+			})
+		default:
+			slog.Debug("responses: skipping unsupported output item", "type", item.Type)
+		}
+	}
+
+	stop := responsesStopReason(resp)
+	model := resp.Model
+	if opts != nil {
+		model = resolveResponseModel(resp.Model, opts)
+	}
+	out := anthropicTranslatedResponse{
+		ID:           resp.ID,
+		Type:         "message",
+		Role:         "assistant",
+		Content:      content,
+		Model:        model,
+		StopReason:   &stop,
+		StopSequence: nil,
+		Usage:        anthropicUsageFromResponses(resp.Usage),
+	}
+	return json.Marshal(out)
+}
+
+func responsesReasoningText(item ResponsesOutputItem) string {
+	var parts []string
+	for _, part := range item.Content {
+		if part.Type == "reasoning_text" && part.Text != "" {
+			parts = append(parts, part.Text)
+		}
+	}
+	if len(parts) == 0 {
+		for _, summary := range item.Summary {
+			if summary.Text != "" {
+				parts = append(parts, summary.Text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func responsesStopReason(resp *ResponsesResponse) string {
+	if resp.Status == "incomplete" {
+		if details, ok := resp.IncompleteDetails.(map[string]any); ok {
+			switch details["reason"] {
+			case "max_output_tokens":
+				return "max_tokens"
+			case "content_filter":
+				return "refusal"
+			}
+		}
+	}
+	for _, item := range resp.Output {
+		if item.Type == "function_call" {
+			return "tool_use"
+		}
+	}
+	return "end_turn"
+}
+
+func anthropicUsageFromResponses(u *ResponsesUsage) AnthropicUsage {
+	if u == nil {
+		return AnthropicUsage{}
+	}
+	cached, cacheWrite := 0, 0
+	if u.InputTokensDetails != nil {
+		cached = u.InputTokensDetails.CachedTokens
+		cacheWrite = u.InputTokensDetails.CacheWriteTokens
+	}
+	input := u.InputTokens - cached - cacheWrite
+	if input < 0 {
+		input = 0
+	}
+	return AnthropicUsage{
+		InputTokens:              input,
+		OutputTokens:             u.OutputTokens,
+		CacheCreationInputTokens: cacheWrite,
+		CacheReadInputTokens:     cached,
+	}
+}
+
+func parseResponsesArguments(arguments string) map[string]any {
+	out := map[string]any{}
+	if strings.TrimSpace(arguments) == "" {
+		return out
+	}
+	if err := json.Unmarshal([]byte(arguments), &out); err != nil || out == nil {
+		return map[string]any{}
+	}
+	return out
+}
