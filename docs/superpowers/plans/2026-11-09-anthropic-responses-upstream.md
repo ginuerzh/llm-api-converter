@@ -1076,7 +1076,7 @@ git add go.mod go.sum
 git commit -m "chore(deps): bump llm-api-converter to v0.6.0"
 ```
 
-- [ ] **Step 4: Verify against the live Bailian node (human-gated deploy)**
+- [x] **Step 4: Verify against the live Bailian node (human-gated deploy)**
 
 - Push cuttle `main` only with approval; wait for CI to publish the image.
 - `kubectl -n llm rollout restart deploy/llm-gw` and wait for rollout.
@@ -1100,10 +1100,12 @@ git log --oneline -1
 ```
 Record the cuttle commit in the plan's implementation record. Do not push without approval.
 
-**Implementation record:** 2026-11-09 — Steps 1, 2, 3, and 5 complete; Step 4 pending the human-gated deploy. Converter gate: `GOWORK=/tmp/opencode/ws/go.work go test -count=1 ./...` PASS (`convert`, `engine`, `rewriter`, `tests/e2e`), `go vet ./...` PASS, `CGO_ENABLED=1 GOWORK=/tmp/opencode/ws/go.work go test -race -count=1 ./convert` PASS. Release tag: `v0.6.0` at commit `e31a433`, pushed to `origin`. Cuttle dependency bump: `github.com/ginuerzh/llm-api-converter v0.6.0` in `go.mod`/`go.sum`; `GOWORK=off go test ./... -count=1` PASS. The converter now fails loudly on unsupported Chat/Gemini→Responses conversions, so the two `provider_capabilities_test.go` fallback tests were changed to exercise the supported Anthropic→Responses path (provider without an Anthropic base URL, inbound `/v1/messages`); cuttle commit `d840f147` on `main` (not pushed). Live Bailian/DeepSeek verification and rollback notes: pending human-gated deploy.
+**Implementation record:** 2026-11-09 — Steps 1-5 complete. Converter gate: `GOWORK=/tmp/opencode/ws/go.work go test -count=1 ./...` PASS (`convert`, `engine`, `rewriter`, `tests/e2e`), `go vet ./...` PASS, `CGO_ENABLED=1 GOWORK=/tmp/opencode/ws/go.work go test -race -count=1 ./convert` PASS. Release tag: `v0.6.0` at commit `e31a433`, pushed to `origin`. Cuttle dependency bump: `github.com/ginuerzh/llm-api-converter v0.6.0` in `go.mod`/`go.sum`; `GOWORK=off go test ./... -count=1` PASS; cuttle commit `d840f147` on `main`, pushed as part of `1ff93fe5`. CI: `docker` run `42722509502` succeeded; `ghcr.io/ginuerzh/cuttle:latest` published. Live verification: `/data/cuttle.yaml` backed up to `/data/cuttle.yaml.bak-20261109-pre-responses`; `bailian-dsf` pinned to `api: responses` and SIGHUP reloaded. Bailian (`claude-opus-4-5` → `deepseek-v4.1-flash-1017`): HTTP 200, `stats.protocol=responses`, upstream `token-plan.cn-beijing.maas.aliyuncs.com:443/compatible-mode/v1/responses`, SSE ended in `message_stop`, tool_use present, and a reasoning prompt produced a thinking block plus text. DeepSeek official Responses (`deepseek-dadax` → `api.deepseek.com/v1/responses`): `deepseek-flash` text produced thinking + text and `message_stop`; `deepseek-flash` tool call produced tool_use + text and `message_stop`; `deepseek-reasoner` produced thinking + text and `message_stop`; every row recorded `stats.protocol=responses`, HTTP 200. The temporary `deepseek-test` entrypoint and `Deepseek-dadax` responses pin/model change were removed after verification and the config was restored to the post-Bailian-pin state; SIGHUP reloaded. The `bailian-dsf` pin remains live. Two cuttle `provider_capabilities_test.go` fallback tests were changed to exercise the supported Anthropic→Responses path because v0.6.0 now fails loudly on Chat/Gemini→Responses; see cuttle commit `d840f147`.
 
 ---
 
 ## Implementation records
 
 Each task above has an inline record. When the whole plan is complete, add a short summary here: converter tag, cuttle commit, gate output, live result, and any deferred work (Chat→Responses upstream, sealed reasoning, cache breakpoints).
+
+**Summary:** Converter `v0.6.0` (`e31a433`, pushed); cuttle `d840f147` (pushed in `1ff93fe5`); gate green (`go test`, `go vet`, `go test -race`); live Bailian and DeepSeek official Responses verified with HTTP 200, `stats.protocol=responses`, streams ending in `message_stop`, and reasoning/tool-call blocks present. Deferred: Chat→Responses upstream, sealed reasoning, cache breakpoints.
