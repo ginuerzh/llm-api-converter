@@ -236,17 +236,22 @@ func (c *ResponsesToAnthropicStreamConverter) HandleChunk(data []byte) ([]byte, 
 		return c.finish(out), nil
 
 	case ResponseFailed:
-		return c.EmitError(responseErrorMessage(ev)), nil
+		out := c.start()
+		return append(out, c.EmitError(responseErrorMessage(ev))...), nil
 
 	case "error":
 		msg := ev.Message
 		if msg == "" {
 			msg = nestedErrorMessage(ev.Error)
 		}
+		if msg == "" && ev.Response != nil {
+			msg = nestedErrorMessage(ev.Response.Error)
+		}
 		if msg == "" {
 			msg = "upstream error"
 		}
-		return c.EmitError(msg), nil
+		out := c.start()
+		return append(out, c.EmitError(msg)...), nil
 
 	default:
 		return c.start(), nil
@@ -491,12 +496,18 @@ func (c *ResponsesToAnthropicStreamConverter) flushPending(out *[]byte) {
 }
 
 func (c *ResponsesToAnthropicStreamConverter) finish(out []byte) []byte {
-	// Close the open block, then drain deferred calls. flushPending stops at
-	// the first call it opens, so close and repeat until no deferred call is
-	// left.
+	// Validate before closing anything: an incomplete tool block must not
+	// emit content_block_stop. Then close the open block, drain deferred
+	// calls one at a time, and validate again after each one.
+	if msg := c.truncatedToolArgs(); msg != "" {
+		return append(out, c.EmitError(msg)...)
+	}
 	out = append(out, c.closeOpenForTerminal()...)
 	for len(c.pending) > 0 {
 		c.flushPending(&out)
+		if msg := c.truncatedToolArgs(); msg != "" {
+			return append(out, c.EmitError(msg)...)
+		}
 		out = append(out, c.closeOpenForTerminal()...)
 	}
 	if msg := c.truncatedToolArgs(); msg != "" {

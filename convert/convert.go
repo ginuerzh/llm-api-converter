@@ -794,8 +794,9 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 
 		// A bare error payload with no session must not be mistaken for an
 		// Anthropic client stream and passed through raw. Normalize it for the
-		// Anthropic client instead.
-		if target == ProtocolAnthropic && payload != nil && isStreamErrorPayload(payload) {
+		// Anthropic client instead, but leave a real Anthropic passthrough
+		// (session To == Anthropic) untouched.
+		if target == ProtocolAnthropic && (sess == nil || sess.To == ProtocolOpenAIResponses) && payload != nil && isStreamErrorPayload(payload) {
 			model := opts.RequestModel
 			if model == "" {
 				model = opts.ResolvedModel

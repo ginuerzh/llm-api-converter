@@ -134,6 +134,24 @@ func TestResponsesToAnthropicStreamTruncatedToolOnCompleted(t *testing.T) {
 	if !strings.Contains(s, "event: error") || strings.Contains(s, "event: message_stop") {
 		t.Fatalf("truncated tool was not terminal: %s", s)
 	}
+	if errs := validateAnthropicSSE([]byte(s)); len(errs) != 0 {
+		t.Fatalf("contract errors: %v\n%s", errs, s)
+	}
+}
+
+func TestResponsesToAnthropicStreamFirstEventFailed(t *testing.T) {
+	c := NewResponsesToAnthropicStreamConverter("m", &ConvertOptions{})
+	b, err := c.HandleChunk([]byte(`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"message":"boom"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if !strings.Contains(s, "event: message_start") || !strings.Contains(s, "event: error") || !strings.Contains(s, "boom") {
+		t.Fatalf("failed event did not produce a contract stream: %s", s)
+	}
+	if errs := validateAnthropicSSE([]byte(s)); len(errs) != 0 {
+		t.Fatalf("contract errors: %v\n%s", errs, s)
+	}
 }
 
 func TestResponsesToAnthropicStreamAfterTerminal(t *testing.T) {
@@ -168,6 +186,20 @@ func TestHandleSSEEventMissingSessionBareError(t *testing.T) {
 	s := string(out)
 	if !strings.Contains(s, "event: error") || !strings.Contains(s, "boom") {
 		t.Fatalf("bare error was not forwarded as an Anthropic error: %s", s)
+	}
+}
+
+func TestHandleSSEEventAnthropicPassthroughError(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("sid", &Session{ID: "sid", From: ProtocolAnthropic, To: ProtocolAnthropic})
+	opts := &ConvertOptions{SID: "sid", SessionStore: store, URI: "/v1/messages", Direction: "response"}
+	out, err := HandleSSEEvent("sid", "start", 0, []byte(`data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "overloaded_error") || strings.Contains(s, "api_error") {
+		t.Fatalf("Anthropic passthrough error was rewritten: %s", s)
 	}
 }
 
