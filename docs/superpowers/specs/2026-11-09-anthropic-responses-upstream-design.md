@@ -103,6 +103,19 @@ with the live `bailian-dsf` model produced:
   receives the `data:` payload through the existing lifecycle and must not rely
   on those extra lines.
 
+A second probe against DeepSeek official Responses
+(`https://api.deepseek.com/v1/responses`) confirmed the same wire shape and two
+extra behaviours the converter must tolerate:
+
+- `deepseek-flash` can emit a reasoning item and `response.reasoning_text.*`
+  even when the request asked for no reasoning, and can finish with
+  `response.incomplete` when `max_output_tokens` is small.
+- `deepseek-reasoner` emits a reasoning item followed by a separate message
+  item; `response.content_part.added` for the reasoning item carries
+  `part.type == "reasoning_text"` and must not open a text block.
+- DeepSeek response ids are bare UUIDs, and function calls use `call_...` ids;
+  both are carried through unchanged.
+
 ## Approaches considered
 
 **A. Pairwise converters plus a stateful stream encoder (chosen).**
@@ -207,8 +220,9 @@ They are settled here so the plan does not have to guess:
    pairs keep the existing passthrough; the new pair always has a converter.
 8. **Fixtures and validators.** There is no Responses contract validator in the
    repository. Add direct shape assertions for the new Responses request and
-   response, and check in the captured Bailian streams as
-   `convert/testdata/responses/*.sse` (text, tool, reasoning, parallel tool).
+   response, and check in the captured Bailian and DeepSeek streams as
+   `convert/testdata/responses/*.sse` (text, tool, reasoning, parallel tool,
+   DeepSeek text-with-implicit-reasoning).
    Extending the full contract validator to Responses is optional and not a
    prerequisite for this pair.
 
@@ -221,7 +235,7 @@ They are settled here so the plan does not have to guess:
 | `convert/anthropic_responses.go` | Request conversion, non-streaming response conversion, shared field helpers |
 | `convert/stream_responses_to_anthropic.go` | Responses SSE → Anthropic SSE state machine |
 | `convert/anthropic_responses_test.go` | Request/response unit tests and routing tests |
-| `convert/stream_responses_to_anthropic_test.go` | Stream tests using captured Bailian fixtures |
+| `convert/stream_responses_to_anthropic_test.go` | Stream tests using captured Bailian and DeepSeek fixtures |
 
 ### Type changes
 
@@ -424,8 +438,8 @@ Unit tests:
 - Response: text only; text + reasoning; one and multiple tool calls; malformed
   arguments; incomplete `max_output_tokens`; usage with cached and cache-write
   tokens; empty output; stop-reason inference.
-- Stream: captured Bailian text, tool, reasoning and parallel-tool fixtures
-  under `convert/testdata/responses/`; OpenAI-style `reasoning_summary_text`
+- Stream: captured Bailian text, tool, reasoning, parallel-tool and
+  DeepSeek text/reasoning fixtures under `convert/testdata/responses/`; OpenAI-style `reasoning_summary_text`
   variant; tool arguments only in the done event; empty deltas; failed event;
   stream end without `response.completed`; truncated tool arguments become an
   error; error-phase `opts.ErrorMsg` becomes an error.

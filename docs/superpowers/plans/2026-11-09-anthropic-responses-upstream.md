@@ -682,6 +682,26 @@ func TestResponsesToAnthropicStreamReasoningSummaryVariant(t *testing.T) {
 	if !strings.Contains(out.String(), `"thinking":"summary"`) { t.Fatalf("out = %s", out.String()) }
 }
 
+func TestResponsesToAnthropicStreamReasoningPartAdded(t *testing.T) {
+	c := NewResponsesToAnthropicStreamConverter("m", &ConvertOptions{})
+	var out strings.Builder
+	for _, ev := range []string{
+		`{"type":"response.output_item.added","item":{"id":"r","type":"reasoning"}}`,
+		`{"type":"response.content_part.added","item_id":"r","part":{"type":"reasoning_text","text":""}}`,
+		`{"type":"response.reasoning_text.delta","item_id":"r","delta":"think"}`,
+	} {
+		b, _ := c.HandleChunk([]byte(ev))
+		out.Write(b)
+	}
+	s := out.String()
+	if strings.Contains(s, `"type":"text"`) {
+		t.Fatalf("reasoning content part opened a text block: %s", s)
+	}
+	if !strings.Contains(s, `"type":"thinking"`) || !strings.Contains(s, `"thinking":"think"`) {
+		t.Fatalf("unexpected stream: %s", s)
+	}
+}
+
 func TestResponsesToAnthropicStreamParallelCalls(t *testing.T) {
 	// Two function_call items, each with its own arguments. Assert two
 	// tool_use blocks in output order and both arguments complete. Use the
@@ -765,12 +785,24 @@ Expected: FAIL — events are ignored or emitted as text.
 
 Copy the captured streams into `convert/testdata/responses/`:
 
-- `text.sse` from the text probe
-- `tool.sse` from the tool probe
-- `reasoning.sse` from the reasoning probe
-- `parallel.sse` from the two-tool probe
+- `text.sse` from the Bailian text probe
+- `tool.sse` from the Bailian tool probe
+- `reasoning.sse` from the Bailian reasoning probe
+- `parallel.sse` from the Bailian two-tool probe
+- `deepseek-text.sse` from the DeepSeek official text probe (it emits
+  `reasoning_text` even without a reasoning request and ends `response.incomplete`
+  when the token cap is small)
+- `deepseek-reasoning.sse` from the DeepSeek official reasoning probe
+  (`deepseek-reasoner`, reasoning item followed by a message item)
 
-If the captured files are unavailable, build the fixture from the same event sequence the test feeds inline; do not block on a live upstream. Use the fixtures in at least the tool, reasoning and parallel tests.
+If the captured files are unavailable, build the fixture from the same event
+sequence the test feeds inline; do not block on a live upstream. Use the
+fixtures in at least the tool, reasoning, parallel and DeepSeek tests.
+
+DeepSeek's `response.content_part.added` may carry `part.type == "reasoning_text"`.
+The converter must ignore that event for text purposes and keep the thinking
+block it opened from `output_item.added`. Add a test that asserts no `text`
+block is opened for a `reasoning_text` content part.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -991,6 +1023,13 @@ git commit -m "chore(deps): bump llm-api-converter to v0.6.0"
 - Back up `/data/cuttle.yaml`, pin `bailian-dsf` to `api: responses`, send `SIGHUP`.
 - Send a Claude Code-shaped `/v1/messages` request with a tool call and a reasoning round.
 - Confirm HTTP 200, `stats.protocol=responses`, a stream ending in `message_stop`, and the tool call executing.
+- Repeat against DeepSeek official Responses (`https://api.deepseek.com/v1/responses`):
+  - `deepseek-flash` text with a non-trivial `max_output_tokens` (the model
+    may emit a reasoning item even without a reasoning request).
+  - `deepseek-flash` tool call.
+  - `deepseek-reasoner` reasoning followed by a text answer.
+  - Confirm the Anthropic output has `thinking` blocks for reasoning, text
+    blocks for the answer, `tool_use` for the call, and ends `message_stop`.
 - Roll back by removing the pin and sending `SIGHUP` if anything fails.
 
 - [ ] **Step 5: Commit the cuttle dependency change and record both repositories**
