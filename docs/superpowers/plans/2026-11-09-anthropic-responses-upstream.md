@@ -972,6 +972,64 @@ git commit -m "test(convert): accept responses in the CLI map and translated thi
 
 ---
 
+### Review fix pass (2026-11-09)
+
+**Files:**
+- Modify: `convert/stream_responses_to_anthropic.go`, `convert/convert.go`, `convert/anthropic_responses.go`, `convert/responses.go`
+- Add: `convert/anthropic_responses_review_test.go`
+
+**Interfaces:**
+- Consumes: Tasks 1-8.
+- Produces: fixes for the final whole-branch review findings.
+
+- [x] **Step 1: Fix the review findings**
+
+Critical:
+1. Out-of-order interleaved calls hung in `flushPending` because the deferred
+   call's `output_item.done` carried no top-level `item_id`, and the replay
+   re-entered the pending gate while a tool block was open. The pending gate now
+   resolves the item via `eventItemID` (top-level `item_id` or nested
+   `item.id`), and `flushPending` refuses to replay while a block is open.
+   `finish` closes the open block, drains deferred calls one at a time, and
+   repeats until the queue is empty.
+2. Zero-argument `tool_use` blocks omitted the required `input` object.
+   `anthropicOutBlock.Input` is now a pointer, set only for tool blocks, so an
+   empty map marshals as `{}`. `closeOpenForTerminal` emits the same `{}` for a
+   stream tool block that never saw an arguments event.
+3. Truncated tool arguments were validated only for the open block in the
+   no-terminal-event path. `finish` now validates every tracked tool block
+   before emitting `message_delta`/`message_stop`, using `toolArgsComplete`
+   (JSON object) rather than `json.Valid`.
+4. Events after a terminal event were not ignored. `HandleChunk` returns early
+   when `c.finished` is set.
+5. A bare `{"type":"error"}` first event with no session was classified as
+   Anthropic and passed through raw. `isStreamErrorPayload` detects it and
+   routes an Anthropic client to the Responses→Anthropic converter, which emits
+   an Anthropic `error` event. The nested `error.message` is now read by
+   `nestedErrorMessage`.
+
+Tests added in `convert/anthropic_responses_review_test.go`:
+- request-side parallel tool pairing and thinking+tool pairing;
+- non-stream zero-argument tool `input`;
+- stream done-only arguments, out-of-order interleaved completion, truncated
+  tool arguments on `response.completed`, events after terminal, missing-session
+  bare error;
+- fixture contract assertions (block shapes, ids, stop reasons) plus
+  `validateAnthropicSSE` on every fixture.
+
+- [x] **Step 2: Run the full gate**
+
+```bash
+GOWORK=/tmp/opencode/ws/go.work go test -count=1 ./...
+GOWORK=/tmp/opencode/ws/go.work go vet ./...
+CGO_ENABLED=1 GOWORK=/tmp/opencode/ws/go.work go test -race -count=1 ./convert
+```
+All pass: `convert`, `engine`, `rewriter`, `tests/e2e`; `vet` clean; race clean.
+
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `675d3ad`. Files: `convert/stream_responses_to_anthropic.go`, `convert/convert.go`, `convert/anthropic_responses.go`, `convert/responses.go`, `convert/anthropic_responses_review_test.go`. Tests: the full gate above → PASS; the new review tests → PASS. Review findings: fixed the Critical hang, the zero-argument `input` omission, truncation validation for all tool blocks, post-terminal events, the missing-session bare error, and the missing review-focus tests. Deferred: `message_start.model` uses the engine default rather than the client model, README/comment updates for the new pair, empty `message_start.id` when `response.created` is absent, and backfilling a tool name from `function_call_arguments.done`.
+
+---
+
 ### Task 9: Full gate, release and cuttle verification
 
 **Files:**
