@@ -167,3 +167,56 @@ func TestConvertResponsesResponseToAnthropicIncomplete(t *testing.T) {
 		t.Fatalf("stop = %v", resp.StopReason)
 	}
 }
+
+func TestConvertRoutesAnthropicToResponses(t *testing.T) {
+	store := NewSessionStore()
+	opts := &ConvertOptions{
+		SID: "sid-1", Direction: "request", SessionStore: store,
+		ModelMap: ModelMap{{SourcePrefix: "claude-opus", TargetModel: "deepseek-v4.1-flash-1017", Protocol: "responses"}},
+	}
+	out, err := Convert([]byte(`{"model":"claude-opus-5-5","max_tokens":8,"system":[{"type":"text","text":"sys"}],"messages":[{"role":"user","content":"hi"}]}`), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), `"messages"`) || !strings.Contains(string(out), `"input"`) {
+		t.Fatalf("not converted: %s", out)
+	}
+	sess := store.Get("sid-1")
+	if sess == nil || sess.From != ProtocolAnthropic || sess.To != ProtocolOpenAIResponses {
+		t.Fatalf("session = %+v", sess)
+	}
+}
+
+func TestConvertRoutesResponsesReplyToAnthropicClient(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("sid-1", &Session{ID: "sid-1", From: ProtocolAnthropic, To: ProtocolOpenAIResponses})
+	opts := &ConvertOptions{SID: "sid-1", Direction: "response", SessionStore: store, RequestModel: "claude-opus-5-5"}
+	out, err := Convert([]byte(`{"id":"resp_1","object":"response","status":"completed","model":"deepseek-v4.1-flash-1017","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), `"object":"response"`) || !strings.Contains(string(out), `"stop_reason":"end_turn"`) {
+		t.Fatalf("not converted: %s", out)
+	}
+}
+
+func TestConvertResponsesClientStillPassesThrough(t *testing.T) {
+	store := NewSessionStore()
+	store.Set("sid-1", &Session{ID: "sid-1", From: ProtocolOpenAIResponses, IsResponses: true})
+	body := `{"id":"resp_1","object":"response","status":"completed","output":[]}`
+	out, _ := Convert([]byte(body), &ConvertOptions{SID: "sid-1", Direction: "response", SessionStore: store})
+	if string(out) != body {
+		t.Fatalf("passthrough changed body: %s", out)
+	}
+}
+
+func TestConvertUnknownResponsesPairFails(t *testing.T) {
+	opts := &ConvertOptions{
+		Direction: "request",
+		ModelMap:  ModelMap{{SourcePrefix: "gpt", TargetModel: "deepseek-v4.1-flash-1017", Protocol: "responses"}},
+	}
+	_, err := Convert([]byte(`{"model":"gpt-5","tool_choice":"auto","messages":[{"role":"user","content":"hi"}]}`), opts)
+	if err == nil || !strings.Contains(err.Error(), "no converter") {
+		t.Fatalf("err = %v, want a missing-converter diagnostic", err)
+	}
+}

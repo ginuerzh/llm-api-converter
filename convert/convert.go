@@ -534,7 +534,10 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 			}
 			return convertResponsesRequest(body, opts)
 		}
-		return body, nil
+		// A Responses reply may need conversion when the client is not a
+		// Responses client (for example an Anthropic client). Fall through to
+		// the normal response path, which resolves the client protocol and
+		// dispatches the registered pair.
 	}
 
 	// Resolve downstream protocol from model map.
@@ -543,9 +546,9 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 	opts.ResolvedModel = targetModel
 
 	if dir == DirectionRequest {
-		// Request path: store client protocol in session for response path.
+		// Request path: store both protocols for the response and stream paths.
 		if opts.SID != "" && opts.SessionStore != nil {
-			opts.SessionStore.Set(opts.SID, &Session{ID: opts.SID, From: source})
+			opts.SessionStore.Set(opts.SID, &Session{ID: opts.SID, From: source, To: downstream})
 		}
 
 		// Passthrough if source matches downstream protocol.
@@ -563,6 +566,12 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 			return converted, nil
 		}
 
+		// A Responses upstream without a registered converter must fail loudly:
+		// forwarding the client body unchanged produces an upstream 400 that
+		// names the wrong field (for example messages instead of input).
+		if downstream == ProtocolOpenAIResponses {
+			return nil, fmt.Errorf("no converter for %s=>%s", source, downstream)
+		}
 		slog.Debug("no converter for request pair, passing through", "from", source.String(), "to", downstream.String())
 		return passthrough(raw, targetModel, opts, body)
 	}
