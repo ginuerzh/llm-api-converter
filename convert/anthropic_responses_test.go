@@ -270,3 +270,13 @@ func TestHandleSSEEventEndWithErrorMsg(t *testing.T) {
 		t.Fatalf("out = %s", out)
 	}
 }
+
+func TestValidateAnthropicResponseTranslatedThinking(t *testing.T) {
+	body := []byte(`{"type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"thinking","thinking":"x"}],"stop_reason":"end_turn"}`)
+	if errs := validateAnthropicResponseOpts(body, true); len(errs) != 0 {
+		t.Fatalf("translated response rejected: %v", errs)
+	}
+	if errs := validateAnthropicResponseOpts(body, false); len(errs) == 0 {
+		t.Fatal("native validation accepted an empty signature")
+	}
+}

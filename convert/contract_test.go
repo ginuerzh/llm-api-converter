@@ -347,6 +347,10 @@ func validateOpenAIChatRequest(body []byte) []string {
 }
 
 func validateAnthropicResponse(body []byte) []string {
+	return validateAnthropicResponseOpts(body, false)
+}
+
+func validateAnthropicResponseOpts(body []byte, allowEmptySignature bool) []string {
 	var resp AnthropicResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return []string{fmt.Sprintf("unmarshal Anthropic response: %v", err)}
@@ -377,7 +381,7 @@ func validateAnthropicResponse(body []byte) []string {
 			if strings.TrimSpace(block.Thinking) == "" {
 				contractAdd(&errs, "%s.thinking is empty", where)
 			}
-			if !isDeepSeekModel(resp.Model) && block.Signature == "" {
+			if !allowEmptySignature && !isDeepSeekModel(resp.Model) && block.Signature == "" {
 				contractAdd(&errs, "%s.thinking has no signature", where)
 			}
 		case "tool_use":

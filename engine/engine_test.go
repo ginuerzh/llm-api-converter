@@ -146,3 +146,10 @@ func TestRewriteEndPhaseStreamError(t *testing.T) {
 		t.Fatalf("end phase = %s", res.Data)
 	}
 }
+
+func TestParseModelMapAcceptsResponses(t *testing.T) {
+	mm := ParseModelMap("claude-opus=deepseek-v4.1-flash-1017:responses")
+	if len(mm) != 1 || mm[0].Protocol != "responses" {
+		t.Fatalf("model map = %+v", mm)
+	}
+}
