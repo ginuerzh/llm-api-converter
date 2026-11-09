@@ -1052,14 +1052,14 @@ CGO_ENABLED=1 go test -race -count=1 ./convert
 ```
 Expected: all pass. Fix and commit any failures before continuing.
 
-- [ ] **Step 2: Create the release candidate tag (human-gated push)**
+- [x] **Step 2: Create the release candidate tag (human-gated push)**
 
 ```bash
 git tag -a v0.6.0 -m "v0.6.0: Anthropic to Responses upstream"
 ```
 Do not push the tag until the human approves. Record the tag and commit SHA in the implementation record.
 
-- [ ] **Step 3: Bump cuttle to the published tag**
+- [x] **Step 3: Bump cuttle to the published tag**
 
 After the tag is pushed and `v0.6.0` is available:
 
@@ -1092,7 +1092,7 @@ git commit -m "chore(deps): bump llm-api-converter to v0.6.0"
     blocks for the answer, `tool_use` for the call, and ends `message_stop`.
 - Roll back by removing the pin and sending `SIGHUP` if anything fails.
 
-- [ ] **Step 5: Commit the cuttle dependency change and record both repositories**
+- [x] **Step 5: Commit the cuttle dependency change and record both repositories**
 
 ```bash
 cd /root/code/go-gost/cuttle
@@ -1100,7 +1100,7 @@ git log --oneline -1
 ```
 Record the cuttle commit in the plan's implementation record. Do not push without approval.
 
-**Implementation record:** 2026-11-09 — Step 1 complete; Steps 2-5 pending human approval. Converter gate: `GOWORK=/tmp/opencode/ws/go.work go test -count=1 ./...` PASS (`convert`, `engine`, `rewriter`, `tests/e2e`), `go vet ./...` PASS, `CGO_ENABLED=1 GOWORK=/tmp/opencode/ws/go.work go test -race -count=1 ./convert` PASS. Release candidate tag: `v0.6.0` at commit `e31a433` (local only; not pushed). Cuttle dependency bump, live Bailian/DeepSeek verification, and rollback notes: pending.
+**Implementation record:** 2026-11-09 — Steps 1, 2, 3, and 5 complete; Step 4 pending the human-gated deploy. Converter gate: `GOWORK=/tmp/opencode/ws/go.work go test -count=1 ./...` PASS (`convert`, `engine`, `rewriter`, `tests/e2e`), `go vet ./...` PASS, `CGO_ENABLED=1 GOWORK=/tmp/opencode/ws/go.work go test -race -count=1 ./convert` PASS. Release tag: `v0.6.0` at commit `e31a433`, pushed to `origin`. Cuttle dependency bump: `github.com/ginuerzh/llm-api-converter v0.6.0` in `go.mod`/`go.sum`; `GOWORK=off go test ./... -count=1` PASS. The converter now fails loudly on unsupported Chat/Gemini→Responses conversions, so the two `provider_capabilities_test.go` fallback tests were changed to exercise the supported Anthropic→Responses path (provider without an Anthropic base URL, inbound `/v1/messages`); cuttle commit `d840f147` on `main` (not pushed). Live Bailian/DeepSeek verification and rollback notes: pending human-gated deploy.
 
 ---
 
