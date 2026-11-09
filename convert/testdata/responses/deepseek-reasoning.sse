@@ -1,0 +1,114 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"75f2845e-dd25-4e34-8b46-9fd10af4d041","object":"response","created_at":1794232924,"status":"in_progress","background":false,"completed_at":null,"content_filters":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":128,"max_tool_calls":null,"model":"deepseek-flash","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":{"effort":"high","summary":"auto"},"safety_identifier":null,"service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":null},"tool_choice":"auto","tools":[],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":0}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{"id":"75f2845e-dd25-4e34-8b46-9fd10af4d041","object":"response","created_at":1794232924,"status":"in_progress","background":false,"completed_at":null,"content_filters":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":128,"max_tool_calls":null,"model":"deepseek-flash","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":{"effort":"high","summary":"auto"},"safety_identifier":null,"service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":null},"tool_choice":"auto","tools":[],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":1}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"type":"reasoning","id":"df5142da-826e-4d27-a711-c59419b6f883","status":"in_progress","content":[],"summary":[],"encrypted_content":"75f2845e-dd25-4e34-8b46-9fd10af4d041-0"},"output_index":0,"sequence_number":2}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","content_index":0,"item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"part":{"type":"reasoning_text","text":""},"sequence_number":3}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"We","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":4}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" need","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":5}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" answer","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":6}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" classic","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":7}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" trick","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":8}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":":","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":9}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" all","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":10}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" but","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":11}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" ","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":12}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"9","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":13}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" run","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":14}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" away","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":15}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" means","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":16}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" ","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":17}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":"9","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":18}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" remain","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":19}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":".","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":20}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" Need","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":21}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":" concise","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":22}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","content_index":0,"delta":".","item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":23}
+
+event: response.reasoning_text.done
+data: {"type":"response.reasoning_text.done","content_index":0,"item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"sequence_number":24,"text":"We need answer classic trick: all but 9 run away means 9 remain. Need concise."}
+
+event: response.content_part.done
+data: {"type":"response.content_part.done","content_index":0,"item_id":"df5142da-826e-4d27-a711-c59419b6f883","output_index":0,"part":{"type":"reasoning_text","text":"We need answer classic trick: all but 9 run away means 9 remain. Need concise."},"sequence_number":25}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"df5142da-826e-4d27-a711-c59419b6f883","status":"completed","content":[{"type":"reasoning_text","text":"We need answer classic trick: all but 9 run away means 9 remain. Need concise."}],"summary":[],"encrypted_content":"75f2845e-dd25-4e34-8b46-9fd10af4d041-0"},"output_index":0,"sequence_number":26}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"type":"message","id":"fd5783a8-f628-4266-8680-d5270c3ee103","status":"in_progress","content":[],"phase":"final_answer","role":"assistant"},"output_index":1,"sequence_number":27}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","content_index":0,"item_id":"fd5783a8-f628-4266-8680-d5270c3ee103","output_index":1,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""},"sequence_number":28}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","content_index":0,"delta":"9","item_id":"fd5783a8-f628-4266-8680-d5270c3ee103","logprobs":[],"output_index":1,"sequence_number":29}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","content_index":0,"delta":" sheep","item_id":"fd5783a8-f628-4266-8680-d5270c3ee103","logprobs":[],"output_index":1,"sequence_number":30}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","content_index":0,"delta":" are","item_id":"fd5783a8-f628-4266-8680-d5270c3ee103","logprobs":[],"output_index":1,"sequence_number":31}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","content_index":0,"delta":" left","item_id":"fd5783a8-f628-4266-8680-d5270c3ee103","logprobs":[],"output_index":1,"sequence_number":32}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","content_index":0,"delta":".","item_id":"fd5783a8-f628-4266-8680-d5270c3ee103","logprobs":[],"output_index":1,"sequence_number":33}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","content_index":0,"item_id":"fd5783a8-f628-4266-8680-d5270c3ee103","logprobs":[],"output_index":1,"sequence_number":34,"text":"9 sheep are left."}
+
+event: response.content_part.done
+data: {"type":"response.content_part.done","content_index":0,"item_id":"fd5783a8-f628-4266-8680-d5270c3ee103","output_index":1,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":"9 sheep are left."},"sequence_number":35}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"message","id":"fd5783a8-f628-4266-8680-d5270c3ee103","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"9 sheep are left."}],"phase":"final_answer","role":"assistant"},"output_index":1,"sequence_number":36}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"75f2845e-dd25-4e34-8b46-9fd10af4d041","object":"response","created_at":1794232924,"status":"completed","background":false,"completed_at":1794232925,"content_filters":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":128,"max_tool_calls":null,"model":"deepseek-flash","moderation":null,"output":[{"type":"reasoning","id":"df5142da-826e-4d27-a711-c59419b6f883","status":"completed","content":[{"type":"reasoning_text","text":"We need answer classic trick: all but 9 run away means 9 remain. Need concise."}],"summary":[],"encrypted_content":"75f2845e-dd25-4e34-8b46-9fd10af4d041-0"},{"type":"message","id":"fd5783a8-f628-4266-8680-d5270c3ee103","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"9 sheep are left."}],"phase":"final_answer","role":"assistant"}],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":{"effort":"high","summary":"auto"},"safety_identifier":null,"service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":null},"tool_choice":"auto","tools":[],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":{"input_tokens":49,"input_tokens_details":{"cached_tokens":0},"output_tokens":26,"output_tokens_details":{"reasoning_tokens":20},"total_tokens":75},"user":null,"metadata":{}},"sequence_number":37}
+

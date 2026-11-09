@@ -816,7 +816,7 @@ git add convert/stream_responses_to_anthropic.go convert/stream_responses_to_ant
 git commit -m "feat(convert): stream Responses tools and reasoning to Anthropic"
 ```
 
-**Implementation record:** _Fill after completion._
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `pending`. Files: `convert/stream_responses_to_anthropic.go`, `convert/stream_responses_to_anthropic_test.go`, `convert/responses.go`, `convert/testdata/responses/*.sse`. Tests: all `TestResponsesToAnthropicStream*` → PASS, including interleaved calls, truncated args, failed events and the seven captured Bailian/DeepSeek fixtures; `go test ./convert -count=1` → PASS. Ruling: added internal-only `block.sent`, `pendingResponsesCall`, `ResponsesStreamEvent.Message` and reasoning-text constants to support interleaving, done-only text/reasoning and error messages. Review findings: none. Deferred: encrypted reasoning replay, web search/custom tools.
 
 ---
 

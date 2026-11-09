@@ -161,6 +161,8 @@ const (
 	ResponseReasoningSummaryDelta      ResponsesStreamEventType = "response.reasoning_summary_text.delta"
 	ResponseReasoningSummaryDone       ResponsesStreamEventType = "response.reasoning_summary_text.done"
 	ResponseReasoningSummaryPartDone   ResponsesStreamEventType = "response.reasoning_summary_part.done"
+	ResponseReasoningTextDelta         ResponsesStreamEventType = "response.reasoning_text.delta"
+	ResponseReasoningTextDone          ResponsesStreamEventType = "response.reasoning_text.done"
 	ResponseFunctionCallArgumentsDelta ResponsesStreamEventType = "response.function_call_arguments.delta"
 	ResponseFunctionCallArgumentsDone  ResponsesStreamEventType = "response.function_call_arguments.done"
 	ResponseIncomplete                 ResponsesStreamEventType = "response.incomplete"
@@ -183,6 +185,7 @@ type ResponsesStreamEvent struct {
 	TextDone       string                   `json:"text,omitempty"`
 	Arguments      string                   `json:"arguments,omitempty"`
 	Name           string                   `json:"name,omitempty"`
+	Message        string                   `json:"message,omitempty"`
 	SummaryText    string                   `json:"summary_text,omitempty"`
 }
 

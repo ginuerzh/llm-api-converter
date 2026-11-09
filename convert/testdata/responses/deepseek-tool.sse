@@ -1,0 +1,39 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"3278a911-5f06-47e0-a150-aa4026335f67","object":"response","created_at":1794232924,"status":"in_progress","background":false,"completed_at":null,"content_filters":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":"Use the tool when asked.","max_output_tokens":128,"max_tool_calls":null,"model":"deepseek-flash","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":{"effort":null,"summary":null},"safety_identifier":null,"service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":null},"tool_choice":"auto","tools":[{"type":"function","name":"get_weather","description":"weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":null}],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":0}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{"id":"3278a911-5f06-47e0-a150-aa4026335f67","object":"response","created_at":1794232924,"status":"in_progress","background":false,"completed_at":null,"content_filters":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":"Use the tool when asked.","max_output_tokens":128,"max_tool_calls":null,"model":"deepseek-flash","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":{"effort":null,"summary":null},"safety_identifier":null,"service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":null},"tool_choice":"auto","tools":[{"type":"function","name":"get_weather","description":"weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":null}],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":1}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fe0f397b-b742-4112-8b83-6fc10baad224","status":"in_progress","arguments":"","call_id":"call_00_ET_tzkxmPxYrcsInGJYnjE96028","name":"get_weather"},"output_index":0,"sequence_number":2}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"{\"","item_id":"fe0f397b-b742-4112-8b83-6fc10baad224","output_index":0,"sequence_number":3}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"city","item_id":"fe0f397b-b742-4112-8b83-6fc10baad224","output_index":0,"sequence_number":4}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\"","item_id":"fe0f397b-b742-4112-8b83-6fc10baad224","output_index":0,"sequence_number":5}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":": \"","item_id":"fe0f397b-b742-4112-8b83-6fc10baad224","output_index":0,"sequence_number":6}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"Beijing","item_id":"fe0f397b-b742-4112-8b83-6fc10baad224","output_index":0,"sequence_number":7}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\"","item_id":"fe0f397b-b742-4112-8b83-6fc10baad224","output_index":0,"sequence_number":8}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"}","item_id":"fe0f397b-b742-4112-8b83-6fc10baad224","output_index":0,"sequence_number":9}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","arguments":"{\"city\": \"Beijing\"}","item_id":"fe0f397b-b742-4112-8b83-6fc10baad224","output_index":0,"sequence_number":10}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fe0f397b-b742-4112-8b83-6fc10baad224","status":"completed","arguments":"{\"city\": \"Beijing\"}","call_id":"call_00_ET_tzkxmPxYrcsInGJYnjE96028","name":"get_weather"},"output_index":0,"sequence_number":11}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"3278a911-5f06-47e0-a150-aa4026335f67","object":"response","created_at":1794232924,"status":"completed","background":false,"completed_at":1794232924,"content_filters":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":"Use the tool when asked.","max_output_tokens":128,"max_tool_calls":null,"model":"deepseek-flash","moderation":null,"output":[{"type":"function_call","id":"fe0f397b-b742-4112-8b83-6fc10baad224","status":"completed","arguments":"{\"city\": \"Beijing\"}","call_id":"call_00_ET_tzkxmPxYrcsInGJYnjE96028","name":"get_weather"}],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":{"effort":null,"summary":null},"safety_identifier":null,"service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":null},"tool_choice":"auto","tools":[{"type":"function","name":"get_weather","description":"weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":null}],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":{"input_tokens":299,"input_tokens_details":{"cached_tokens":0},"output_tokens":39,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":338},"user":null,"metadata":{}},"sequence_number":12}
+

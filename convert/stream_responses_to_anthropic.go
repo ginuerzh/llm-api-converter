@@ -13,7 +13,16 @@ type responsesAnthropicBlock struct {
 	itemID   string
 	args     strings.Builder
 	argsSent bool
+	sent     bool // a text or thinking delta was emitted
 	closed   bool
+}
+
+// pendingResponsesCall is a function call added while another call was open.
+// Its events are replayed after the open call closes so Anthropic blocks stay
+// sequential.
+type pendingResponsesCall struct {
+	added ResponsesStreamEvent
+	lines [][]byte
 }
 
 // ResponsesToAnthropicStreamConverter turns a Responses SSE stream into the
@@ -27,6 +36,8 @@ type ResponsesToAnthropicStreamConverter struct {
 	blockIndex int
 	open       *responsesAnthropicBlock
 	blocks     map[string]*responsesAnthropicBlock
+	pending    []*pendingResponsesCall
+	pendingBy  map[string]*pendingResponsesCall
 	usage      AnthropicUsage
 	stopReason string
 	sawTool    bool
@@ -41,6 +52,7 @@ func NewResponsesToAnthropicStreamConverter(model string, opts *ConvertOptions) 
 		model:      model,
 		opts:       opts,
 		blocks:     make(map[string]*responsesAnthropicBlock),
+		pendingBy:  make(map[string]*pendingResponsesCall),
 		stopReason: "end_turn",
 	}
 }
@@ -58,6 +70,22 @@ func (c *ResponsesToAnthropicStreamConverter) HandleChunk(data []byte) ([]byte, 
 		return nil, fmt.Errorf("unmarshal Responses stream event: %w", err)
 	}
 
+	// A call added while another call is open waits its turn. Its own events
+	// are buffered raw and replayed after the open call closes.
+	if ev.Type != ResponseOutputItemAdded {
+		if call := c.pendingFor(ev.ItemID); call != nil {
+			call.lines = append(call.lines, append([]byte(nil), data...))
+			return nil, nil
+		}
+	}
+	if ev.Type == ResponseOutputItemAdded && ev.Item != nil && ev.Item.Type == "function_call" &&
+		c.open != nil && c.open.kind == "tool_use" && c.open.itemID != ev.Item.ID {
+		call := &pendingResponsesCall{added: ev}
+		c.pending = append(c.pending, call)
+		c.pendingBy[ev.Item.ID] = call
+		return nil, nil
+	}
+
 	switch ev.Type {
 	case ResponseCreated:
 		if ev.Response != nil {
@@ -73,8 +101,27 @@ func (c *ResponsesToAnthropicStreamConverter) HandleChunk(data []byte) ([]byte, 
 
 	case ResponseOutputItemAdded:
 		out := c.start()
-		if ev.Item != nil && ev.Item.Type == "message" {
+		if ev.Item == nil {
 			return out, nil
+		}
+		switch ev.Item.Type {
+		case "message":
+			return out, nil
+		case "reasoning":
+			out = append(out, c.closeOpen()...)
+			out = append(out, c.openBlock("thinking", ev.Item.ID, map[string]any{
+				"type": "thinking", "thinking": "", "signature": "",
+			})...)
+		case "function_call":
+			out = append(out, c.closeOpen()...)
+			id := ev.Item.CallID
+			if id == "" {
+				id = ev.Item.ID
+			}
+			out = append(out, c.openBlock("tool_use", ev.Item.ID, map[string]any{
+				"type": "tool_use", "id": id, "name": ev.Item.Name, "input": map[string]any{},
+			})...)
+			c.sawTool = true
 		}
 		return out, nil
 
@@ -91,12 +138,80 @@ func (c *ResponsesToAnthropicStreamConverter) HandleChunk(data []byte) ([]byte, 
 		out = append(out, c.ensureText(ev.ItemID)...)
 		if ev.Delta != "" {
 			out = append(out, c.delta("text_delta", map[string]any{"text": ev.Delta})...)
+			c.markSent()
 		}
 		return out, nil
 
-	case ResponseOutputTextDone, ResponseContentPartDone, ResponseOutputItemDone:
+	case ResponseOutputTextDone:
 		out := c.start()
 		if c.open != nil && c.open.kind == "text" && matchesItem(c.open.itemID, ev) {
+			if !c.open.sent && ev.TextDone != "" {
+				out = append(out, c.delta("text_delta", map[string]any{"text": ev.TextDone})...)
+			}
+			out = append(out, c.closeOpen()...)
+		}
+		return out, nil
+
+	case ResponseContentPartDone:
+		out := c.start()
+		if c.open != nil && c.open.kind == "text" && matchesItem(c.open.itemID, ev) {
+			out = append(out, c.closeOpen()...)
+		}
+		return out, nil
+
+	case ResponseFunctionCallArgumentsDelta:
+		out := c.start()
+		if b := c.blockFor(ev.ItemID); b != nil && b.kind == "tool_use" {
+			b.args.WriteString(ev.Delta)
+			if ev.Delta != "" {
+				out = append(out, c.delta("input_json_delta", map[string]any{"partial_json": ev.Delta})...)
+				b.argsSent = true
+			}
+		}
+		return out, nil
+
+	case ResponseFunctionCallArgumentsDone:
+		out := c.start()
+		if b := c.blockFor(ev.ItemID); b != nil && b.kind == "tool_use" && !b.argsSent && ev.Arguments != "" {
+			b.args.WriteString(ev.Arguments)
+			out = append(out, c.delta("input_json_delta", map[string]any{"partial_json": ev.Arguments})...)
+			b.argsSent = true
+		}
+		return out, nil
+
+	case ResponseReasoningSummaryPartAdded:
+		out := c.start()
+		out = append(out, c.ensureThinking(ev.ItemID)...)
+		return out, nil
+
+	case ResponseReasoningSummaryDelta, ResponseReasoningTextDelta:
+		out := c.start()
+		out = append(out, c.ensureThinking(ev.ItemID)...)
+		if ev.Delta != "" {
+			out = append(out, c.delta("thinking_delta", map[string]any{"thinking": ev.Delta})...)
+			c.markSent()
+		}
+		return out, nil
+
+	case ResponseReasoningSummaryDone, ResponseReasoningTextDone:
+		out := c.start()
+		if c.open != nil && c.open.kind == "thinking" && matchesItem(c.open.itemID, ev) {
+			text := ev.TextDone
+			if !c.open.sent && text != "" {
+				out = append(out, c.delta("thinking_delta", map[string]any{"thinking": text})...)
+			}
+			out = append(out, c.closeOpen()...)
+		}
+		return out, nil
+
+	case ResponseOutputItemDone:
+		out := c.start()
+		if ev.Item != nil && ev.Item.Type == "function_call" {
+			out = append(out, c.finishTool(ev)...)
+			c.flushPending(&out)
+			return out, nil
+		}
+		if c.open != nil && matchesItem(c.open.itemID, ev) {
 			out = append(out, c.closeOpen()...)
 		}
 		return out, nil
@@ -105,9 +220,32 @@ func (c *ResponsesToAnthropicStreamConverter) HandleChunk(data []byte) ([]byte, 
 		out := c.start()
 		if ev.Response != nil {
 			c.usage = anthropicUsageFromResponses(ev.Response.Usage)
-			c.stopReason = "end_turn"
+		}
+		c.stopReason = ""
+		return c.finish(out), nil
+
+	case ResponseIncomplete:
+		out := c.start()
+		if ev.Response != nil {
+			c.usage = anthropicUsageFromResponses(ev.Response.Usage)
+			c.stopReason = responsesIncompleteStopReason(ev.Response, c.sawTool)
 		}
 		return c.finish(out), nil
+
+	case ResponseFailed:
+		msg := responseErrorMessage(ev)
+		out := c.start()
+		out = append(out, c.EmitError(msg)...)
+		return out, nil
+
+	case "error":
+		msg := ev.Message
+		if msg == "" {
+			msg = "upstream error"
+		}
+		out := c.start()
+		out = append(out, c.EmitError(msg)...)
+		return out, nil
 
 	default:
 		return c.start(), nil
@@ -120,7 +258,13 @@ func (c *ResponsesToAnthropicStreamConverter) HandleStreamEnd() []byte {
 	if c.finished {
 		return nil
 	}
+	if c.opts.ErrorMsg != "" {
+		return c.EmitError(c.opts.ErrorMsg)
+	}
 	out := c.start()
+	if c.open != nil && c.open.kind == "tool_use" && !json.Valid([]byte(c.open.args.String())) {
+		return c.EmitError("truncated tool arguments")
+	}
 	return c.finish(out)
 }
 
@@ -165,7 +309,20 @@ func (c *ResponsesToAnthropicStreamConverter) ensureText(itemID string) []byte {
 		return nil
 	}
 	out := c.closeOpen()
+	c.flushPending(&out)
 	out = append(out, c.openBlock("text", itemID, map[string]any{"type": "text", "text": ""})...)
+	return out
+}
+
+func (c *ResponsesToAnthropicStreamConverter) ensureThinking(itemID string) []byte {
+	if c.open != nil && c.open.kind == "thinking" && !c.open.closed && (itemID == "" || c.open.itemID == itemID) {
+		return nil
+	}
+	out := c.closeOpen()
+	c.flushPending(&out)
+	out = append(out, c.openBlock("thinking", itemID, map[string]any{
+		"type": "thinking", "thinking": "", "signature": "",
+	})...)
 	return out
 }
 
@@ -212,11 +369,82 @@ func (c *ResponsesToAnthropicStreamConverter) delta(deltaType string, fields map
 	})
 }
 
+func (c *ResponsesToAnthropicStreamConverter) markSent() {
+	if c.open != nil {
+		c.open.sent = true
+	}
+}
+
+func (c *ResponsesToAnthropicStreamConverter) blockFor(itemID string) *responsesAnthropicBlock {
+	if itemID != "" {
+		if b := c.blocks[itemID]; b != nil && !b.closed {
+			return b
+		}
+	}
+	if c.open != nil && !c.open.closed {
+		return c.open
+	}
+	return nil
+}
+
+func (c *ResponsesToAnthropicStreamConverter) finishTool(ev ResponsesStreamEvent) []byte {
+	if ev.Item == nil || c.open == nil || c.open.kind != "tool_use" || c.open.itemID != ev.Item.ID {
+		return nil
+	}
+	out := []byte{}
+	if !c.open.argsSent {
+		args := ev.Item.Arguments
+		if args == "" {
+			args = "{}"
+		}
+		c.open.args.WriteString(args)
+		out = append(out, c.delta("input_json_delta", map[string]any{"partial_json": args})...)
+		c.open.argsSent = true
+	}
+	out = append(out, c.closeOpen()...)
+	c.sawTool = true
+	return out
+}
+
+func (c *ResponsesToAnthropicStreamConverter) pendingFor(itemID string) *pendingResponsesCall {
+	if itemID == "" {
+		return nil
+	}
+	return c.pendingBy[itemID]
+}
+
+func (c *ResponsesToAnthropicStreamConverter) flushPending(out *[]byte) {
+	for len(c.pending) > 0 {
+		call := c.pending[0]
+		c.pending = c.pending[1:]
+		delete(c.pendingBy, call.added.Item.ID)
+		if data, err := json.Marshal(call.added); err == nil {
+			if b, err := c.HandleChunk(data); err == nil {
+				*out = append(*out, b...)
+			}
+		}
+		for _, line := range call.lines {
+			if len(line) == 0 {
+				continue
+			}
+			if b, err := c.HandleChunk(line); err == nil {
+				*out = append(*out, b...)
+			}
+		}
+	}
+}
+
 func (c *ResponsesToAnthropicStreamConverter) finish(out []byte) []byte {
 	out = append(out, c.closeOpen()...)
+	c.flushPending(&out)
+	out = append(out, c.closeOpen()...)
 	c.finished = true
-	if c.stopReason == "" {
-		c.stopReason = "end_turn"
+	if c.stopReason == "" || (c.stopReason == "end_turn" && c.sawTool) {
+		if c.sawTool {
+			c.stopReason = "tool_use"
+		} else if c.stopReason == "" {
+			c.stopReason = "end_turn"
+		}
 	}
 	usage := map[string]any{
 		"input_tokens":  c.usage.InputTokens,
@@ -255,6 +483,35 @@ func matchesItem(itemID string, ev ResponsesStreamEvent) bool {
 		return true
 	}
 	return itemID == ev.ItemID
+}
+
+func responsesIncompleteStopReason(resp *ResponsesResponse, sawTool bool) string {
+	if details, ok := resp.IncompleteDetails.(map[string]any); ok {
+		switch details["reason"] {
+		case "max_output_tokens":
+			return "max_tokens"
+		case "content_filter":
+			return "refusal"
+		}
+	}
+	if sawTool {
+		return "tool_use"
+	}
+	return "end_turn"
+}
+
+func responseErrorMessage(ev ResponsesStreamEvent) string {
+	if ev.Message != "" {
+		return ev.Message
+	}
+	if ev.Response != nil {
+		if m, ok := ev.Response.Error.(map[string]any); ok {
+			if msg, _ := m["message"].(string); msg != "" {
+				return msg
+			}
+		}
+	}
+	return "upstream failed"
 }
 
 func anthropicSSE(event string, payload any) []byte {
