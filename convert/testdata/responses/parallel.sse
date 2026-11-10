@@ -1,0 +1,120 @@
+id:1
+event:response.created
+:HTTP_STATUS/200
+data:{"response":{"id":"resp_0c74b024-ad01-4a2a-bffe-4bb9487b1dad","created_at":1794230317,"error":null,"incomplete_details":null,"instructions":"Call every tool needed. Use both tools.","metadata":{},"model":"deepseek-v4.1-flash-1017","object":"response","output":[],"parallel_tool_calls":true,"temperature":1.0,"tool_choice":"auto","tools":[{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":null,"type":"function","description":"Get weather"},{"name":"get_time","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":null,"type":"function","description":"Get time"}],"top_p":1.0,"background":false,"conversation":null,"max_output_tokens":256,"max_tool_calls":null,"previous_response_id":null,"prompt":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":null,"safety_identifier":null,"service_tier":"default","status":"queued","text":{"format":{"type":"text"},"verbosity":null},"top_logprobs":0,"truncation":null,"usage":null,"user":null,"completed_at":1794230317,"frequency_penalty":0.0,"presence_penalty":0.0,"store":false,"moderation":null,"billing":null,"tool_usage":{}},"sequence_number":0,"type":"response.created"}
+
+id:2
+event:response.in_progress
+:HTTP_STATUS/200
+data:{"response":{"id":"resp_0c74b024-ad01-4a2a-bffe-4bb9487b1dad","created_at":1794230317,"error":null,"incomplete_details":null,"instructions":"Call every tool needed. Use both tools.","metadata":{},"model":"deepseek-v4.1-flash-1017","object":"response","output":[],"parallel_tool_calls":true,"temperature":1.0,"tool_choice":"auto","tools":[{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":null,"type":"function","description":"Get weather"},{"name":"get_time","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":null,"type":"function","description":"Get time"}],"top_p":1.0,"background":false,"conversation":null,"max_output_tokens":256,"max_tool_calls":null,"previous_response_id":null,"prompt":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":null,"safety_identifier":null,"service_tier":"default","status":"in_progress","text":{"format":{"type":"text"},"verbosity":null},"top_logprobs":0,"truncation":null,"usage":null,"user":null,"completed_at":1794230317,"frequency_penalty":0.0,"presence_penalty":0.0,"store":false,"moderation":null,"billing":null,"tool_usage":{}},"sequence_number":1,"type":"response.in_progress"}
+
+id:3
+event:response.output_item.added
+:HTTP_STATUS/200
+data:{"item":{"id":"msg_b2811cb0-9bf4-4a0c-86aa-a1359e947558","content":[],"role":"assistant","status":"in_progress","type":"message"},"output_index":0,"sequence_number":2,"type":"response.output_item.added"}
+
+id:4
+event:response.content_part.added
+:HTTP_STATUS/200
+data:{"content_index":0,"item_id":"msg_b2811cb0-9bf4-4a0c-86aa-a1359e947558","output_index":0,"part":{"annotations":[],"text":"","type":"output_text","logprobs":[]},"sequence_number":3,"type":"response.content_part.added"}
+
+id:5
+event:response.output_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":"I","item_id":"msg_b2811cb0-9bf4-4a0c-86aa-a1359e947558","logprobs":[],"output_index":0,"sequence_number":4,"type":"response.output_text.delta"}
+
+id:6
+event:response.output_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":"'ll get","item_id":"msg_b2811cb0-9bf4-4a0c-86aa-a1359e947558","logprobs":[],"output_index":0,"sequence_number":5,"type":"response.output_text.delta"}
+
+id:7
+event:response.output_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":" both for you","item_id":"msg_b2811cb0-9bf4-4a0c-86aa-a1359e947558","logprobs":[],"output_index":0,"sequence_number":6,"type":"response.output_text.delta"}
+
+id:8
+event:response.output_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":" now.","item_id":"msg_b2811cb0-9bf4-4a0c-86aa-a1359e947558","logprobs":[],"output_index":0,"sequence_number":7,"type":"response.output_text.delta"}
+
+id:9
+event:response.output_text.done
+:HTTP_STATUS/200
+data:{"content_index":0,"item_id":"msg_b2811cb0-9bf4-4a0c-86aa-a1359e947558","logprobs":[],"output_index":0,"sequence_number":8,"text":"I'll get both for you now.","type":"response.output_text.done"}
+
+id:10
+event:response.content_part.done
+:HTTP_STATUS/200
+data:{"content_index":0,"item_id":"msg_b2811cb0-9bf4-4a0c-86aa-a1359e947558","output_index":0,"part":{"annotations":[],"text":"I'll get both for you now.","type":"output_text","logprobs":[]},"sequence_number":9,"type":"response.content_part.done"}
+
+id:11
+event:response.output_item.done
+:HTTP_STATUS/200
+data:{"item":{"id":"msg_b2811cb0-9bf4-4a0c-86aa-a1359e947558","content":[{"annotations":[],"text":"I'll get both for you now.","type":"output_text","logprobs":[]}],"role":"assistant","status":"completed","type":"message"},"output_index":0,"sequence_number":10,"type":"response.output_item.done"}
+
+id:12
+event:response.output_item.added
+:HTTP_STATUS/200
+data:{"item":{"arguments":"","call_id":"call_86b4d86311e349869c840885","name":"get_weather","type":"function_call","id":"msg_aa5dd12a-7533-4af9-a6a9-bcb515d822fd","status":"in_progress"},"output_index":1,"sequence_number":11,"type":"response.output_item.added"}
+
+id:13
+event:response.function_call_arguments.delta
+:HTTP_STATUS/200
+data:{"delta":"","item_id":"msg_aa5dd12a-7533-4af9-a6a9-bcb515d822fd","output_index":1,"sequence_number":12,"type":"response.function_call_arguments.delta"}
+
+id:14
+event:response.function_call_arguments.delta
+:HTTP_STATUS/200
+data:{"delta":"{","item_id":"msg_aa5dd12a-7533-4af9-a6a9-bcb515d822fd","output_index":1,"sequence_number":13,"type":"response.function_call_arguments.delta"}
+
+id:15
+event:response.function_call_arguments.delta
+:HTTP_STATUS/200
+data:{"delta":"\"city\": \"Beijing\"}","item_id":"msg_aa5dd12a-7533-4af9-a6a9-bcb515d822fd","output_index":1,"sequence_number":14,"type":"response.function_call_arguments.delta"}
+
+id:16
+event:response.function_call_arguments.done
+:HTTP_STATUS/200
+data:{"arguments":"{\"city\": \"Beijing\"}","item_id":"msg_aa5dd12a-7533-4af9-a6a9-bcb515d822fd","name":"get_weather","output_index":1,"sequence_number":15,"type":"response.function_call_arguments.done"}
+
+id:17
+event:response.output_item.done
+:HTTP_STATUS/200
+data:{"item":{"arguments":"{\"city\": \"Beijing\"}","call_id":"call_86b4d86311e349869c840885","name":"get_weather","type":"function_call","id":"msg_aa5dd12a-7533-4af9-a6a9-bcb515d822fd","status":"completed"},"output_index":1,"sequence_number":16,"type":"response.output_item.done"}
+
+id:18
+event:response.output_item.added
+:HTTP_STATUS/200
+data:{"item":{"arguments":"","call_id":"call_c08ab08e9b664cf7bec1da86","name":"get_time","type":"function_call","id":"msg_31d56ea0-0efc-45af-a583-c3815d03ca3b","status":"in_progress"},"output_index":2,"sequence_number":17,"type":"response.output_item.added"}
+
+id:19
+event:response.function_call_arguments.delta
+:HTTP_STATUS/200
+data:{"delta":"","item_id":"msg_31d56ea0-0efc-45af-a583-c3815d03ca3b","output_index":2,"sequence_number":18,"type":"response.function_call_arguments.delta"}
+
+id:20
+event:response.function_call_arguments.delta
+:HTTP_STATUS/200
+data:{"delta":"{","item_id":"msg_31d56ea0-0efc-45af-a583-c3815d03ca3b","output_index":2,"sequence_number":19,"type":"response.function_call_arguments.delta"}
+
+id:21
+event:response.function_call_arguments.delta
+:HTTP_STATUS/200
+data:{"delta":"\"city\": \"Beijing\"}","item_id":"msg_31d56ea0-0efc-45af-a583-c3815d03ca3b","output_index":2,"sequence_number":20,"type":"response.function_call_arguments.delta"}
+
+id:22
+event:response.function_call_arguments.done
+:HTTP_STATUS/200
+data:{"arguments":"{\"city\": \"Beijing\"}","item_id":"msg_31d56ea0-0efc-45af-a583-c3815d03ca3b","name":"get_time","output_index":2,"sequence_number":21,"type":"response.function_call_arguments.done"}
+
+id:23
+event:response.output_item.done
+:HTTP_STATUS/200
+data:{"item":{"arguments":"{\"city\": \"Beijing\"}","call_id":"call_c08ab08e9b664cf7bec1da86","name":"get_time","type":"function_call","id":"msg_31d56ea0-0efc-45af-a583-c3815d03ca3b","status":"completed"},"output_index":2,"sequence_number":22,"type":"response.output_item.done"}
+
+id:24
+event:response.completed
+:HTTP_STATUS/200
+data:{"response":{"id":"resp_0c74b024-ad01-4a2a-bffe-4bb9487b1dad","created_at":1794230317,"error":null,"incomplete_details":null,"instructions":"Call every tool needed. Use both tools.","metadata":{},"model":"deepseek-v4.1-flash-1017","object":"response","output":[{"id":"msg_b2811cb0-9bf4-4a0c-86aa-a1359e947558","content":[{"annotations":[],"text":"I'll get both for you now.","type":"output_text","logprobs":[]}],"role":"assistant","status":"completed","type":"message"},{"arguments":"{\"city\": \"Beijing\"}","call_id":"call_86b4d86311e349869c840885","name":"get_weather","type":"function_call","id":"msg_aa5dd12a-7533-4af9-a6a9-bcb515d822fd","status":"completed"},{"arguments":"{\"city\": \"Beijing\"}","call_id":"call_c08ab08e9b664cf7bec1da86","name":"get_time","type":"function_call","id":"msg_31d56ea0-0efc-45af-a583-c3815d03ca3b","status":"completed"}],"parallel_tool_calls":true,"temperature":1.0,"tool_choice":"auto","tools":[{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":null,"type":"function","description":"Get weather"},{"name":"get_time","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":null,"type":"function","description":"Get time"}],"top_p":1.0,"background":false,"conversation":null,"max_output_tokens":256,"max_tool_calls":null,"previous_response_id":null,"prompt":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":null,"safety_identifier":null,"service_tier":"default","status":"completed","text":{"format":{"type":"text"},"verbosity":null},"top_logprobs":0,"truncation":null,"usage":{"input_tokens":380,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0},"output_tokens":75,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":455,"x_details":[{"input_tokens":380,"output_tokens":75,"total_tokens":455,"input_tokens_details":{"text_tokens":380,"image_tokens":0},"output_tokens_details":{"text_tokens":74},"image_tokens":0,"prompt_tokens_details":{"cached_tokens":0},"x_billing_type":"response_api"}]},"user":null,"completed_at":1794230318,"frequency_penalty":0.0,"presence_penalty":0.0,"store":false,"moderation":null,"billing":null,"tool_usage":{}},"sequence_number":23,"type":"response.completed"}
+

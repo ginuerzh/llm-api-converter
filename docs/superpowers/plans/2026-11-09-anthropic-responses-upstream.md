@@ -44,7 +44,7 @@ These are the inputs most likely to hurt a real Claude Code user; each has a tes
 - Consumes: existing `ResponsesRequest`, `ResponsesStreamEvent`, `detectSource`.
 - Produces: `ResponsesReasoning{Effort, Summary string}`, `ResponsesText{Format map[string]any}`, `ResponsesUsageDetails.CacheWriteTokens`, `ResponsesStreamEvent.Name`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestDetectResponsesStreamingEvents(t *testing.T) {
@@ -73,12 +73,12 @@ func TestResponsesRequestReasoningMarshal(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./convert -run 'TestDetectResponsesStreamingEvents|TestResponsesRequestReasoningMarshal' -v`
 Expected: FAIL — undefined `ResponsesReasoning`, `ResponsesText`, or detection returns Anthropic/unknown.
 
-- [ ] **Step 3: Add the types and detection branch**
+- [x] **Step 3: Add the types and detection branch**
 
 In `convert/responses.go`, add:
 
@@ -103,19 +103,19 @@ if t, ok := raw["type"].(string); ok && strings.HasPrefix(t, "response.") {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./convert -run 'TestDetectResponsesStreamingEvents|TestResponsesRequestReasoningMarshal' -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/responses.go convert/detect.go convert/anthropic_responses_test.go
 git commit -m "feat(convert): add Responses reasoning types and stream detection"
 ```
 
-**Implementation record:** _Fill after completion: date/status, repo + commit SHA, files changed, tests run and results, review findings/fixes, deferred items._
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `3a0f336`. Files: `convert/responses.go`, `convert/detect.go`, `convert/anthropic_responses_test.go`. Tests: `GOWORK=/tmp/opencode/ws/go.work go test ./convert -run 'TestDetectResponsesStreamingEvents|TestResponsesRequestReasoningMarshal' -v` → PASS. Review findings: none. Deferred: none.
 
 ---
 
@@ -134,7 +134,7 @@ git commit -m "feat(convert): add Responses reasoning types and stream detection
   - `func responsesReasoningFromThinking(th *AnthropicThinking, oc *AnthropicOutputConfig) *ResponsesReasoning`
   - `func anthropicImageURL(src *AnthropicImageSource) string`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestConvertAnthropicRequestToResponsesTextAndSystem(t *testing.T) {
@@ -208,12 +208,12 @@ func TestConvertAnthropicRequestToResponsesImageAndFormat(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./convert -run 'TestConvertAnthropicRequestToResponses' -v`
 Expected: FAIL — `convertAnthropicRequestToResponses` undefined.
 
-- [ ] **Step 3: Implement the converter and register the direction**
+- [x] **Step 3: Implement the converter and register the direction**
 
 `convertAnthropicRequestToResponses` unmarshals `AnthropicRequest`, calls `anthropicRequestToResponses`, and returns `json.Marshal`. It returns the body unchanged when the JSON has no top-level `messages` field, so a misrouted response body cannot be fed to the request converter.
 
@@ -243,19 +243,19 @@ Register in `convert/registry.go`:
 conversions[ConversionKey{ProtocolAnthropic, ProtocolOpenAIResponses}] = convertAnthropicRequestToResponses
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./convert -run 'TestConvertAnthropicRequestToResponses' -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/anthropic_responses.go convert/registry.go convert/anthropic_responses_test.go
 git commit -m "feat(convert): translate Anthropic requests to Responses"
 ```
 
-**Implementation record:** _Fill after completion._
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `41a92f1`. Files: `convert/anthropic_responses.go` (new), `convert/registry.go`, `convert/anthropic_responses_test.go`. Tests: `go test ./convert -run 'TestConvertAnthropicRequestToResponses' -v` → PASS; `go test ./convert -count=1` → PASS. Review findings: none. Deferred: thinking replay, stop_sequences/top_k unsupported.
 
 ---
 
@@ -275,7 +275,7 @@ git commit -m "feat(convert): translate Anthropic requests to Responses"
   - `func anthropicUsageFromResponses(u *ResponsesUsage) AnthropicUsage`
   - `func parseResponsesArguments(s string) map[string]any`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestConvertResponsesResponseToAnthropicText(t *testing.T) {
@@ -336,12 +336,12 @@ func TestConvertResponsesResponseToAnthropicIncomplete(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./convert -run 'TestConvertResponsesResponseToAnthropic' -v`
 Expected: FAIL — undefined converter.
 
-- [ ] **Step 3: Implement the converter and register the direction**
+- [x] **Step 3: Implement the converter and register the direction**
 
 `responsesResponseToAnthropic` builds an `AnthropicResponse` with `Type:"message"`, `Role:"assistant"`, `Model: resolveResponseModel(resp.Model, opts)` and one block per output item:
 
@@ -387,19 +387,19 @@ conversions[ConversionKey{ProtocolOpenAIResponses, ProtocolAnthropic}] = convert
 
 The public function guards by body shape: if the body has no `"object":"response"`, return it unchanged.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./convert -run 'TestConvertResponsesResponseToAnthropic' -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/anthropic_responses.go convert/registry.go convert/anthropic_responses_test.go
 git commit -m "feat(convert): translate Responses replies to Anthropic"
 ```
 
-**Implementation record:** _Fill after completion._
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `92fe052`. Files: `convert/anthropic_responses.go`, `convert/registry.go`, `convert/anthropic_responses_test.go`. Tests: `go test ./convert -run 'TestConvertResponsesResponseToAnthropic' -v` → PASS; `go test ./convert -count=1` → PASS. Review findings: none. Deferred: encrypted reasoning replay, web search and custom tools.
 
 ---
 
@@ -413,7 +413,7 @@ git commit -m "feat(convert): translate Responses replies to Anthropic"
 - Consumes: the two converters from Tasks 2 and 3; `Session{From, To}`.
 - Produces: `Convert()` behavior; `Session.To` populated on the request path.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestConvertRoutesAnthropicToResponses(t *testing.T) {
@@ -464,12 +464,12 @@ func TestConvertUnknownResponsesPairFails(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./convert -run 'TestConvertRoutes|TestConvertResponsesClientStillPassesThrough|TestConvertUnknownResponsesPairFails' -v`
 Expected: FAIL — request is not converted, the response returns raw Responses JSON, or the missing pair passes through.
 
-- [ ] **Step 3: Restructure `Convert()` and set `Session.To`**
+- [x] **Step 3: Restructure `Convert()` and set `Session.To`**
 
 In the request branch, store `&Session{ID: opts.SID, From: source, To: downstream}`.
 
@@ -489,24 +489,24 @@ registered for the source protocol, return
 passthrough. This makes a missing Responses upstream pair loud, while leaving
 other unknown-pair passthrough behavior unchanged.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./convert -run 'TestConvertRoutes|TestConvertResponsesClientStillPassesThrough|TestConvertUnknownResponsesPairFails' -v`
 Expected: PASS.
 
-- [ ] **Step 5: Run the existing package tests for regressions**
+- [x] **Step 5: Run the existing package tests for regressions**
 
 Run: `go test ./convert -count=1`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add convert/convert.go convert/anthropic_responses_test.go
 git commit -m "feat(convert): route Anthropic traffic to Responses upstreams"
 ```
 
-**Implementation record:** _Fill after completion._
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `7638c43`. Files: `convert/convert.go`, `convert/anthropic_responses_test.go`. Tests: routing tests → PASS; `go test ./convert -count=1` → PASS. Ruling: the brief's routing bodies were not classifiable and the reply assertion matched raw Responses fields; added a system block/tool_choice marker and asserted the absence of `object:"response"` plus `stop_reason`. Review findings: none. Deferred: Chat/Gemini clients targeting Responses remain unsupported and now fail loudly.
 
 ---
 
@@ -540,7 +540,7 @@ type ResponsesToAnthropicStreamConverter struct {
 }
 ```
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```go
 func TestResponsesToAnthropicStreamText(t *testing.T) {
@@ -570,12 +570,12 @@ func TestResponsesToAnthropicStreamText(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `go test ./convert -run TestResponsesToAnthropicStreamText -v`
 Expected: FAIL — undefined converter.
 
-- [ ] **Step 3: Implement the text path**
+- [x] **Step 3: Implement the text path**
 
 State: `started`, `finished`, `messageID`, `model`, `blockIndex`, `open *responsesAnthropicBlock`, `usage AnthropicUsage`, `stopReason string`.
 
@@ -593,19 +593,19 @@ State: `started`, `finished`, `messageID`, `model`, `blockIndex`, `open *respons
 
 Use `anthropicSSE` to append `\n\n` between events.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `go test ./convert -run TestResponsesToAnthropicStreamText -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/stream_responses_to_anthropic.go convert/stream_responses_to_anthropic_test.go
 git commit -m "feat(convert): stream Responses text as Anthropic events"
 ```
 
-**Implementation record:** _Fill after completion._
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `8ac69de`. Files: `convert/stream_responses_to_anthropic.go` (new), `convert/stream_responses_to_anthropic_test.go` (new). Tests: `TestResponsesToAnthropicStreamText` → PASS; `go test ./convert -count=1` → PASS. Review findings: none. Deferred: tools/reasoning/errors are Task 6.
 
 ---
 
@@ -620,7 +620,7 @@ git commit -m "feat(convert): stream Responses text as Anthropic events"
 - Consumes: Task 5 converter.
 - Produces: handling for `function_call`, `reasoning_text`/`reasoning_summary_text`, parallel items, `response.incomplete`/`response.failed`/`error`, and truncated arguments.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestResponsesToAnthropicStreamToolCall(t *testing.T) {
@@ -764,12 +764,12 @@ func TestResponsesToAnthropicStreamFailedEvent(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./convert -run 'TestResponsesToAnthropicStream(Tool|Reasoning|Parallel|Interleaved|Truncated|Failed)' -v`
 Expected: FAIL — events are ignored or emitted as text.
 
-- [ ] **Step 3: Implement the remaining event handlers**
+- [x] **Step 3: Implement the remaining event handlers**
 
 - `response.output_item.added` with `item.type=="function_call"`: close the open block, open a tool block with `id = call_id` (fallback item id), `name`, `input:{}`; record it by item ID.
 - `response.function_call_arguments.delta`: find the item's block (or the open call); append to its buffer; emit `input_json_delta` when the delta is non-empty; mark `argsSent`.
@@ -804,19 +804,19 @@ The converter must ignore that event for text purposes and keep the thinking
 block it opened from `output_item.added`. Add a test that asserts no `text`
 block is opened for a `reasoning_text` content part.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./convert -run 'TestResponsesToAnthropicStream' -v`
 Expected: PASS (including the interleaved-call test).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/stream_responses_to_anthropic.go convert/stream_responses_to_anthropic_test.go convert/testdata/responses
 git commit -m "feat(convert): stream Responses tools and reasoning to Anthropic"
 ```
 
-**Implementation record:** _Fill after completion._
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `fe84e0f`. Files: `convert/stream_responses_to_anthropic.go`, `convert/stream_responses_to_anthropic_test.go`, `convert/responses.go`, `convert/testdata/responses/*.sse`. Tests: all `TestResponsesToAnthropicStream*` → PASS, including interleaved calls, truncated args, failed events and the seven captured Bailian/DeepSeek fixtures; `go test ./convert -count=1` → PASS. Ruling: added internal-only `block.sent`, `pendingResponsesCall`, `ResponsesStreamEvent.Message` and reasoning-text constants to support interleaving, done-only text/reasoning and error messages. Review findings: none. Deferred: encrypted reasoning replay, web search/custom tools.
 
 ---
 
@@ -830,7 +830,7 @@ git commit -m "feat(convert): stream Responses tools and reasoning to Anthropic"
 - Consumes: `NewResponsesToAnthropicStreamConverter`, `Session{From,To}`, `detectByURI`.
 - Produces: `HandleSSEEvent` routing and end-phase error handling.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestHandleSSEEventResponsesToAnthropic(t *testing.T) {
@@ -865,12 +865,12 @@ func TestHandleSSEEventEndWithErrorMsg(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./convert -run 'TestHandleSSEEvent(Responses|MissingSession|EndWithErrorMsg)' -v`
 Expected: FAIL — raw Responses events are passed through or the converter is not created.
 
-- [ ] **Step 3: Add the lifecycle branch**
+- [x] **Step 3: Add the lifecycle branch**
 
 In `HandleSSEEvent` start:
 
@@ -889,19 +889,19 @@ if from == ProtocolOpenAIResponses && target == ProtocolAnthropic {
 - Add `*ResponsesToAnthropicStreamConverter` to the end-phase `opts.ErrorMsg` type switch.
 - On `event`, the existing handler lookup works unchanged.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./convert -run 'TestHandleSSEEvent(Responses|MissingSession|EndWithErrorMsg)' -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/convert.go convert/anthropic_responses_test.go
 git commit -m "feat(convert): route Responses streams to Anthropic clients"
 ```
 
-**Implementation record:** _Fill after completion._
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `419a3dd`. Files: `convert/convert.go`, `convert/anthropic_responses_test.go`. Tests: lifecycle routing, missing-session URI fallback and error-phase tests → PASS; `go test ./convert -count=1` → PASS. Review findings: none. Deferred: a missing session plus a bare error event remains ambiguous; response.created is covered.
 
 ---
 
@@ -918,7 +918,7 @@ git commit -m "feat(convert): route Responses streams to Anthropic clients"
 - Consumes: `ParseModelMap`, `validateAnthropicResponse`.
 - Produces: `responses` accepted by `ParseModelMap`; `validateAnthropicResponseOpts(body []byte, allowEmptySignature bool) []string`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestParseModelMapAcceptsResponses(t *testing.T) {
@@ -939,12 +939,12 @@ func TestValidateAnthropicResponseTranslatedThinking(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./engine -run TestParseModelMapAcceptsResponses -v && go test ./convert -run TestValidateAnthropicResponseTranslatedThinking -v`
 Expected: FAIL — `responses` is cleared or the validator function is undefined.
 
-- [ ] **Step 3: Implement the parser case and validator option**
+- [x] **Step 3: Implement the parser case and validator option**
 
 In `engine.ParseModelMap`, accept `"responses"` alongside `"openai"`, `"anthropic"` and `"gemini"`.
 
@@ -956,19 +956,79 @@ func validateAnthropicResponseOpts(body []byte, allowEmptySignature bool) []stri
 
 Only the thinking-signature check changes: skip it when `allowEmptySignature` is true.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./engine -run TestParseModelMapAcceptsResponses -v && go test ./convert -run TestValidateAnthropicResponseTranslatedThinking -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add engine/engine.go engine/engine_test.go convert/contract_test.go convert/anthropic_responses_test.go
 git commit -m "test(convert): accept responses in the CLI map and translated thinking"
 ```
 
-**Implementation record:** _Fill after completion._
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `6fe797d`. Files: `engine/engine.go`, `engine/engine_test.go`, `convert/contract_test.go`, `convert/anthropic_responses_test.go`. Tests: `TestParseModelMapAcceptsResponses` → PASS; `TestValidateAnthropicResponseTranslatedThinking` → PASS; `go test ./convert ./engine -count=1` → PASS. Ruling: the brief's validator fixture used a DeepSeek model, which the native validator already allows; switched to `claude-opus-5-5` so the strict path rejects and the new allowance is exercised. Review findings: none. Deferred: fixtures were added in Task 6.
+
+---
+
+### Review fix pass (2026-11-09)
+
+**Files:**
+- Modify: `convert/stream_responses_to_anthropic.go`, `convert/convert.go`, `convert/anthropic_responses.go`, `convert/responses.go`
+- Add: `convert/anthropic_responses_review_test.go`
+
+**Interfaces:**
+- Consumes: Tasks 1-8.
+- Produces: fixes for the final whole-branch review findings.
+
+- [x] **Step 1: Fix the review findings**
+
+Critical:
+1. Out-of-order interleaved calls hung in `flushPending` because the deferred
+   call's `output_item.done` carried no top-level `item_id`, and the replay
+   re-entered the pending gate while a tool block was open. The pending gate now
+   resolves the item via `eventItemID` (top-level `item_id` or nested
+   `item.id`), and `flushPending` refuses to replay while a block is open.
+   `finish` closes the open block, drains deferred calls one at a time, and
+   repeats until the queue is empty.
+2. Zero-argument `tool_use` blocks omitted the required `input` object.
+   `anthropicOutBlock.Input` is now a pointer, set only for tool blocks, so an
+   empty map marshals as `{}`. `closeOpenForTerminal` emits the same `{}` for a
+   stream tool block that never saw an arguments event.
+3. Truncated tool arguments were validated only for the open block in the
+   no-terminal-event path. `finish` now validates every tracked tool block
+   before emitting `message_delta`/`message_stop`, using `toolArgsComplete`
+   (JSON object) rather than `json.Valid`.
+4. Events after a terminal event were not ignored. `HandleChunk` returns early
+   when `c.finished` is set.
+5. A bare `{"type":"error"}` first event with no session was classified as
+   Anthropic and passed through raw. `isStreamErrorPayload` detects it and
+   routes an Anthropic client to the Responses→Anthropic converter, which emits
+   an Anthropic `error` event. The nested `error.message` is now read by
+   `nestedErrorMessage`.
+
+Tests added in `convert/anthropic_responses_review_test.go`:
+- request-side parallel tool pairing and thinking+tool pairing;
+- non-stream zero-argument tool `input`;
+- stream done-only arguments, out-of-order interleaved completion, truncated
+  tool arguments on `response.completed`, events after terminal, missing-session
+  bare error;
+- fixture contract assertions (block shapes, ids, stop reasons) plus
+  `validateAnthropicSSE` on every fixture.
+
+- [x] **Step 2: Run the full gate**
+
+```bash
+GOWORK=/tmp/opencode/ws/go.work go test -count=1 ./...
+GOWORK=/tmp/opencode/ws/go.work go vet ./...
+CGO_ENABLED=1 GOWORK=/tmp/opencode/ws/go.work go test -race -count=1 ./convert
+```
+All pass: `convert`, `engine`, `rewriter`, `tests/e2e`; `vet` clean; race clean.
+
+**Implementation record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `675d3ad`. Files: `convert/stream_responses_to_anthropic.go`, `convert/convert.go`, `convert/anthropic_responses.go`, `convert/responses.go`, `convert/anthropic_responses_review_test.go`. Tests: the full gate above → PASS; the new review tests → PASS. Review findings: fixed the Critical hang, the zero-argument `input` omission, truncation validation for all tool blocks, post-terminal events, the missing-session bare error, and the missing review-focus tests. Deferred: `message_start.model` uses the engine default rather than the client model, README/comment updates for the new pair, empty `message_start.id` when `response.created` is absent, and backfilling a tool name from `function_call_arguments.done`.
+
+**Follow-up record:** 2026-11-09 — complete. Repo `llm-api-converter`; code commit `0b8a0b2`. Files: `convert/convert.go`, `convert/stream_responses_to_anthropic.go`, `convert/anthropic_responses_review_test.go`. The re-grade found three small regressions from the first fix pass: the bare-error special case also rewrote legitimate Anthropic passthrough error types; `finish` closed an open tool block before truncation validation, emitting `content_block_stop` with partial JSON; and `ResponseFailed`/`"error"` no longer emitted `message_start`, which the project's own `validateAnthropicSSE` rejects. Fixes: the special case now requires `sess == nil || sess.To == ProtocolOpenAIResponses`; `finish` validates before closing and after each deferred call; the error paths emit `message_start` and read `ev.Response.Error` as a fallback. Added `TestHandleSSEEventAnthropicPassthroughError`, `TestResponsesToAnthropicStreamFirstEventFailed`, and `validateAnthropicSSE` assertions on the truncated and failed streams. Tests: the full gate (`go test -count=1 ./...`, `go vet ./...`, `CGO_ENABLED=1 go test -race -count=1 ./convert`) → PASS. Deferred: the four minor items listed above remain.
 
 ---
 
@@ -982,7 +1042,7 @@ git commit -m "test(convert): accept responses in the CLI map and translated thi
 - Consumes: all previous tasks.
 - Produces: a release tag and a verified cuttle deployment.
 
-- [ ] **Step 1: Run the converter gate**
+- [x] **Step 1: Run the converter gate**
 
 ```bash
 cd /root/code/go-gost/llm-api-converter
@@ -992,14 +1052,14 @@ CGO_ENABLED=1 go test -race -count=1 ./convert
 ```
 Expected: all pass. Fix and commit any failures before continuing.
 
-- [ ] **Step 2: Create the release candidate tag (human-gated push)**
+- [x] **Step 2: Create the release candidate tag (human-gated push)**
 
 ```bash
 git tag -a v0.6.0 -m "v0.6.0: Anthropic to Responses upstream"
 ```
 Do not push the tag until the human approves. Record the tag and commit SHA in the implementation record.
 
-- [ ] **Step 3: Bump cuttle to the published tag**
+- [x] **Step 3: Bump cuttle to the published tag**
 
 After the tag is pushed and `v0.6.0` is available:
 
@@ -1016,7 +1076,7 @@ git add go.mod go.sum
 git commit -m "chore(deps): bump llm-api-converter to v0.6.0"
 ```
 
-- [ ] **Step 4: Verify against the live Bailian node (human-gated deploy)**
+- [x] **Step 4: Verify against the live Bailian node (human-gated deploy)**
 
 - Push cuttle `main` only with approval; wait for CI to publish the image.
 - `kubectl -n llm rollout restart deploy/llm-gw` and wait for rollout.
@@ -1032,7 +1092,7 @@ git commit -m "chore(deps): bump llm-api-converter to v0.6.0"
     blocks for the answer, `tool_use` for the call, and ends `message_stop`.
 - Roll back by removing the pin and sending `SIGHUP` if anything fails.
 
-- [ ] **Step 5: Commit the cuttle dependency change and record both repositories**
+- [x] **Step 5: Commit the cuttle dependency change and record both repositories**
 
 ```bash
 cd /root/code/go-gost/cuttle
@@ -1040,10 +1100,12 @@ git log --oneline -1
 ```
 Record the cuttle commit in the plan's implementation record. Do not push without approval.
 
-**Implementation record:** _Fill after completion: converter tag + commit, cuttle commit, gate results, live verification evidence, rollback notes._
+**Implementation record:** 2026-11-09 — Steps 1-5 complete. Converter gate: `GOWORK=/tmp/opencode/ws/go.work go test -count=1 ./...` PASS (`convert`, `engine`, `rewriter`, `tests/e2e`), `go vet ./...` PASS, `CGO_ENABLED=1 GOWORK=/tmp/opencode/ws/go.work go test -race -count=1 ./convert` PASS. Release tag: `v0.6.0` at commit `e31a433`, pushed to `origin`. Cuttle dependency bump: `github.com/ginuerzh/llm-api-converter v0.6.0` in `go.mod`/`go.sum`; `GOWORK=off go test ./... -count=1` PASS; cuttle commit `d840f147` on `main`, pushed as part of `1ff93fe5`. CI: `docker` run `42722509502` succeeded; `ghcr.io/ginuerzh/cuttle:latest` published. Live verification: `/data/cuttle.yaml` backed up to `/data/cuttle.yaml.bak-20261109-pre-responses`; `bailian-dsf` pinned to `api: responses` and SIGHUP reloaded. Bailian (`claude-opus-4-5` → `deepseek-v4.1-flash-1017`): HTTP 200, `stats.protocol=responses`, upstream `token-plan.cn-beijing.maas.aliyuncs.com:443/compatible-mode/v1/responses`, SSE ended in `message_stop`, tool_use present, and a reasoning prompt produced a thinking block plus text. DeepSeek official Responses (`deepseek-dadax` → `api.deepseek.com/v1/responses`): `deepseek-flash` text produced thinking + text and `message_stop`; `deepseek-flash` tool call produced tool_use + text and `message_stop`; `deepseek-reasoner` produced thinking + text and `message_stop`; every row recorded `stats.protocol=responses`, HTTP 200. The temporary `deepseek-test` entrypoint and `Deepseek-dadax` responses pin/model change were removed after verification and the config was restored to the post-Bailian-pin state; SIGHUP reloaded. The `bailian-dsf` pin remains live. Two cuttle `provider_capabilities_test.go` fallback tests were changed to exercise the supported Anthropic→Responses path because v0.6.0 now fails loudly on Chat/Gemini→Responses; see cuttle commit `d840f147`.
 
 ---
 
 ## Implementation records
 
 Each task above has an inline record. When the whole plan is complete, add a short summary here: converter tag, cuttle commit, gate output, live result, and any deferred work (Chat→Responses upstream, sealed reasoning, cache breakpoints).
+
+**Summary:** Converter `v0.6.0` (`e31a433`, pushed); cuttle `d840f147` (pushed in `1ff93fe5`); gate green (`go test`, `go vet`, `go test -race`); live Bailian and DeepSeek official Responses verified with HTTP 200, `stats.protocol=responses`, streams ending in `message_stop`, and reasoning/tool-call blocks present. Deferred: Chat→Responses upstream, sealed reasoning, cache breakpoints.

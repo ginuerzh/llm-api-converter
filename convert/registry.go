@@ -24,6 +24,11 @@ func init() {
 	// Anthropic ↔ Gemini (request and response).
 	conversions[ConversionKey{ProtocolAnthropic, ProtocolGemini}] = convertAnthropicBodyToGemini
 	conversions[ConversionKey{ProtocolGemini, ProtocolAnthropic}] = convertGeminiBodyToAnthropic
+
+	// Anthropic client → Responses upstream (one-way request converter).
+	conversions[ConversionKey{ProtocolAnthropic, ProtocolOpenAIResponses}] = convertAnthropicRequestToResponses
+	// Responses reply → Anthropic client (one-way response converter).
+	conversions[ConversionKey{ProtocolOpenAIResponses, ProtocolAnthropic}] = convertResponsesResponseToAnthropic
 }
 
 // convertAnthropicBodyToOpenAI dispatches an Anthropic body (request or response)

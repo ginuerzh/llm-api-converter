@@ -1,0 +1,145 @@
+id:1
+event:response.created
+:HTTP_STATUS/200
+data:{"response":{"id":"resp_11b0f5c0-609a-4167-a8d4-f6ee4712a6ff","created_at":1794228557,"error":null,"incomplete_details":null,"instructions":null,"metadata":{},"model":"deepseek-v4.1-flash-1017","object":"response","output":[],"parallel_tool_calls":true,"temperature":1.0,"tool_choice":"auto","tools":[],"top_p":1.0,"background":false,"conversation":null,"max_output_tokens":256,"max_tool_calls":null,"previous_response_id":null,"prompt":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":{"effort":"high","generate_summary":null,"summary":"auto"},"safety_identifier":null,"service_tier":"default","status":"queued","text":{"format":{"type":"text"},"verbosity":null},"top_logprobs":0,"truncation":null,"usage":null,"user":null,"completed_at":1794228557,"frequency_penalty":0.0,"presence_penalty":0.0,"store":false,"moderation":null,"billing":null,"tool_usage":{}},"sequence_number":0,"type":"response.created"}
+
+id:2
+event:response.in_progress
+:HTTP_STATUS/200
+data:{"response":{"id":"resp_11b0f5c0-609a-4167-a8d4-f6ee4712a6ff","created_at":1794228557,"error":null,"incomplete_details":null,"instructions":null,"metadata":{},"model":"deepseek-v4.1-flash-1017","object":"response","output":[],"parallel_tool_calls":true,"temperature":1.0,"tool_choice":"auto","tools":[],"top_p":1.0,"background":false,"conversation":null,"max_output_tokens":256,"max_tool_calls":null,"previous_response_id":null,"prompt":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":{"effort":"high","generate_summary":null,"summary":"auto"},"safety_identifier":null,"service_tier":"default","status":"in_progress","text":{"format":{"type":"text"},"verbosity":null},"top_logprobs":0,"truncation":null,"usage":null,"user":null,"completed_at":1794228557,"frequency_penalty":0.0,"presence_penalty":0.0,"store":false,"moderation":null,"billing":null,"tool_usage":{}},"sequence_number":1,"type":"response.in_progress"}
+
+id:3
+event:response.output_item.added
+:HTTP_STATUS/200
+data:{"item":{"id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","summary":[],"type":"reasoning","content":[],"encrypted_content":null,"status":null},"output_index":0,"sequence_number":2,"type":"response.output_item.added"}
+
+id:4
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":"We","item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":3,"type":"response.reasoning_text.delta"}
+
+id:5
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":" need answer classic r","item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":4,"type":"response.reasoning_text.delta"}
+
+id:6
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":"iddle. \"","item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":5,"type":"response.reasoning_text.delta"}
+
+id:7
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":"All but 9","item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":6,"type":"response.reasoning_text.delta"}
+
+id:8
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":" run away\" means","item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":7,"type":"response.reasoning_text.delta"}
+
+id:9
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":" 9 are","item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":8,"type":"response.reasoning_text.delta"}
+
+id:10
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":" left. Need","item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":9,"type":"response.reasoning_text.delta"}
+
+id:11
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":" maybe","item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":10,"type":"response.reasoning_text.delta"}
+
+id:12
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":" mention if","item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":11,"type":"response.reasoning_text.delta"}
+
+id:13
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":" asking","item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":12,"type":"response.reasoning_text.delta"}
+
+id:14
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":" how many left","item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":13,"type":"response.reasoning_text.delta"}
+
+id:15
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":":","item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":14,"type":"response.reasoning_text.delta"}
+
+id:16
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":" 9. Brief","item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":15,"type":"response.reasoning_text.delta"}
+
+id:17
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":".","item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":16,"type":"response.reasoning_text.delta"}
+
+id:18
+event:response.reasoning_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":"","item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":17,"type":"response.reasoning_text.delta"}
+
+id:19
+event:response.reasoning_text.done
+:HTTP_STATUS/200
+data:{"content_index":0,"item_id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","output_index":0,"sequence_number":18,"text":"We need answer classic riddle. \"All but 9 run away\" means 9 are left. Need maybe mention if asking how many left: 9. Brief.","type":"response.reasoning_text.done"}
+
+id:20
+event:response.output_item.done
+:HTTP_STATUS/200
+data:{"item":{"id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","summary":[],"type":"reasoning","content":[{"text":"We need answer classic riddle. \"All but 9 run away\" means 9 are left. Need maybe mention if asking how many left: 9. Brief.","type":"reasoning_text"}],"encrypted_content":null,"status":null},"output_index":0,"sequence_number":19,"type":"response.output_item.done"}
+
+id:21
+event:response.output_item.added
+:HTTP_STATUS/200
+data:{"item":{"id":"msg_460cdd5e-62e8-46dc-84d8-8c53892d01e1","content":[],"role":"assistant","status":"in_progress","type":"message"},"output_index":1,"sequence_number":20,"type":"response.output_item.added"}
+
+id:22
+event:response.content_part.added
+:HTTP_STATUS/200
+data:{"content_index":0,"item_id":"msg_460cdd5e-62e8-46dc-84d8-8c53892d01e1","output_index":1,"part":{"annotations":[],"text":"","type":"output_text","logprobs":[]},"sequence_number":21,"type":"response.content_part.added"}
+
+id:23
+event:response.output_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":"9 sheep","item_id":"msg_460cdd5e-62e8-46dc-84d8-8c53892d01e1","logprobs":[],"output_index":1,"sequence_number":22,"type":"response.output_text.delta"}
+
+id:24
+event:response.output_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":" are left.","item_id":"msg_460cdd5e-62e8-46dc-84d8-8c53892d01e1","logprobs":[],"output_index":1,"sequence_number":23,"type":"response.output_text.delta"}
+
+id:25
+event:response.output_text.delta
+:HTTP_STATUS/200
+data:{"content_index":0,"delta":"","item_id":"msg_460cdd5e-62e8-46dc-84d8-8c53892d01e1","logprobs":[],"output_index":1,"sequence_number":24,"type":"response.output_text.delta"}
+
+id:26
+event:response.output_text.done
+:HTTP_STATUS/200
+data:{"content_index":0,"item_id":"msg_460cdd5e-62e8-46dc-84d8-8c53892d01e1","logprobs":[],"output_index":1,"sequence_number":25,"text":"9 sheep are left.","type":"response.output_text.done"}
+
+id:27
+event:response.content_part.done
+:HTTP_STATUS/200
+data:{"content_index":0,"item_id":"msg_460cdd5e-62e8-46dc-84d8-8c53892d01e1","output_index":1,"part":{"annotations":[],"text":"9 sheep are left.","type":"output_text","logprobs":[]},"sequence_number":26,"type":"response.content_part.done"}
+
+id:28
+event:response.output_item.done
+:HTTP_STATUS/200
+data:{"item":{"id":"msg_460cdd5e-62e8-46dc-84d8-8c53892d01e1","content":[{"annotations":[],"text":"9 sheep are left.","type":"output_text","logprobs":[]}],"role":"assistant","status":"completed","type":"message"},"output_index":1,"sequence_number":27,"type":"response.output_item.done"}
+
+id:29
+event:response.completed
+:HTTP_STATUS/200
+data:{"response":{"id":"resp_11b0f5c0-609a-4167-a8d4-f6ee4712a6ff","created_at":1794228557,"error":null,"incomplete_details":null,"instructions":null,"metadata":{},"model":"deepseek-v4.1-flash-1017","object":"response","output":[{"id":"msg_05a70ac0-b1dc-41fc-8541-6202f1dcc171","summary":[],"type":"reasoning","content":[{"text":"We need answer classic riddle. \"All but 9 run away\" means 9 are left. Need maybe mention if asking how many left: 9. Brief.","type":"reasoning_text"}],"encrypted_content":null,"status":null},{"id":"msg_460cdd5e-62e8-46dc-84d8-8c53892d01e1","content":[{"annotations":[],"text":"9 sheep are left.","type":"output_text","logprobs":[]}],"role":"assistant","status":"completed","type":"message"}],"parallel_tool_calls":true,"temperature":1.0,"tool_choice":"auto","tools":[],"top_p":1.0,"background":false,"conversation":null,"max_output_tokens":256,"max_tool_calls":null,"previous_response_id":null,"prompt":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":{"effort":"high","generate_summary":null,"summary":"auto"},"safety_identifier":null,"service_tier":"default","status":"completed","text":{"format":{"type":"text"},"verbosity":null},"top_logprobs":0,"truncation":null,"usage":{"input_tokens":78,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0},"output_tokens":42,"output_tokens_details":{"reasoning_tokens":35},"total_tokens":120,"x_details":[{"input_tokens":78,"output_tokens":42,"total_tokens":120,"input_tokens_details":{"text_tokens":78,"image_tokens":0},"output_tokens_details":{"text_tokens":6,"reasoning_tokens":35},"image_tokens":0,"prompt_tokens_details":{"cached_tokens":0},"x_billing_type":"response_api"}]},"user":null,"completed_at":1794228557,"frequency_penalty":0.0,"presence_penalty":0.0,"store":false,"moderation":null,"billing":null,"tool_usage":{}},"sequence_number":28,"type":"response.completed"}
+

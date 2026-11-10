@@ -1,0 +1,45 @@
+id:1
+event:response.created
+:HTTP_STATUS/200
+data:{"response":{"id":"resp_45669af5-00c7-43fd-b3b0-659eee9a21f9","created_at":1794228544,"error":null,"incomplete_details":null,"instructions":"You are a helpful agent. Use the provided tool when asked.","metadata":{},"model":"deepseek-v4.1-flash-1017","object":"response","output":[],"parallel_tool_calls":true,"temperature":1.0,"tool_choice":"auto","tools":[{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":null,"type":"function","description":"Get current weather"}],"top_p":1.0,"background":false,"conversation":null,"max_output_tokens":128,"max_tool_calls":null,"previous_response_id":null,"prompt":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":null,"safety_identifier":null,"service_tier":"default","status":"queued","text":{"format":{"type":"text"},"verbosity":null},"top_logprobs":0,"truncation":null,"usage":null,"user":null,"completed_at":1794228544,"frequency_penalty":0.0,"presence_penalty":0.0,"store":false,"moderation":null,"billing":null,"tool_usage":{}},"sequence_number":0,"type":"response.created"}
+
+id:2
+event:response.in_progress
+:HTTP_STATUS/200
+data:{"response":{"id":"resp_45669af5-00c7-43fd-b3b0-659eee9a21f9","created_at":1794228544,"error":null,"incomplete_details":null,"instructions":"You are a helpful agent. Use the provided tool when asked.","metadata":{},"model":"deepseek-v4.1-flash-1017","object":"response","output":[],"parallel_tool_calls":true,"temperature":1.0,"tool_choice":"auto","tools":[{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":null,"type":"function","description":"Get current weather"}],"top_p":1.0,"background":false,"conversation":null,"max_output_tokens":128,"max_tool_calls":null,"previous_response_id":null,"prompt":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":null,"safety_identifier":null,"service_tier":"default","status":"in_progress","text":{"format":{"type":"text"},"verbosity":null},"top_logprobs":0,"truncation":null,"usage":null,"user":null,"completed_at":1794228544,"frequency_penalty":0.0,"presence_penalty":0.0,"store":false,"moderation":null,"billing":null,"tool_usage":{}},"sequence_number":1,"type":"response.in_progress"}
+
+id:3
+event:response.output_item.added
+:HTTP_STATUS/200
+data:{"item":{"arguments":"","call_id":"call_9b673b6a7b304ff293656260","name":"get_weather","type":"function_call","id":"msg_36222c30-d5e5-4f2c-a500-f1a1234abfe8","status":"in_progress"},"output_index":0,"sequence_number":2,"type":"response.output_item.added"}
+
+id:4
+event:response.function_call_arguments.delta
+:HTTP_STATUS/200
+data:{"delta":"","item_id":"msg_36222c30-d5e5-4f2c-a500-f1a1234abfe8","output_index":0,"sequence_number":3,"type":"response.function_call_arguments.delta"}
+
+id:5
+event:response.function_call_arguments.delta
+:HTTP_STATUS/200
+data:{"delta":"{","item_id":"msg_36222c30-d5e5-4f2c-a500-f1a1234abfe8","output_index":0,"sequence_number":4,"type":"response.function_call_arguments.delta"}
+
+id:6
+event:response.function_call_arguments.delta
+:HTTP_STATUS/200
+data:{"delta":"\"city\": \"Beijing\"}","item_id":"msg_36222c30-d5e5-4f2c-a500-f1a1234abfe8","output_index":0,"sequence_number":5,"type":"response.function_call_arguments.delta"}
+
+id:7
+event:response.function_call_arguments.done
+:HTTP_STATUS/200
+data:{"arguments":"{\"city\": \"Beijing\"}","item_id":"msg_36222c30-d5e5-4f2c-a500-f1a1234abfe8","name":"get_weather","output_index":0,"sequence_number":6,"type":"response.function_call_arguments.done"}
+
+id:8
+event:response.output_item.done
+:HTTP_STATUS/200
+data:{"item":{"arguments":"{\"city\": \"Beijing\"}","call_id":"call_9b673b6a7b304ff293656260","name":"get_weather","type":"function_call","id":"msg_36222c30-d5e5-4f2c-a500-f1a1234abfe8","status":"completed"},"output_index":0,"sequence_number":7,"type":"response.output_item.done"}
+
+id:9
+event:response.completed
+:HTTP_STATUS/200
+data:{"response":{"id":"resp_45669af5-00c7-43fd-b3b0-659eee9a21f9","created_at":1794228544,"error":null,"incomplete_details":null,"instructions":"You are a helpful agent. Use the provided tool when asked.","metadata":{},"model":"deepseek-v4.1-flash-1017","object":"response","output":[{"arguments":"{\"city\": \"Beijing\"}","call_id":"call_9b673b6a7b304ff293656260","name":"get_weather","type":"function_call","id":"msg_36222c30-d5e5-4f2c-a500-f1a1234abfe8","status":"completed"}],"parallel_tool_calls":true,"temperature":1.0,"tool_choice":"auto","tools":[{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},"strict":null,"type":"function","description":"Get current weather"}],"top_p":1.0,"background":false,"conversation":null,"max_output_tokens":128,"max_tool_calls":null,"previous_response_id":null,"prompt":null,"prompt_cache_key":null,"prompt_cache_retention":null,"reasoning":null,"safety_identifier":null,"service_tier":"default","status":"completed","text":{"format":{"type":"text"},"verbosity":null},"top_logprobs":0,"truncation":null,"usage":{"input_tokens":339,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0},"output_tokens":40,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":379,"x_details":[{"input_tokens":339,"output_tokens":40,"total_tokens":379,"input_tokens_details":{"text_tokens":339,"image_tokens":0},"output_tokens_details":{"text_tokens":39},"image_tokens":0,"prompt_tokens_details":{"cached_tokens":0},"x_billing_type":"response_api"}]},"user":null,"completed_at":1794228544,"frequency_penalty":0.0,"presence_penalty":0.0,"store":false,"moderation":null,"billing":null,"tool_usage":{}},"sequence_number":8,"type":"response.completed"}
+

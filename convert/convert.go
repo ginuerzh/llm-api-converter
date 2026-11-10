@@ -534,7 +534,10 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 			}
 			return convertResponsesRequest(body, opts)
 		}
-		return body, nil
+		// A Responses reply may need conversion when the client is not a
+		// Responses client (for example an Anthropic client). Fall through to
+		// the normal response path, which resolves the client protocol and
+		// dispatches the registered pair.
 	}
 
 	// Resolve downstream protocol from model map.
@@ -543,9 +546,9 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 	opts.ResolvedModel = targetModel
 
 	if dir == DirectionRequest {
-		// Request path: store client protocol in session for response path.
+		// Request path: store both protocols for the response and stream paths.
 		if opts.SID != "" && opts.SessionStore != nil {
-			opts.SessionStore.Set(opts.SID, &Session{ID: opts.SID, From: source})
+			opts.SessionStore.Set(opts.SID, &Session{ID: opts.SID, From: source, To: downstream})
 		}
 
 		// Passthrough if source matches downstream protocol.
@@ -563,6 +566,12 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 			return converted, nil
 		}
 
+		// A Responses upstream without a registered converter must fail loudly:
+		// forwarding the client body unchanged produces an upstream 400 that
+		// names the wrong field (for example messages instead of input).
+		if downstream == ProtocolOpenAIResponses {
+			return nil, fmt.Errorf("no converter for %s=>%s", source, downstream)
+		}
 		slog.Debug("no converter for request pair, passing through", "from", source.String(), "to", downstream.String())
 		return passthrough(raw, targetModel, opts, body)
 	}
@@ -687,6 +696,17 @@ func newStreamConverterFromData(data []byte, opts *ConvertOptions) *StreamConver
 	return NewStreamConverter(streamModel, opts.ReasoningCache, opts.DeclaredTools)
 }
 
+// isStreamErrorPayload reports whether an SSE payload is a bare terminal
+// error event rather than a streaming content event.
+func isStreamErrorPayload(payload []byte) bool {
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return false
+	}
+	typ, _ := raw["type"].(string)
+	return typ == "error"
+}
+
 // HandleSSEEvent processes an SSE stream lifecycle event.
 func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *ConvertOptions) ([]byte, error) {
 	store := opts.SessionStore
@@ -745,19 +765,50 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 		// streaming response path); fall back to model-map resolution when no
 		// request session exists (old sniffer, or stateless usage).
 		target := ProtocolUnknown
+		var sess *Session
 		if store != nil {
-			if sess := store.Get(sid); sess != nil {
-				target = sess.From
+			if s := store.Get(sid); s != nil {
+				sess = s
+				target = s.From
 			}
 		}
 		model := extractModelFromData(payload)
 		if target == ProtocolUnknown {
+			target = detectByURI(opts.URI, DirectionRequest)
+		}
+		if target == ProtocolUnknown {
 			_, target = resolveModel(model, from, opts.ModelMap)
+		}
+
+		// The request path records the upstream protocol. When it is a
+		// Responses upstream and the client is Anthropic, do not let a bare
+		// error event classify as Anthropic and take the passthrough branch.
+		if sess != nil && sess.To == ProtocolOpenAIResponses && target == ProtocolAnthropic {
+			from = ProtocolOpenAIResponses
 		}
 
 		// Model map fallback when body + URI can't classify the event.
 		if from == ProtocolUnknown && target != ProtocolUnknown {
 			from = target
+		}
+
+		// A bare error payload with no session must not be mistaken for an
+		// Anthropic client stream and passed through raw. Normalize it for the
+		// Anthropic client instead, but leave a real Anthropic passthrough
+		// (session To == Anthropic) untouched.
+		if target == ProtocolAnthropic && (sess == nil || sess.To == ProtocolOpenAIResponses) && payload != nil && isStreamErrorPayload(payload) {
+			model := opts.RequestModel
+			if model == "" {
+				model = opts.ResolvedModel
+			}
+			if model == "" {
+				model = opts.Model
+			}
+			handler := NewResponsesToAnthropicStreamConverter(model, opts)
+			if store != nil {
+				store.Set(sid, &Session{ID: sid, From: target, To: ProtocolOpenAIResponses, StreamHandler: handler})
+			}
+			return handler.HandleChunk(payload)
 		}
 
 		// Passthrough: chunk format matches client protocol.
@@ -816,6 +867,38 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 				}
 				return startData, nil
 			}
+		}
+
+		// Responses SSE -> Anthropic: the client is Anthropic and the
+		// upstream recorded on the request path is Responses.
+		if from == ProtocolOpenAIResponses && target == ProtocolAnthropic {
+			model := opts.RequestModel
+			if model == "" {
+				model = opts.ResolvedModel
+			}
+			if model == "" {
+				model = opts.Model
+			}
+			handler := NewResponsesToAnthropicStreamConverter(model, opts)
+			if store != nil {
+				store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: handler})
+			}
+			startData := handler.HandleStreamStart()
+			if len(data) > 0 {
+				if payload := extractSSEPayload(data); payload != nil {
+					chunkData, err := handler.HandleChunk(payload)
+					if err != nil {
+						return startData, err
+					}
+					if len(chunkData) > 0 {
+						if len(startData) > 0 {
+							return append(startData, append([]byte("\n\n"), chunkData...)...), nil
+						}
+						return chunkData, nil
+					}
+				}
+			}
+			return startData, nil
 		}
 
 		// Anthropic SSE -> OpenAI Chat: the reverse of StreamConverter.
@@ -1027,7 +1110,8 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			switch handler.(type) {
 			case *StreamConverter, *AnthropicToOpenAIStreamConverter,
 				*GeminiToOpenAIStreamConverter, *GeminiToAnthropicStreamConverter,
-				*AnthropicToGeminiStreamConverter, *OpenAIToGeminiStreamConverter:
+				*AnthropicToGeminiStreamConverter, *OpenAIToGeminiStreamConverter,
+				*ResponsesToAnthropicStreamConverter:
 				return handler.EmitError(opts.ErrorMsg), nil
 			}
 		}
