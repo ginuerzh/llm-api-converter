@@ -44,7 +44,7 @@ These are the inputs most likely to hurt a real Claude Code user; each has a tes
 - Consumes: existing `ResponsesRequest`, `ResponsesStreamEvent`, `detectSource`.
 - Produces: `ResponsesReasoning{Effort, Summary string}`, `ResponsesText{Format map[string]any}`, `ResponsesUsageDetails.CacheWriteTokens`, `ResponsesStreamEvent.Name`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestDetectResponsesStreamingEvents(t *testing.T) {
@@ -73,12 +73,12 @@ func TestResponsesRequestReasoningMarshal(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./convert -run 'TestDetectResponsesStreamingEvents|TestResponsesRequestReasoningMarshal' -v`
 Expected: FAIL — undefined `ResponsesReasoning`, `ResponsesText`, or detection returns Anthropic/unknown.
 
-- [ ] **Step 3: Add the types and detection branch**
+- [x] **Step 3: Add the types and detection branch**
 
 In `convert/responses.go`, add:
 
@@ -103,12 +103,12 @@ if t, ok := raw["type"].(string); ok && strings.HasPrefix(t, "response.") {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./convert -run 'TestDetectResponsesStreamingEvents|TestResponsesRequestReasoningMarshal' -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/responses.go convert/detect.go convert/anthropic_responses_test.go
@@ -134,7 +134,7 @@ git commit -m "feat(convert): add Responses reasoning types and stream detection
   - `func responsesReasoningFromThinking(th *AnthropicThinking, oc *AnthropicOutputConfig) *ResponsesReasoning`
   - `func anthropicImageURL(src *AnthropicImageSource) string`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestConvertAnthropicRequestToResponsesTextAndSystem(t *testing.T) {
@@ -208,12 +208,12 @@ func TestConvertAnthropicRequestToResponsesImageAndFormat(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./convert -run 'TestConvertAnthropicRequestToResponses' -v`
 Expected: FAIL — `convertAnthropicRequestToResponses` undefined.
 
-- [ ] **Step 3: Implement the converter and register the direction**
+- [x] **Step 3: Implement the converter and register the direction**
 
 `convertAnthropicRequestToResponses` unmarshals `AnthropicRequest`, calls `anthropicRequestToResponses`, and returns `json.Marshal`. It returns the body unchanged when the JSON has no top-level `messages` field, so a misrouted response body cannot be fed to the request converter.
 
@@ -243,12 +243,12 @@ Register in `convert/registry.go`:
 conversions[ConversionKey{ProtocolAnthropic, ProtocolOpenAIResponses}] = convertAnthropicRequestToResponses
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./convert -run 'TestConvertAnthropicRequestToResponses' -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/anthropic_responses.go convert/registry.go convert/anthropic_responses_test.go
@@ -275,7 +275,7 @@ git commit -m "feat(convert): translate Anthropic requests to Responses"
   - `func anthropicUsageFromResponses(u *ResponsesUsage) AnthropicUsage`
   - `func parseResponsesArguments(s string) map[string]any`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestConvertResponsesResponseToAnthropicText(t *testing.T) {
@@ -336,12 +336,12 @@ func TestConvertResponsesResponseToAnthropicIncomplete(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./convert -run 'TestConvertResponsesResponseToAnthropic' -v`
 Expected: FAIL — undefined converter.
 
-- [ ] **Step 3: Implement the converter and register the direction**
+- [x] **Step 3: Implement the converter and register the direction**
 
 `responsesResponseToAnthropic` builds an `AnthropicResponse` with `Type:"message"`, `Role:"assistant"`, `Model: resolveResponseModel(resp.Model, opts)` and one block per output item:
 
@@ -387,12 +387,12 @@ conversions[ConversionKey{ProtocolOpenAIResponses, ProtocolAnthropic}] = convert
 
 The public function guards by body shape: if the body has no `"object":"response"`, return it unchanged.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./convert -run 'TestConvertResponsesResponseToAnthropic' -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/anthropic_responses.go convert/registry.go convert/anthropic_responses_test.go
@@ -413,7 +413,7 @@ git commit -m "feat(convert): translate Responses replies to Anthropic"
 - Consumes: the two converters from Tasks 2 and 3; `Session{From, To}`.
 - Produces: `Convert()` behavior; `Session.To` populated on the request path.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestConvertRoutesAnthropicToResponses(t *testing.T) {
@@ -464,12 +464,12 @@ func TestConvertUnknownResponsesPairFails(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./convert -run 'TestConvertRoutes|TestConvertResponsesClientStillPassesThrough|TestConvertUnknownResponsesPairFails' -v`
 Expected: FAIL — request is not converted, the response returns raw Responses JSON, or the missing pair passes through.
 
-- [ ] **Step 3: Restructure `Convert()` and set `Session.To`**
+- [x] **Step 3: Restructure `Convert()` and set `Session.To`**
 
 In the request branch, store `&Session{ID: opts.SID, From: source, To: downstream}`.
 
@@ -489,17 +489,17 @@ registered for the source protocol, return
 passthrough. This makes a missing Responses upstream pair loud, while leaving
 other unknown-pair passthrough behavior unchanged.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./convert -run 'TestConvertRoutes|TestConvertResponsesClientStillPassesThrough|TestConvertUnknownResponsesPairFails' -v`
 Expected: PASS.
 
-- [ ] **Step 5: Run the existing package tests for regressions**
+- [x] **Step 5: Run the existing package tests for regressions**
 
 Run: `go test ./convert -count=1`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add convert/convert.go convert/anthropic_responses_test.go
@@ -540,7 +540,7 @@ type ResponsesToAnthropicStreamConverter struct {
 }
 ```
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```go
 func TestResponsesToAnthropicStreamText(t *testing.T) {
@@ -570,12 +570,12 @@ func TestResponsesToAnthropicStreamText(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `go test ./convert -run TestResponsesToAnthropicStreamText -v`
 Expected: FAIL — undefined converter.
 
-- [ ] **Step 3: Implement the text path**
+- [x] **Step 3: Implement the text path**
 
 State: `started`, `finished`, `messageID`, `model`, `blockIndex`, `open *responsesAnthropicBlock`, `usage AnthropicUsage`, `stopReason string`.
 
@@ -593,12 +593,12 @@ State: `started`, `finished`, `messageID`, `model`, `blockIndex`, `open *respons
 
 Use `anthropicSSE` to append `\n\n` between events.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `go test ./convert -run TestResponsesToAnthropicStreamText -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/stream_responses_to_anthropic.go convert/stream_responses_to_anthropic_test.go
@@ -620,7 +620,7 @@ git commit -m "feat(convert): stream Responses text as Anthropic events"
 - Consumes: Task 5 converter.
 - Produces: handling for `function_call`, `reasoning_text`/`reasoning_summary_text`, parallel items, `response.incomplete`/`response.failed`/`error`, and truncated arguments.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestResponsesToAnthropicStreamToolCall(t *testing.T) {
@@ -764,12 +764,12 @@ func TestResponsesToAnthropicStreamFailedEvent(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./convert -run 'TestResponsesToAnthropicStream(Tool|Reasoning|Parallel|Interleaved|Truncated|Failed)' -v`
 Expected: FAIL — events are ignored or emitted as text.
 
-- [ ] **Step 3: Implement the remaining event handlers**
+- [x] **Step 3: Implement the remaining event handlers**
 
 - `response.output_item.added` with `item.type=="function_call"`: close the open block, open a tool block with `id = call_id` (fallback item id), `name`, `input:{}`; record it by item ID.
 - `response.function_call_arguments.delta`: find the item's block (or the open call); append to its buffer; emit `input_json_delta` when the delta is non-empty; mark `argsSent`.
@@ -804,12 +804,12 @@ The converter must ignore that event for text purposes and keep the thinking
 block it opened from `output_item.added`. Add a test that asserts no `text`
 block is opened for a `reasoning_text` content part.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./convert -run 'TestResponsesToAnthropicStream' -v`
 Expected: PASS (including the interleaved-call test).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/stream_responses_to_anthropic.go convert/stream_responses_to_anthropic_test.go convert/testdata/responses
@@ -830,7 +830,7 @@ git commit -m "feat(convert): stream Responses tools and reasoning to Anthropic"
 - Consumes: `NewResponsesToAnthropicStreamConverter`, `Session{From,To}`, `detectByURI`.
 - Produces: `HandleSSEEvent` routing and end-phase error handling.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestHandleSSEEventResponsesToAnthropic(t *testing.T) {
@@ -865,12 +865,12 @@ func TestHandleSSEEventEndWithErrorMsg(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./convert -run 'TestHandleSSEEvent(Responses|MissingSession|EndWithErrorMsg)' -v`
 Expected: FAIL — raw Responses events are passed through or the converter is not created.
 
-- [ ] **Step 3: Add the lifecycle branch**
+- [x] **Step 3: Add the lifecycle branch**
 
 In `HandleSSEEvent` start:
 
@@ -889,12 +889,12 @@ if from == ProtocolOpenAIResponses && target == ProtocolAnthropic {
 - Add `*ResponsesToAnthropicStreamConverter` to the end-phase `opts.ErrorMsg` type switch.
 - On `event`, the existing handler lookup works unchanged.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./convert -run 'TestHandleSSEEvent(Responses|MissingSession|EndWithErrorMsg)' -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add convert/convert.go convert/anthropic_responses_test.go
@@ -918,7 +918,7 @@ git commit -m "feat(convert): route Responses streams to Anthropic clients"
 - Consumes: `ParseModelMap`, `validateAnthropicResponse`.
 - Produces: `responses` accepted by `ParseModelMap`; `validateAnthropicResponseOpts(body []byte, allowEmptySignature bool) []string`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```go
 func TestParseModelMapAcceptsResponses(t *testing.T) {
@@ -939,12 +939,12 @@ func TestValidateAnthropicResponseTranslatedThinking(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./engine -run TestParseModelMapAcceptsResponses -v && go test ./convert -run TestValidateAnthropicResponseTranslatedThinking -v`
 Expected: FAIL — `responses` is cleared or the validator function is undefined.
 
-- [ ] **Step 3: Implement the parser case and validator option**
+- [x] **Step 3: Implement the parser case and validator option**
 
 In `engine.ParseModelMap`, accept `"responses"` alongside `"openai"`, `"anthropic"` and `"gemini"`.
 
@@ -956,12 +956,12 @@ func validateAnthropicResponseOpts(body []byte, allowEmptySignature bool) []stri
 
 Only the thinking-signature check changes: skip it when `allowEmptySignature` is true.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./engine -run TestParseModelMapAcceptsResponses -v && go test ./convert -run TestValidateAnthropicResponseTranslatedThinking -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add engine/engine.go engine/engine_test.go convert/contract_test.go convert/anthropic_responses_test.go
