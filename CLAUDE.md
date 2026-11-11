@@ -223,6 +223,7 @@ Key gotchas:
 - **SSE passthrough**: Non-JSON/unknown SSE data passes through unchanged (`[DONE]` markers → `message_stop`)
 - **Empty messages**: After filtering (e.g., only system message), a minimal user message `"..."` is injected (Anthropic requires at least one message)
 - **Tool choice**: DeepSeek models reject forced function `tool_choice`; it's softened to a system instruction instead
+- **Structured output**: Anthropic `output_config.format` json_schema maps to OpenAI `response_format` json_schema. DeepSeek models reject that type ("This response_format type is unavailable now") and accept `json_object` only when the prompt mentions JSON, so for them the schema moves into a system instruction beside `response_format: {"type":"json_object"}`
 - **Tool restriction**: When converting upstream responses, `tool_use` blocks not in the original Anthropic request's `tools` list are filtered to prevent tool hallucination
 - **ID normalization**: OpenAI `call_xxx` IDs → Anthropic `toolu_xxx` format (required by Anthropic SDK)
 - **Image handling**: Only `data:` URIs with `base64` encoding are supported for image conversion

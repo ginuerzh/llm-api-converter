@@ -144,6 +144,17 @@ type OpenAIJSONSchema struct {
 // output, for protocols that accept a schema but not a bare JSON mode.
 const jsonOutputInstruction = "Respond with a JSON object only."
 
+// jsonSchemaInstruction is the system fallback for backends that reject
+// json_schema but accept json_object (DeepSeek), which also requires the prompt
+// to mention JSON. The schema travels in the instruction instead of the wire.
+func jsonSchemaInstruction(schema any) string {
+	b, err := json.Marshal(schema)
+	if err != nil {
+		return jsonOutputInstruction
+	}
+	return jsonOutputInstruction + " Match this JSON Schema:\n" + string(b)
+}
+
 // jsonSchemaValue returns schema when it carries content and nil otherwise.
 // An empty object has no structured-output meaning and is treated as absent.
 func jsonSchemaValue(schema any) any {

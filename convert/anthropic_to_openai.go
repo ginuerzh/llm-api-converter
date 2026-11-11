@@ -276,12 +276,21 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	if req.OutputConfig != nil && req.OutputConfig.Format != nil &&
 		req.OutputConfig.Format.Type == "json_schema" {
 		if schema := jsonSchemaValue(req.OutputConfig.Format.Schema); schema != nil {
-			oai.ResponseFormat = &OpenAIResponseFormat{
-				Type: "json_schema",
-				JSONSchema: &OpenAIJSONSchema{
-					Name:   "response",
-					Schema: schema,
-				},
+			// DeepSeek rejects json_schema outright ("This response_format
+			// type is unavailable now") and accepts json_object only when the
+			// prompt mentions JSON, so the schema moves into a system
+			// instruction.
+			if profile.isDeepSeek {
+				oai.ResponseFormat = &OpenAIResponseFormat{Type: "json_object"}
+				structuredInstruction = jsonSchemaInstruction(schema)
+			} else {
+				oai.ResponseFormat = &OpenAIResponseFormat{
+					Type: "json_schema",
+					JSONSchema: &OpenAIJSONSchema{
+						Name:   "response",
+						Schema: schema,
+					},
+				}
 			}
 		} else {
 			structuredInstruction = jsonOutputInstruction

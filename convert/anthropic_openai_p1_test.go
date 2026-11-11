@@ -763,6 +763,33 @@ func TestP1_AnthropicStructuredOutputToOpenAI(t *testing.T) {
 	}
 }
 
+func TestP1_DeepSeekStructuredOutputUsesJSONObject(t *testing.T) {
+	body := `{"model":"claude","max_tokens":10,"output_config":{"format":{
+		"type":"json_schema","schema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}}},
+		"messages":[{"role":"user","content":"name this session"}]}`
+	b, _ := convertAnthropicRequestToOpenAI([]byte(body), &ConvertOptions{ResolvedModel: "deepseek-flash"})
+	var oai OpenAIChatRequest
+	_ = json.Unmarshal(b, &oai)
+	if oai.ResponseFormat == nil || oai.ResponseFormat.Type != "json_object" {
+		t.Fatalf("response_format = %+v, want json_object", oai.ResponseFormat)
+	}
+	if oai.ResponseFormat.JSONSchema != nil {
+		t.Fatalf("json_schema sent to DeepSeek: %+v", oai.ResponseFormat.JSONSchema)
+	}
+	var system string
+	for _, msg := range oai.Messages {
+		if msg.Role == "system" {
+			system, _ = msg.Content.(string)
+		}
+	}
+	if !strings.Contains(strings.ToLower(system), "json") {
+		t.Fatalf("system = %q, want a JSON instruction", system)
+	}
+	if !strings.Contains(system, `"title"`) || !strings.Contains(system, `"required"`) {
+		t.Fatalf("system = %q, want the schema", system)
+	}
+}
+
 func TestP1_JSONObjectFallsBackToInstruction(t *testing.T) {
 	body := `{"model":"gpt-4","response_format":{"type":"json_object"},
 		"messages":[{"role":"user","content":"hi"}]}`
