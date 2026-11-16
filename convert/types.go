@@ -303,18 +303,59 @@ func (r *AnthropicRequest) UnmarshalJSON(data []byte) error {
 
 // modelProfile caches the detection result for a single request so that
 // repeated isDeepSeekModel/isOpenAIStyleModel calls don't re-parse the string.
+// All string fields use "none" as the off value; booleans are zero-valued off.
 type modelProfile struct {
-	model      string
+	model                string
+	stripTopK            bool
+	reasoningMaxTokens   string // "none" | "max_completion_tokens"
+	thinkingStyle        string // "none" | "deepseek" | "glm"
+	forceToolChoice      string // "allow" | "strip"
+	jsonSchemaMode       string // "pass" | "json_object" | "reject"
+	contentFlatten       bool
+	reasoningReplay      string // "none" | "deepseek" | "glm"
+	reasoningFallback    string // "none" | "placeholder"
+	signatureScheme      string // "none" | "openai_toolcall_gemini"
+	streamTailSynthesize bool   // reserved; not read in this plan
+
+	// isDeepSeek is the legacy verdict used by the two call sites in
+	// anthropic_to_openai.go that Task 2 migrates to thinkingStyle. Identical
+	// to thinkingStyle == "deepseek". Remove once those sites are migrated.
 	isDeepSeek bool
-	isOpenAI   bool
 }
 
+// classifyModel assembles the profile from today's helpers so the result is
+// behavior-identical to the ad-hoc conditionals it replaces. stripTopK derives
+// from the prefixed path (stripAllProviderPrefixes) because OpenAI reasoning
+// models reject top_k even under provider prefixes; ReasoningMaxTokens derives
+// from the single-strip path inside isOpenAIReasoningModel.
 func classifyModel(model string) modelProfile {
-	return modelProfile{
-		model:      model,
-		isDeepSeek: isDeepSeekModel(model),
-		isOpenAI:   isOpenAIStyleModel(model),
+	p := modelProfile{
+		model:              model,
+		reasoningMaxTokens: "none",
+		thinkingStyle:      "none",
+		forceToolChoice:    "allow",
+		jsonSchemaMode:     "pass",
+		reasoningReplay:    "none",
+		reasoningFallback:  "none",
+		signatureScheme:    "none",
 	}
+	if isDeepSeekModel(model) {
+		p.isDeepSeek = true
+		p.thinkingStyle = "deepseek"
+		p.reasoningReplay = "deepseek"
+		p.forceToolChoice = "strip"
+		p.jsonSchemaMode = "json_object"
+		p.reasoningFallback = "placeholder"
+	} else if isGLMModel(model) {
+		p.thinkingStyle = "glm"
+		p.reasoningReplay = "glm"
+		p.contentFlatten = true
+	}
+	if isOpenAIReasoningModel(model) {
+		p.reasoningMaxTokens = "max_completion_tokens"
+	}
+	p.stripTopK = isOpenAIReasoningModel(stripAllProviderPrefixes(model))
+	return p
 }
 
 func isDeepSeekModel(model string) bool {
