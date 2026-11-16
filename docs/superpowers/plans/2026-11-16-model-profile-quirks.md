@@ -410,4 +410,4 @@ Append Task 6 record to this plan; commit (this plan's records are the audit tra
   - Test count delta: 0 (no test edits).
 - Review findings: none — one guard expression swapped, one `classifyModel` resolution added, comments left accurate (they cite the replay rule, not the old guard); `go vet` clean.
 - Deferred/limitations: e2e suite remains red for the pre-existing env reason; `isDeepSeek` legacy field and `replaysReasoning` test-file call sites remain for Task 5's sweep; `signatureScheme`/`streamTailSynthesize` still unread (Task 4 wires `signatureScheme`).
-- SHA: (this commit)
+- SHA: 69452fe (this commit)
