@@ -119,9 +119,8 @@ Seam:
 
 1. New profile field `SignatureScheme = openai_toolcall_gemini` for target
    models matching `gemini-*` (and aliases that carry `gemini` as a model
-   prefix segment; match by
-   `strings.Contains(strings.ToLower(model), "gemini")` gated after
-   `StripProviderPrefix`).
+   prefix segment; match by substring on the lowercased id (literal
+   presence; do not prefix-strip)).
 2. A new seam function `geminiToolReplay()` mutates the outgoing OpenAI
    assistant message for every tool call before dispatch:
    - ALWAYS emit `extra_content:{google:{thought_signature:"skip_thought_signature_validator"}}`

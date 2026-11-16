@@ -4,7 +4,7 @@ Source of incidents and constraint reasons: [`docs/superpowers/specs/2026-11-16-
 
 ## Why this layer exists
 
-This library used to scatter `isDeepSeekModel` / `isGLMModel` / `isOpenAIReasoningModel`-style conditionals across the pairwise converters. Every model-family-dependent behavior now lives behind one typed `modelProfile` computed once per request from the target model name (`classifyModel`), and attaches to a fixed seam in the conversion path — so a new provider family is one field plus one `classifyModel` arm plus one equivalence-pin row, not a scatter of ad-hoc conditionals. The layer is honest by construction: every quirk records why it exists, where it applies, and is deleted when it no longer applies.
+This library used to scatter `isDeepSeekModel` / `isGLMModel` / `isOpenAIReasoningModel`-style conditionals across the pairwise converters. Every model-family-dependent behavior now lives behind one typed `modelProfile` computed from the target model name (`classifyModel`) — once per request on the Anthropic→OpenAI path, per assistant message on OpenAI→Anthropic, per thinking block in tests only — and attaches to a fixed seam in the conversion path — so a new provider family is one field plus one `classifyModel` arm plus one equivalence-pin row, not a scatter of ad-hoc conditionals. The layer is honest by construction: every quirk records why it exists, where it applies, and is deleted when it no longer applies.
 
 Detection is static, model-name only (option (a)); pairwise conversion is final; there is no user-configurable quirks key. The profile never encodes cross-protocol behavior — each seam has exactly two owners (the conversion direction and the quirk).
 

@@ -294,7 +294,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 		}
 	}
 
-	// Tool choice instruction for DeepSeek (softened to system instruction).
+	// Tool choice instruction for models whose profile strips forced tool choice (softened to system instruction).
 	extraInstruction := toolChoiceInstruction(req.ToolChoice, profile.forceToolChoice)
 	if structuredInstruction != "" {
 		if extraInstruction != "" {

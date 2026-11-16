@@ -428,7 +428,7 @@ Append Task 6 record to this plan; commit (this plan's records are the audit tra
   - Test count delta: +4.
 - Review findings: none — seam is a single pure mutation of assistant `tool_calls`; no new dependencies; English only.
 - Deferred/limitations: `tests/e2e` remains red for the pre-existing sibling-repo reason; maintainer smoke (live Claude Code through the fable route, Task 6) remains for the plan's verification step; amendment to git history avoided (see commit note).
-- SHA: (this commit)
+- SHA: 031f9ea
 
 ### Task 5: delete legacy model-name helpers repo-wide — 2026-11-16 — DONE
 - Repo: `llm-api-converter` (branch `main`, base HEAD `031f9ea`).
@@ -442,12 +442,12 @@ Append Task 6 record to this plan; commit (this plan's records are the audit tra
 - Decisions/notes:
   - `supportsTopKPassthrough` kept under the profile per the task carryover: its sole reader is now `classifyModel` (via the new `topKPassthrough` field); the top-k call site reads `profile.topKPassthrough` instead of the free function. Grep-verified before/after.
   - `replaysReasoning` deleted per carryover; its only caller (`TestP1_ReplaysReasoningTargets`) migrated to `classifyModel(m).reasoningReplay != "none"`; test name and assertion truth table unchanged.
-  - `goToolChoiceToOpenAi` carryover: no such symbol exists anywhere in the tree (checked current tree across all file types, full `git log -S`, and a bounded search of the sibling `cuttle` module) and no stale "see" doc comment referencing tool-choice helpers exists; all tool-choice doc comments were verified accurate. Adjacent stale references that DID exist (`quirks_equivalence_test.go` doc citing `isOpenAIReasoningModel`; `types.go` doc citing `isDeepSeekModel`/`isOpenAIStyleModel`) were rewritten as part of the sweep.
+  - `goToolChoiceToOpenAi` carryover: no such symbol exists anywhere in the tree (checked current tree across all file types, full `git log -S`, and a bounded search of the sibling `cuttle` module) and no stale "see" doc comment referencing tool-choice helpers exists. Doc-comment verification referenced the surviving "see toolChoiceInstruction" style sentence; no assertion edit was made. One stale tool-choice comment did exist — `convert/anthropic_to_openai.go`'s "Tool choice instruction for DeepSeek" comment, since the forced-tool-choice strip is profile-driven, not DeepSeek-specific — and was corrected in the final-review fix wave (see the fix-wave record below). Adjacent stale references that DID exist (`quirks_equivalence_test.go` doc citing `isOpenAIReasoningModel`; `types.go` doc citing `isDeepSeekModel`/`isOpenAIStyleModel`) were rewritten as part of the sweep.
   - Equivalence matrix: code had zero legacy-helper references before and after; doc comment now describes the derivation without naming legacy helpers.
   - Test count delta: 0 (migrations only, no assertions changed).
 - Review findings: none — mechanical 1:1 guard swaps; assertions untouched; `go vet` clean; `gofmt -l` flags only pre-existing unformatted files (unchanged by this task).
 - Deferred/limitations: `tests/e2e` remains red for the pre-existing sibling-repo reason; `streamTailSynthesize` remains reserved/unread; real per-tool_call thought_signatures remain a follow-on design.
-- SHA: (this commit)
+- SHA: 312aad9
 
 ### Task 6: docs + records + verification bar — 2026-11-16 — DONE (maintainer verification handed off; not performed)
 - Repo: `llm-api-converter` (branch `main`, base HEAD `312aad9`).
@@ -466,4 +466,16 @@ Append Task 6 record to this plan; commit (this plan's records are the audit tra
   - Commit flow per the task constraint: `docs/QUIRKS.md` committed as `docs: model profiles and quirks guide`, then this record was folded into the same commit via `git commit --amend` — no separate record commit; no other files added. Nothing pushed (branch ahead of `origin/main`; push remains the maintainer's call with the merge).
 - Review findings: none — docs-only; every "Lives at" reference was grep-verified; the two inaccuracies caught in self-review (effort-cap bullet conflated the Responses/Gemini effort mappings; the `x/service/service.go:306` SID reference was ambiguous between repos) were fixed before the record was written.
 - Deferred/limitations: maintainer verification (above) is explicitly NOT performed and NOT claimed; `tests/e2e` red (pre-existing); `streamTailSynthesize` reserved/unread; real-signature follow-on and the cuttle release/deploy steps remain out of this plan (Open decision #3).
-- SHA: (this commit — the `docs: model profiles and quirks guide` commit amended to fold in this record)
+- SHA: bd47944 — the `docs: model profiles and quirks guide` commit amended to fold in this record
+
+### Fix wave: final-review comment and record fixes — 2026-11-16 — DONE
+- Repo: `llm-api-converter` (branch `main`, base HEAD `bd47944`). One commit on `main`; nothing pushed.
+- Files actually changed (vs base): `convert/anthropic_to_openai.go` (finding 1 — the stale `// Tool choice instruction for DeepSeek (softened to system instruction).` comment reworded to `// Tool choice instruction for models whose profile strips forced tool choice (softened to system instruction).`), `docs/superpowers/specs/2026-11-16-model-profile-quirks-design.md` (finding 2 — Part B §2 wording: the Gemini substring match is now described as `match by substring on the lowercased id (literal presence; do not prefix-strip)`, replacing the incorrect "gated after `StripProviderPrefix`" claim; no code changed), `docs/QUIRKS.md` (finding 3 — preface softened from "computed once per request" to the real contract: computed once per request on the Anthropic→OpenAI path, per assistant message on OpenAI→Anthropic, per thinking block in tests only; rest of preface unchanged), and this plan file (finding 4 — Task 5's "all tool-choice doc comments were verified accurate" claim reworded to honest wording: verification referenced the surviving "see toolChoiceInstruction" style sentence, no assertion edit was made, one stale comment did exist and was corrected in this fix wave, cross-referenced to finding 1; Tasks 4/5/6 `SHA: (this commit)` self-references replaced with the concrete SHAs `031f9ea` (Task 4), `312aad9` (Task 5), `bd47944` (Task 6); Tasks 1-3 historical strings unchanged; this record). No assertions, tests, or Go logic changed.
+- Commands and results: docs + one comment only — `GOWORK=off go build ./convert/` → clean (comment-only change; confirms the edit parses). No other code commands run.
+- Decisions/notes:
+  - Finding 2 is doc-only; the implementation (`convert/types.go:362`, `strings.Contains(strings.ToLower(model), "gemini")` on the raw id) stays as-is and the spec now matches it.
+  - Finding 4 rewording cross-references finding 1 rather than restating it, so the plan tells the truth about what was verified at the time vs fixed here.
+  - Explicitly out of scope and untouched, per the final whole-branch review triage: matrix ride-along columns, the unconditional `ExtraContent` overwrite (follow-on), spec/test renames, maintainer smoke-check status (maintainer outstanding by design).
+- Review findings: none beyond the listed findings — comment reworded only; no logic, assertion, or file-set widening.
+- Deferred/limitations: unchanged from Task 6 (maintainer verification handoff, `tests/e2e` red for the pre-existing sibling-repo reason, `streamTailSynthesize` reserved/unread, real-signature follow-on).
+- SHA: this commit — the fixes and this record land together in the one `docs(plans): final-review comment and record fixes` commit.
