@@ -394,4 +394,4 @@ Append Task 6 record to this plan; commit (this plan's records are the audit tra
   - Test count delta: 0 (no test edits).
 - Review findings: none — no branch added/removed, no logic moved, comments updated only where they cited the old guard expression; `go vet` clean.
 - Deferred/limitations: `isDeepSeek` field definition in `types.go` (see above); `signatureScheme`/`streamTailSynthesize` still unread (Task 4 wires `signatureScheme`); `replaysReasoning` kept for the p1 test; e2e suite remains red for the pre-existing env reason.
-- SHA: 09fcead (this commit)
+- SHA: 64bfc14 (this commit)
