@@ -116,8 +116,8 @@ strip path inside `isOpenAIReasoningModel` leaves `bar/o3-mini`, which does
 NOT match `o3`). `ReasoningMaxTokens = max_completion_tokens` iff
 `isOpenAIReasoningModel(model)` — single-strip only (`foo/bar/o3-mini` is
 `none`, `models/o3-mini` IS `max_completion_tokens` because one strip leaves
-`o3-mini`). `zhipu/deepseek-v3` and `foo/bar/glm-4.7` follow from the
-single-strip path in `isDeepSeekModel`/`isGLMModel`.
+`o3-mini`). `zhipu/deepseek-v3` and `foo/bar/glm-4.7` have NO prefix stripping
+and classify as `none`.
 
 Write every row's expected value by re-reading the current code path in `types.go:320-350` and `anthropic_to_openai.go` — do NOT compute by inference.
 
