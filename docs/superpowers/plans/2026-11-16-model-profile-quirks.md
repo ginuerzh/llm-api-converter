@@ -86,11 +86,11 @@ Add `convert/quirks_equivalence_test.go` with `TestModelProfileMatchesExpectedMa
 |---|---|---|---|---|---|---|---|
 | `deepseek-v4-pro` | false | none | deepseek | strip | json_object | false | deepseek |
 | `deepseek-chat` | false | none | deepseek | strip | json_object | false | deepseek |
-| `ollama/deepseek-v4-flash` | false | none | deepseek | strip | json_object | false | deepseek |
-| `zhipu/deepseek-v3` | false | none | deepseek | strip | json_object | false | deepseek |
+| `ollama/deepseek-v4-flash` | false | none | none | allow | pass | false | none |
+| `zhipu/deepseek-v3` | false | none | none | allow | pass | false | none |
 | `glm-4.7` | false | none | glm | allow | pass | true | glm |
-| `zhipu/glm-51` | false | none | glm | allow | pass | true | glm |
-| `foo/bar/glm-4.7` | false | none | glm | allow | pass | true | glm |
+| `zhipu/glm-51` | false | none | none | allow | pass | false | none |
+| `foo/bar/glm-4.7` | false | none | none | allow | pass | false | none |
 | `o1-mini` | true | max_completion_tokens | none | allow | pass | false | none |
 | `o3-mini` | true | max_completion_tokens | none | allow | pass | false | none |
 | `o4-mini` | true | max_completion_tokens | none | allow | pass | false | none |
@@ -105,6 +105,11 @@ Add `convert/quirks_equivalence_test.go` with `TestModelProfileMatchesExpectedMa
 **How to derive these rows** (do this exactly; do not infer): read
 `types.go: isDeepSeekModel/isGLMModel/isOpenAIReasoningModel` and
 `anthropic_to_openai.go: supportsTopKPassthrough, stripAllProviderPrefixes`.
+`isDeepSeekModel` and `isGLMModel` do **no** prefix stripping at all (they only
+check the verbatim prefix), so every *prefixed* deepseek/glm id classifies as
+`none` — the provider-prefix class is not a deepseek/glm today by mistake, and
+Part A must not change that (a provider-served deepseek goes down the generic
+path identically).
 `StripTopK` = `isOpenAIReasoningModel(stripAllProviderPrefixes(model))` — the
 multi-segment ids matter (`foo/bar/o3-mini` is `true` even though the single-
 strip path inside `isOpenAIReasoningModel` leaves `bar/o3-mini`, which does
@@ -349,3 +354,14 @@ Append Task 6 record to this plan; commit (this plan's records are the audit tra
 
 ## Implementation record
 (Each task appends its record here: date/status, repo+SHA, files actually changed, tests/commands and results, review findings and fixes, deferred items.)
+
+### Task 1: Profile definition + equivalence pin — 2026-11-16 — BLOCKED (oracle contradicts current helper semantics; maintainer ruling required)
+- Repo: `llm-api-converter` (branch `main`, base HEAD `2770b49`; **nothing committed — task gate (Step 4 matrix PASS) unmet and a red suite must not land on main**; changes left in working tree).
+- Files actually changed: `convert/types.go` (extended `modelProfile` with the new unexported fields per the brief's struct sketch, `classifyModel` rewired to build the profile from today's helpers, `stripTopK = isOpenAIReasoningModel(stripAllProviderPrefixes(model))` computed inside `classifyModel`; `isDeepSeek` kept as a deprecated legacy field for the two unmigrated `profile.isDeepSeek` call sites in `anthropic_to_openai.go`; `isOpenAI` dropped — zero call sites) and `convert/quirks_equivalence_test.go` (new, `TestModelProfileMatchesExpectedMatrix`, 17 rows verbatim from the brief). Not committed.
+- What passes: `go vet` clean (convert/engine/rewriter/root); all pre-existing convert tests green; `engine`, `rewriter` ok; e2e fails as before this task (pre-existing: builds sibling `gost` binary, `github.com/go-gost/x/dashboard` unresolvable under GOWORK=off — unrelated).
+- What fails (expected per the subagent context note, "report instead of editing the row"): `TestModelProfileMatchesExpectedMatrix` fails on exactly the four provider-prefixed deepseek/glm rows — `ollama/deepseek-v4-flash`, `zhipu/deepseek-v3`, `zhipu/glm-51`, `foo/bar/glm-4.7` — got `thinkingStyle="none"/allow/pass/none`, want `deepseek|glm` per the matrix. All other 13 rows pass.
+- Root cause (verified in code, not inference): current `isDeepSeekModel` (`types.go:320`) and `isGLMModel` (`types.go:325`) do **no** prefix stripping: `strings.HasPrefix(strings.ToLower(model), "deepseek")` / `"glm-"` on the verbatim model. The matrix requires prefixed ids to classify as deepseek/glm; row `foo/bar/glm-4.7` even requires removing *all* leading `segment/` pairs (single strip leaves `bar/glm-4.7`, which matches nothing). The brief's derivation text ("single-strip path in `isDeepSeekModel`/`isGLMModel`") describes a code path that does not exist in this repo and could not satisfy row 7 anyway.
+- The two mandates are mutually exclusive as written: (a) "classifyModel builds it from today's three helpers (so it is behavior-identical)" + hard constraint "Part A adds zero behavior changes" (making deepseek/glm detection strip-aware would newly apply DeepSeek/GLM quirks — forced tool_choice strip, json_object, flatten, reasoning replay — to prefixed ids that get none today), vs (b) the matrix as the "oracle". The spec's own wording says the matrix maps each id "to the exact profile field values the current code would produce", which the four rows do not.
+- Decision needed (maintainer/plan author): (1) amend the 4 rows to current semantics (behavior-identical Part A preserved; matrix stays an honest pin of "what the code does"); or (2) amend the brief/spec/plan to declare strip-all detection for deepseek/glm intended, accept the Part A behavior change explicitly (it then propagates to all Task 2 call sites), and implement `stripAllProviderPrefixes`-based detection inside `classifyModel`; or (3) another ruling the author prefers. Not done unilaterally: editing the rows is forbidden by the brief/context; silently changing helper semantics violates the global Part A constraint.
+- Review findings: none beyond the above; no rows were altered, no helpers were changed, no call sites migrated (Task 2 scope) except the two `profile.isDeepSeek` readers left bit-identical via the legacy field.
+- Deferred/limitations: `isDeepSeek` legacy field to be deleted in Task 2 when the two `anthropic_to_openai.go` call sites migrate to `thinkingStyle == "deepseek"`; `signatureScheme`/`streamTailSynthesize` are set to `"none"`/zero and unread (per brief; Task 4 wires detection); e2e suite remains red for the pre-existing env reason above; test count delta is exactly +1 (the matrix, as the brief requires).
