@@ -395,3 +395,19 @@ Append Task 6 record to this plan; commit (this plan's records are the audit tra
 - Review findings: none — no branch added/removed, no logic moved, comments updated only where they cited the old guard expression; `go vet` clean.
 - Deferred/limitations: `isDeepSeek` field definition in `types.go` (see above); `signatureScheme`/`streamTailSynthesize` still unread (Task 4 wires `signatureScheme`); `replaysReasoning` kept for the p1 test; e2e suite remains red for the pre-existing env reason.
 - SHA: 64bfc14 (this commit)
+
+### Task 3: migrate replay thinking in `openai_to_anthropic.go` — 2026-11-16 — DONE
+- Repo: `llm-api-converter` (branch `main`, base HEAD `21820fc`).
+- Files actually changed (vs base): `convert/openai_to_anthropic.go` (`convertAssistantContent` resolves `profile := classifyModel(model)` once at the top; the `replayThinking` gate is now `profile.reasoningReplay == "deepseek"`; no signature changes, no new helpers, `classifyModel` called exactly once per call; the other call site (`convertMessageContent`, and `responses.go`'s direct call) unchanged — profile resolved inside the owning function), and this plan file. No test edits, no assertion changes.
+- Step 2 verification (GLM sibling gate): no DeepSeek-GLM divergence to fix. The gate derives from `isDeepSeekModel` via `classifyModel`, so GLM targets (`reasoningReplay == "glm"`) still do NOT replay thinking here — identical to before; the site was not extended to GLM, per the brief.
+- Commands and results:
+  - `GOWORK=off go test -p 1 ./... -count=1` → `convert`, `engine`, `rewriter` ok; `tests/e2e` FAIL — pre-existing environment failure (cmd/gost builds against sibling `github.com/go-gost/x/dashboard`, unresolvable under GOWORK=off). Verified pre-existing by stashing this change and re-running `go test ./tests/e2e/ -count=1` on the clean tree: identical failure. Unrelated to this task; not fixed (per plan constraint).
+  - `GOWORK=off go vet ./...` → clean (no output; convert/engine/rewriter/root/tests).
+- Behavior: byte-identical by construction — the guard expression swapped 1:1 to the profile field `classifyModel` derives from the same `isDeepSeekModel` helper; profile resolved once from the same `model` argument the old gate used.
+- Decisions/notes:
+  - Minimal-diff choice: resolving the profile inside `convertAssistantContent` (the owning function) instead of threading `modelProfile` through `convertMessageContent` / the `responses.go` call site — smaller honest diff, no signature changes anywhere.
+  - Zero references to `isDeepSeekModel` remain in this file after the swap; other files' references (`replaysReasoning` in `anthropic_to_openai.go`, `contract_test.go`) are Task 5 scope and untouched.
+  - Test count delta: 0 (no test edits).
+- Review findings: none — one guard expression swapped, one `classifyModel` resolution added, comments left accurate (they cite the replay rule, not the old guard); `go vet` clean.
+- Deferred/limitations: e2e suite remains red for the pre-existing env reason; `isDeepSeek` legacy field and `replaysReasoning` test-file call sites remain for Task 5's sweep; `signatureScheme`/`streamTailSynthesize` still unread (Task 4 wires `signatureScheme`).
+- SHA: (this commit)

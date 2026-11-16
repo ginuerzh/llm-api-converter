@@ -562,6 +562,8 @@ func convertImageURL(m map[string]any) *AnthropicContent {
 }
 
 func convertAssistantContent(msg OpenAIMessage, model string) []AnthropicContent {
+	profile := classifyModel(model)
+
 	// Collect all tool calls, including legacy function_call.
 	toolCalls := msg.ToolCalls
 	if msg.FunctionCall != nil {
@@ -573,7 +575,7 @@ func convertAssistantContent(msg OpenAIMessage, model string) []AnthropicContent
 
 	// Anthropic requires a signature on replayed thinking blocks. Unsigned
 	// reasoning_content is only replayable to DeepSeek-style upstreams.
-	replayThinking := msg.ReasoningContent != "" && isDeepSeekModel(model)
+	replayThinking := msg.ReasoningContent != "" && profile.reasoningReplay == "deepseek"
 
 	if len(toolCalls) > 0 {
 		var blocks []AnthropicContent
