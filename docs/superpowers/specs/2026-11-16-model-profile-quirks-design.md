@@ -191,6 +191,15 @@ Total expected size: ~1–2 working days, ~600 changed lines including tests.
   the model-name helpers from test call sites (`isDeepSeekModel`,
   `isOpenAIReasoningModel`, `replaysReasoning`, `classifyModel`); the
   assertion content stays the same. No test logic changes.
+  **Plus one new equivalence-pin test**: `TestModelProfileMatchesExpectedMatrix`
+  — a table of representative model ids (raw `deepseek-v4-pro`, `ollama/deepseek-v4
+  -flash`, `glm-4.7`, `zhipu/glm-5.1`, `o1-mini`, `gpt-5.5`, `models/o3-mini`,
+  `gemini-4-hydrogen`, `kimi-k3`, `foo/bar/glm-4.7`) mapping each to the exact
+  profile field values the current code would produce (reason metrics preserved
+  byte-for-byte, including BOTH prefix-strip variants). This test is the
+  hard gate for row-misclassification bugs — Part A's only real risk vector.
+  It is deleted after a follow-up spec proves the matrix stable? No: it is
+  deleted after Part A ships; the profile becomes the definition instead.
 - Part B: new fixture `gemini_tool_replay_extra_content` (assistant message with
   tool call → outgoing body carries `extra_content` with sentinel); a second
   fixture with `SessionStore` pre-populated asserts the real signature and
