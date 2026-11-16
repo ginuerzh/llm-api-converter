@@ -7,8 +7,9 @@ import "testing"
 // refactor: if a row fails, the codebase (not the row) is telling us the
 // profile was mis-assembled.
 //
-//	StripTopK         = isOpenAIReasoningModel(stripAllProviderPrefixes(model))
-//	ReasoningMaxTokens = max_completion_tokens iff isOpenAIReasoningModel(model)
+//	StripTopK         = true iff the model with all provider prefixes stripped is an OpenAI reasoning model
+//	ReasoningMaxTokens = max_completion_tokens iff the model with one provider prefix stripped is an OpenAI reasoning model
+//	(OpenAI reasoning prefixes: o1, o3, o4, gpt-5)
 func TestModelProfileMatchesExpectedMatrix(t *testing.T) {
 	type expected struct {
 		stripTopK          bool

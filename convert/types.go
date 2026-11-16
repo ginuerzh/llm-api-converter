@@ -306,11 +306,12 @@ func (r *AnthropicRequest) UnmarshalJSON(data []byte) error {
 }
 
 // modelProfile caches the detection result for a single request so that
-// repeated isDeepSeekModel/isOpenAIStyleModel calls don't re-parse the string.
-// All string fields use "none" as the off value; booleans are zero-valued off.
+// repeated classification doesn't re-parse the string. All string fields
+// use "none" as the off value; booleans are zero-valued off.
 type modelProfile struct {
 	model                string
 	stripTopK            bool
+	topKPassthrough      bool
 	reasoningMaxTokens   string // "none" | "max_completion_tokens"
 	thinkingStyle        string // "none" | "deepseek" | "glm"
 	forceToolChoice      string // "allow" | "strip"
@@ -320,18 +321,14 @@ type modelProfile struct {
 	reasoningFallback    string // "none" | "placeholder"
 	signatureScheme      string // "none" | "openai_toolcall_gemini"
 	streamTailSynthesize bool   // reserved; not read in this plan
-
-	// isDeepSeek is the legacy verdict used by the two call sites in
-	// anthropic_to_openai.go that Task 2 migrates to thinkingStyle. Identical
-	// to thinkingStyle == "deepseek". Remove once those sites are migrated.
-	isDeepSeek bool
 }
 
-// classifyModel assembles the profile from today's helpers so the result is
-// behavior-identical to the ad-hoc conditionals it replaces. stripTopK derives
-// from the prefixed path (stripAllProviderPrefixes) because OpenAI reasoning
-// models reject top_k even under provider prefixes; ReasoningMaxTokens derives
-// from the single-strip path inside isOpenAIReasoningModel.
+// classifyModel computes the profile from the model string alone, so the
+// result is behavior-identical to the ad-hoc conditionals it replaces.
+// stripTopK derives from the prefixed path (stripAllProviderPrefixes)
+// because OpenAI reasoning models reject top_k even under provider
+// prefixes; reasoningMaxTokens derives from the single-strip path
+// (StripProviderPrefix). OpenAI reasoning prefixes: o1, o3, o4, gpt-5.
 func classifyModel(model string) modelProfile {
 	p := modelProfile{
 		model:              model,
@@ -343,61 +340,39 @@ func classifyModel(model string) modelProfile {
 		reasoningFallback:  "none",
 		signatureScheme:    "none",
 	}
-	if isDeepSeekModel(model) {
-		p.isDeepSeek = true
+	ml := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(ml, "deepseek"):
 		p.thinkingStyle = "deepseek"
 		p.reasoningReplay = "deepseek"
 		p.forceToolChoice = "strip"
 		p.jsonSchemaMode = "json_object"
 		p.reasoningFallback = "placeholder"
-	} else if isGLMModel(model) {
+	case strings.HasPrefix(ml, "glm-"):
 		p.thinkingStyle = "glm"
 		p.reasoningReplay = "glm"
 		p.contentFlatten = true
 	}
-	if isOpenAIReasoningModel(model) {
-		p.reasoningMaxTokens = "max_completion_tokens"
-	}
-	p.stripTopK = isOpenAIReasoningModel(stripAllProviderPrefixes(model))
-	if strings.Contains(strings.ToLower(model), "gemini") {
+	p.reasoningMaxTokens = reasoningModelVerdict(StripProviderPrefix(model))
+	p.stripTopK = reasoningModelVerdict(stripAllProviderPrefixes(model)) == "max_completion_tokens"
+	p.topKPassthrough = supportsTopKPassthrough(model)
+	if strings.Contains(ml, "gemini") {
 		p.signatureScheme = "openai_toolcall_gemini"
 	}
 	return p
 }
 
-func isDeepSeekModel(model string) bool {
-	ml := strings.ToLower(model)
-	return strings.HasPrefix(ml, "deepseek")
-}
-
-func isGLMModel(model string) bool {
-	ml := strings.ToLower(model)
-	return strings.HasPrefix(ml, "glm-")
-}
-
-func isOpenAIStyleModel(model string) bool {
-	ml := strings.ToLower(model)
-	prefixes := []string{"gpt-", "o1", "o3", "deepseek", "gemini-", "glm-"}
-	for _, p := range prefixes {
+// reasoningModelVerdict reports "max_completion_tokens" for OpenAI reasoning
+// models (o1, o3, o4, gpt-5 prefixes, case-insensitive), "none" otherwise.
+// The caller is responsible for prefix stripping.
+func reasoningModelVerdict(bare string) string {
+	ml := strings.ToLower(bare)
+	for _, p := range []string{"o1", "o3", "o4", "gpt-5"} {
 		if strings.HasPrefix(ml, p) {
-			return true
+			return "max_completion_tokens"
 		}
 	}
-	return false
-}
-
-// isOpenAIReasoningModel reports whether model is an OpenAI reasoning model.
-// These models reject max_tokens, temperature, and top_p, and require
-// max_completion_tokens instead. A provider/ prefix is ignored.
-func isOpenAIReasoningModel(model string) bool {
-	ml := strings.ToLower(StripProviderPrefix(model))
-	prefixes := []string{"o1", "o3", "o4", "gpt-5"}
-	for _, p := range prefixes {
-		if strings.HasPrefix(ml, p) {
-			return true
-		}
-	}
-	return false
+	return "none"
 }
 
 type AnthropicMessage struct {

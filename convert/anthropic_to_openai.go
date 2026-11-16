@@ -10,12 +10,6 @@ import (
 
 const placeholderReasoning = "Compatibility bridge placeholder reasoning for prior assistant history."
 
-// replaysReasoning reports whether the target model accepts reasoning_content
-// replay. Only the vendors that require it get prior reasoning attached.
-func replaysReasoning(model string) bool {
-	return isDeepSeekModel(model) || isGLMModel(model)
-}
-
 // currentToolContextParts extracts the tool call/result context from the most
 // recent tool-calling turn in the message list. Returns the signature parts
 // for the latest turn (empty if no tool call turn found).
@@ -135,6 +129,7 @@ func stripAllProviderPrefixes(model string) string {
 
 // supportsTopKPassthrough reports whether the model's provider accepts top_k.
 // Strict OpenAI endpoints reject it, so the allowlist stays small.
+// Called by classifyModel; the top_k gate reads profile.topKPassthrough.
 func supportsTopKPassthrough(model string) bool {
 	i := strings.IndexByte(model, '/')
 	if i < 0 {
@@ -242,7 +237,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 			oai.TopP = req.TopP
 		}
 		if req.TopK != nil && !profile.stripTopK &&
-			supportsTopKPassthrough(outputModel) {
+			profile.topKPassthrough {
 			oai.TopK = req.TopK
 		}
 	}

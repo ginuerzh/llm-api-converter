@@ -216,7 +216,7 @@ func validateAnthropicBlocks(errs *[]string, prefix, model string, blocks []Anth
 			if strings.TrimSpace(block.Thinking) == "" {
 				contractAdd(errs, "%s.thinking is empty", where)
 			}
-			if !isDeepSeekModel(model) && block.Signature == "" {
+			if classifyModel(model).reasoningReplay != "deepseek" && block.Signature == "" {
 				contractAdd(errs, "%s.thinking has no signature for model %q", where, model)
 			}
 		case "tool_use":
@@ -381,7 +381,7 @@ func validateAnthropicResponseOpts(body []byte, allowEmptySignature bool) []stri
 			if strings.TrimSpace(block.Thinking) == "" {
 				contractAdd(&errs, "%s.thinking is empty", where)
 			}
-			if !allowEmptySignature && !isDeepSeekModel(resp.Model) && block.Signature == "" {
+			if !allowEmptySignature && classifyModel(resp.Model).reasoningReplay != "deepseek" && block.Signature == "" {
 				contractAdd(&errs, "%s.thinking has no signature", where)
 			}
 		case "tool_use":

@@ -469,8 +469,8 @@ func TestP1_ReplaysReasoningTargets(t *testing.T) {
 		{"", false},
 	}
 	for _, tc := range cases {
-		if got := replaysReasoning(tc.model); got != tc.want {
-			t.Errorf("replaysReasoning(%q) = %v, want %v", tc.model, got, tc.want)
+		if got := classifyModel(tc.model).reasoningReplay != "none"; got != tc.want {
+			t.Errorf("classifyModel(%q).reasoningReplay != \"none\" = %v, want %v", tc.model, got, tc.want)
 		}
 	}
 }
@@ -611,8 +611,8 @@ func TestP1_ReasoningModelDetection(t *testing.T) {
 		"":               false,
 	}
 	for model, want := range cases {
-		if got := isOpenAIReasoningModel(model); got != want {
-			t.Errorf("isOpenAIReasoningModel(%q) = %v, want %v", model, got, want)
+		if got := classifyModel(model).reasoningMaxTokens == "max_completion_tokens"; got != want {
+			t.Errorf("classifyModel(%q).reasoningMaxTokens == \"max_completion_tokens\" = %v, want %v", model, got, want)
 		}
 	}
 }
