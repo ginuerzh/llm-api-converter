@@ -377,4 +377,4 @@ Append Task 6 record to this plan; commit (this plan's records are the audit tra
 - Test count delta: +1 (the matrix test only), as the brief requires.
 - Review findings: none — no helper semantics changed, no call sites migrated (Task 2 scope), the two `profile.isDeepSeek` readers left bit-identical via the legacy field.
 - Deferred/limitations: `isDeepSeek` legacy field to be deleted in Task 2 when the two `anthropic_to_openai.go` call sites migrate to `thinkingStyle == "deepseek"`; `signatureScheme`/`streamTailSynthesize` set to `"none"`/zero and unread (per brief; Task 4 wires detection); e2e suite remains red for the pre-existing env reason; behavior-identical Part A confirmed by the unchanged suite results.
-- SHA: b246f2a (this commit)
+- SHA: 9e9702b (this commit)
