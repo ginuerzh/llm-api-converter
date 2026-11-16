@@ -108,6 +108,10 @@ type OpenAIToolCall struct {
 	ID       string             `json:"id"`
 	Type     string             `json:"type"`
 	Function OpenAIFunctionCall `json:"function"`
+	// ExtraContent carries provider-specific replay state on the tool call
+	// object. Only the openai_toolcall_gemini profile sets it (the
+	// skip_thought_signature_validator sentinel); nil for everything else.
+	ExtraContent map[string]any `json:"extra_content,omitempty"`
 }
 
 type OpenAIFunctionCall struct {
@@ -355,6 +359,9 @@ func classifyModel(model string) modelProfile {
 		p.reasoningMaxTokens = "max_completion_tokens"
 	}
 	p.stripTopK = isOpenAIReasoningModel(stripAllProviderPrefixes(model))
+	if strings.Contains(strings.ToLower(model), "gemini") {
+		p.signatureScheme = "openai_toolcall_gemini"
+	}
 	return p
 }
 

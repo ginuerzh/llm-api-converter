@@ -411,3 +411,21 @@ Append Task 6 record to this plan; commit (this plan's records are the audit tra
 - Review findings: none — one guard expression swapped, one `classifyModel` resolution added, comments left accurate (they cite the replay rule, not the old guard); `go vet` clean.
 - Deferred/limitations: e2e suite remains red for the pre-existing env reason; `isDeepSeek` legacy field and `replaysReasoning` test-file call sites remain for Task 5's sweep; `signatureScheme`/`streamTailSynthesize` still unread (Task 4 wires `signatureScheme`).
 - SHA: 69452fe (this commit)
+
+### Task 4: Part B — Gemini replay sentinel seam — 2026-11-16 — DONE
+- Repo: `llm-api-converter` (branch `main`, base HEAD `26207fe`).
+- Files actually changed (vs base): `convert/types.go` (`OpenAIToolCall` gains `ExtraContent map[string]any \`json:"extra_content,omitempty"\``; `classifyModel` sets `signatureScheme = openai_toolcall_gemini` iff `strings.Contains(strings.ToLower(model), "gemini")` — covers `gemini-4-hydrogen` and `models/gemini-2.5-pro` without prefix stripping, per the brief), `convert/anthropic_to_openai.go` (new `geminiToolReplay` seam: no-ops unless `profile.signatureScheme == "openai_toolcall_gemini"`, then for every assistant message with `tool_calls` sets each tool call's `ExtraContent` to `{"google":{"thought_signature":"skip_thought_signature_validator"}}`; called just before `json.Marshal(oai)` in `convertAnthropicRequestToOpenAI`, after sanitize/flatten so coalesced tool calls are covered), `convert/gemini_tool_replay_test.go` (new, 4 fixtures), and this plan file (this record). No other file touched; no outbound schema changes beyond the one `omitempty` field.
+- Fixture 4 (`TestGeminiToolReplaySentinelNeverReadsSessionStore`) was hosted, not dropped: the convert path takes a `*ReasoningCache`, so the test builds one over a `fatalReasoningStore` double whose `Get`/`Set` `t.Fatalf` on any call; a real `SessionStore` with `SID: "sid-trap"` and `Direction: "request"` is passed alongside and convert completes. `SessionStore` is a concrete struct (not an interface) and cannot be doubled without changing the seam — the fatal `ReasoningStore` is the loud assertion. All 4 tests PASS.
+- Commands and results:
+  - `GOWORK=off go test ./convert/ -run 'ExtraContent|GeminiToolReplay' -count=1 -v` → 4/4 PASS (after the expected FAIL before implementation).
+  - `GOWORK=off go vet ./...` → clean (no output).
+  - `GOWORK=off go test -p 1 ./... -count=1` → `convert`, `engine`, `rewriter` ok; `tests/e2e` FAIL — pre-existing environment failure (cmd/gost builds against sibling `github.com/go-gost/x/dashboard`, unresolvable under GOWORK=off); unchanged before/after; not fixed (per plan constraint).
+- Behavior: non-gemini targets are byte-compatible (`extra_content` absent, asserted by absence in raw bytes); only assistant turns with `tool_calls` are mutated (user prose containing the substring `tool_use` is asserted untouched); the seam reads/writes nothing besides `tool_calls` (no caches, no `SessionStore`, no SID, no real thought_signature capture).
+- Decisions/notes:
+  - Wire format pinned and asserted on raw bytes: `extra_content` (snake_case) top-level on the tool_call object, nested `google`, nested `thought_signature` — exactly where Google's live API accepts it.
+  - The sentinel bypasses Google's validator; it is NOT a captured signature. Real per-tool_call signatures remain a follow-on design (keyed by tool_call id, not SID).
+  - `isOpenAIStyleModel` still lists `gemini-` (pre-existing); no other outbound path reads `signatureScheme`; `streamTailSynthesize` remains reserved/unread.
+  - Test count delta: +4.
+- Review findings: none — seam is a single pure mutation of assistant `tool_calls`; no new dependencies; English only.
+- Deferred/limitations: `tests/e2e` remains red for the pre-existing sibling-repo reason; maintainer smoke (live Claude Code through the fable route, Task 6) remains for the plan's verification step; amendment to git history avoided (see commit note).
+- SHA: (this commit)

@@ -381,7 +381,36 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 		oai.StreamOptions = map[string]any{"include_usage": true}
 	}
 
+	// Gemini replay seam: assistant tool_calls must carry the
+	// skip_thought_signature_validator sentinel or Google's OpenAI-compatible
+	// endpoint rejects the replayed functionCall with HTTP 400.
+	geminiToolReplay(&oai, profile)
+
 	return json.Marshal(oai)
+}
+
+// geminiToolReplay mutates tool_calls on assistant messages to carry the
+// thought_signature bypass Google accepts when a replayed functionCall part
+// has no signed thought. Applied only when the target profile carries the
+// openai_toolcall_gemini signature scheme; it reads and writes nothing else
+// (no caches, no SessionStore, no SID).
+func geminiToolReplay(oai *OpenAIChatRequest, profile modelProfile) {
+	if profile.signatureScheme != "openai_toolcall_gemini" {
+		return
+	}
+	for i := range oai.Messages {
+		m := &oai.Messages[i]
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 {
+			continue
+		}
+		for j := range m.ToolCalls {
+			m.ToolCalls[j].ExtraContent = map[string]any{
+				"google": map[string]any{
+					"thought_signature": "skip_thought_signature_validator",
+				},
+			}
+		}
+	}
 }
 
 func convertAnthropicMessage(msg AnthropicMessage, opts *ConvertOptions, profile modelProfile, ctxParts []string) []OpenAIMessage {
