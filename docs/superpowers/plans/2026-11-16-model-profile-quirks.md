@@ -478,4 +478,4 @@ Append Task 6 record to this plan; commit (this plan's records are the audit tra
   - Explicitly out of scope and untouched, per the final whole-branch review triage: matrix ride-along columns, the unconditional `ExtraContent` overwrite (follow-on), spec/test renames, maintainer smoke-check status (maintainer outstanding by design).
 - Review findings: none beyond the listed findings — comment reworded only; no logic, assertion, or file-set widening.
 - Deferred/limitations: unchanged from Task 6 (maintainer verification handoff, `tests/e2e` red for the pre-existing sibling-repo reason, `streamTailSynthesize` reserved/unread, real-signature follow-on).
-- SHA: this commit — the fixes and this record land together in the one `docs(plans): final-review comment and record fixes` commit.
+- SHA: `d243905` — the fixes and this record landed together in `docs(plans): final-review comment and record fixes`.
