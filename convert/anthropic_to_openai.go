@@ -73,9 +73,10 @@ func currentToolContextParts(messages []AnthropicMessage) []string {
 }
 
 // anthropicToolChoiceToOpenAi maps Anthropic tool_choice to OpenAI tool_choice.
-// For DeepSeek models, forced tool_choice (any/tool) is stripped and handled
-// via a system instruction instead.
-func anthropicToolChoiceToOpenAi(choice *AnthropicToolChoice, model string) any {
+// For models whose profile strips forced tool_choice (DeepSeek), forced
+// tool_choice (any/tool) is stripped and handled via a system instruction
+// instead.
+func anthropicToolChoiceToOpenAi(choice *AnthropicToolChoice, forceToolChoice string) any {
 	if choice == nil {
 		return nil
 	}
@@ -85,12 +86,12 @@ func anthropicToolChoiceToOpenAi(choice *AnthropicToolChoice, model string) any 
 	case "none":
 		return "none"
 	case "any":
-		if isDeepSeekModel(model) {
+		if forceToolChoice == "strip" {
 			return nil // softened to system instruction
 		}
 		return "required"
 	case "tool":
-		if isDeepSeekModel(model) {
+		if forceToolChoice == "strip" {
 			return nil // softened to system instruction
 		}
 		return map[string]any{
@@ -104,9 +105,10 @@ func anthropicToolChoiceToOpenAi(choice *AnthropicToolChoice, model string) any 
 }
 
 // toolChoiceInstruction returns a system instruction for forced tool_choice
-// on DeepSeek models (which reject forced function tool_choice).
-func toolChoiceInstruction(choice *AnthropicToolChoice, model string) string {
-	if choice == nil || !isDeepSeekModel(model) {
+// on models whose profile strips it (DeepSeek rejects forced function
+// tool_choice).
+func toolChoiceInstruction(choice *AnthropicToolChoice, forceToolChoice string) string {
+	if choice == nil || forceToolChoice != "strip" {
 		return ""
 	}
 	switch choice.Type {
@@ -215,7 +217,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 		outputModel = resolveModelTarget(req.Model, opts.ModelMap)
 	}
 	profile := classifyModel(outputModel)
-	reasoningModel := isOpenAIReasoningModel(outputModel)
+	reasoningModel := profile.reasoningMaxTokens == "max_completion_tokens"
 
 	oai := OpenAIChatRequest{
 		Model:  outputModel,
@@ -239,7 +241,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 		if req.TopP != nil {
 			oai.TopP = req.TopP
 		}
-		if req.TopK != nil && !isOpenAIReasoningModel(stripAllProviderPrefixes(outputModel)) &&
+		if req.TopK != nil && !profile.stripTopK &&
 			supportsTopKPassthrough(outputModel) {
 			oai.TopK = req.TopK
 		}
@@ -259,14 +261,14 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	}
 
 	// Thinking config → model-specific OpenAI thinking field.
-	if profile.isDeepSeek {
+	if profile.thinkingStyle == "deepseek" {
 		oai.Thinking = thinkingToOpenAi(req.Thinking)
 		// Effort must not re-enable reasoning on requests that did not ask
 		// for thinking (for example title and classifier calls).
 		if req.Thinking != nil && req.Thinking.Type == "enabled" {
 			oai.ReasoningEffort = reasoningEffortToOpenAi(req.OutputConfig)
 		}
-	} else if isGLMModel(outputModel) {
+	} else if profile.thinkingStyle == "glm" {
 		oai.Thinking = thinkingToOpenAiGLM(req.Thinking)
 	}
 
@@ -280,7 +282,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 			// type is unavailable now") and accepts json_object only when the
 			// prompt mentions JSON, so the schema moves into a system
 			// instruction.
-			if profile.isDeepSeek {
+			if profile.jsonSchemaMode == "json_object" {
 				oai.ResponseFormat = &OpenAIResponseFormat{Type: "json_object"}
 				structuredInstruction = jsonSchemaInstruction(schema)
 			} else {
@@ -298,7 +300,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	}
 
 	// Tool choice instruction for DeepSeek (softened to system instruction).
-	extraInstruction := toolChoiceInstruction(req.ToolChoice, outputModel)
+	extraInstruction := toolChoiceInstruction(req.ToolChoice, profile.forceToolChoice)
 	if structuredInstruction != "" {
 		if extraInstruction != "" {
 			extraInstruction += "\n\n" + structuredInstruction
@@ -332,7 +334,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 
 	// Messages.
 	for _, msg := range req.Messages {
-		oai.Messages = append(oai.Messages, convertAnthropicMessage(msg, opts, outputModel, ctxParts)...)
+		oai.Messages = append(oai.Messages, convertAnthropicMessage(msg, opts, profile, ctxParts)...)
 	}
 
 	// Message sequence sanitization: coalesce adjacent tool calls, pair
@@ -340,7 +342,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	oai.Messages = sanitizeOpenAiToolMessageSequence(coalesceAdjacentAssistantToolCalls(oai.Messages))
 
 	// GLM API only accepts string content — flatten multi-part content arrays.
-	if isGLMModel(outputModel) {
+	if profile.contentFlatten {
 		flattenContentForGLM(oai.Messages)
 	}
 
@@ -367,7 +369,7 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 		}
 
 		// Model-aware tool choice mapping.
-		oai.ToolChoice = anthropicToolChoiceToOpenAi(req.ToolChoice, outputModel)
+		oai.ToolChoice = anthropicToolChoiceToOpenAi(req.ToolChoice, profile.forceToolChoice)
 		if len(oai.Tools) > 0 && req.ToolChoice != nil && req.ToolChoice.DisableParallelToolUse != nil {
 			parallel := !*req.ToolChoice.DisableParallelToolUse
 			oai.ParallelToolCalls = &parallel
@@ -382,12 +384,12 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	return json.Marshal(oai)
 }
 
-func convertAnthropicMessage(msg AnthropicMessage, opts *ConvertOptions, model string, ctxParts []string) []OpenAIMessage {
+func convertAnthropicMessage(msg AnthropicMessage, opts *ConvertOptions, profile modelProfile, ctxParts []string) []OpenAIMessage {
 	switch msg.Role {
 	case "user":
 		return convertAnthropicUserMessage(msg)
 	case "assistant":
-		return []OpenAIMessage{convertAnthropicAssistantMessage(msg, opts, model, ctxParts)}
+		return []OpenAIMessage{convertAnthropicAssistantMessage(msg, opts, profile, ctxParts)}
 	default:
 		return []OpenAIMessage{{Role: "user", Content: extractTextContent(msg.Content)}}
 	}
@@ -569,7 +571,7 @@ func dataURIImagePart(mediaType, data string) map[string]any {
 	return imageURLPartFromURL("data:" + mediaType + ";base64," + data)
 }
 
-func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions, model string, ctxParts []string) OpenAIMessage {
+func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions, profile modelProfile, ctxParts []string) OpenAIMessage {
 	var textParts []string
 	var reasoning string
 	var toolCalls []OpenAIToolCall
@@ -601,7 +603,7 @@ func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions
 	}
 
 	oaiMsg := OpenAIMessage{Role: "assistant"}
-	if replaysReasoning(model) && reasoning != "" {
+	if profile.reasoningReplay != "none" && reasoning != "" {
 		oaiMsg.ReasoningContent = reasoning
 	}
 	content := strings.Join(textParts, "")
@@ -620,7 +622,7 @@ func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions
 	// If reasoning is empty but tool_calls exist (Claude Code compressed thinking),
 	// try to restore reasoning_content from cache (multi-tier). Only targets that
 	// replay reasoning get anything attached.
-	if oaiMsg.ReasoningContent == "" && len(oaiMsg.ToolCalls) > 0 && replaysReasoning(model) && opts != nil && opts.ReasoningCache != nil {
+	if oaiMsg.ReasoningContent == "" && len(oaiMsg.ToolCalls) > 0 && profile.reasoningReplay != "none" && opts != nil && opts.ReasoningCache != nil {
 		ids := make([]string, len(oaiMsg.ToolCalls))
 		for i, tc := range oaiMsg.ToolCalls {
 			ids[i] = tc.ID
@@ -628,7 +630,7 @@ func convertAnthropicAssistantMessage(msg AnthropicMessage, opts *ConvertOptions
 		content := extractTextContent(oaiMsg.Content)
 		if cached := opts.ReasoningCache.GetBest(ids, ctxParts, content); cached != "" {
 			oaiMsg.ReasoningContent = cached
-		} else if isDeepSeekModel(model) {
+		} else if profile.reasoningFallback == "placeholder" {
 			// Placeholder fallback — DeepSeek requires reasoning_content
 			// when tool_calls are present, even if cache is empty.
 			oaiMsg.ReasoningContent = placeholderReasoning
