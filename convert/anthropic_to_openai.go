@@ -384,6 +384,12 @@ func convertAnthropicRequestToOpenAI(body []byte, opts *ConvertOptions) ([]byte,
 	return json.Marshal(oai)
 }
 
+// thoughtSignatureSentinel is the value Google accepts as the bypass for a
+// replayed tool call whose functionCall part carries no thought_signature.
+// Pinned by the 2026-11-16 live-API replay: the same request returns 200
+// with an answer. Never a captured signature; never per-call state.
+const thoughtSignatureSentinel = "skip_thought_signature_validator"
+
 // geminiToolReplay mutates tool_calls on assistant messages to carry the
 // thought_signature bypass Google accepts when a replayed functionCall part
 // has no signed thought. Applied only when the target profile carries the
@@ -401,7 +407,7 @@ func geminiToolReplay(oai *OpenAIChatRequest, profile modelProfile) {
 		for j := range m.ToolCalls {
 			m.ToolCalls[j].ExtraContent = map[string]any{
 				"google": map[string]any{
-					"thought_signature": "skip_thought_signature_validator",
+					"thought_signature": thoughtSignatureSentinel,
 				},
 			}
 		}

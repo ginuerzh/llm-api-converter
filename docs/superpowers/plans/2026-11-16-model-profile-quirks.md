@@ -479,3 +479,12 @@ Append Task 6 record to this plan; commit (this plan's records are the audit tra
 - Review findings: none beyond the listed findings — comment reworded only; no logic, assertion, or file-set widening.
 - Deferred/limitations: unchanged from Task 6 (maintainer verification handoff, `tests/e2e` red for the pre-existing sibling-repo reason, `streamTailSynthesize` reserved/unread, real-signature follow-on).
 - SHA: `d243905` — the fixes and this record landed together in `docs(plans): final-review comment and record fixes`.
+
+## Hotfix record — 2026-11-17 (fable OpenAI-Chat passthrough 400)
+
+- Status: implemented, pending release.
+- Root cause (production evidence, request id `dbtq3bqu9fis73diem80`, 00:37 UTC): OpenCode CLI (`opencode/latest/2.3.0/cli`) speaks `/v1/chat/completions` → `inbound_protocol=openai-chat`; auto routes gemini-4-hydrogen via chat→chat `passthrough()`, which only rewrote the model field. The Part B sentinel seam lived exclusively in `convertAnthropicRequestToOpenAI`, so the 1.4MB replay body carried 0 `extra_content` and Google rejected 583 tool calls with `HTTP 400 Function call is missing a thought_signature`.
+- Fix: `geminiToolReplayPassthrough()` in `convert/convert.go` injects the same sentinel into assistant `tool_calls` on both request-passthrough branches when `classifyModel(targetModel).signatureScheme == openai_toolcall_gemini`; unknown fields preserved via map mutation; non-gemini and no-tool-call bodies stay byte-identical. Production const `thoughtSignatureSentinel` shared with the existing Anthropic seam.
+- Tests (TDD — watched RED then GREEN): `TestGeminiToolReplayOpenAIChatPassthrough` (2 tool calls → 2 sentinels), `TestGeminiToolReplayPassthroughLeavesNonGeminiAndUnknownFieldsAlone`. Full `convert/engine/rewriter` green; `go vet ./...` clean. `tests/e2e` remains pre-existing red (sibling `x/dashboard` under GOWORK=off).
+- Deferred: real signature capture (ID-keyed, follow-on as before); release + cuttle bump + deploy + live fable smoke are the remaining rollout steps.
+- SHA: (this commit — hotfix code, tests and record land together).

@@ -6,12 +6,7 @@ import (
 	"testing"
 )
 
-// thoughtSignatureSentinel is the value Google accepts as the bypass for a
-// replayed tool call whose functionCall part carries no thought_signature.
-// Pinned by the 2026-11-16 live-API replay: the same request returns 200
-// with an answer. Never a captured signature; never per-call state.
-const thoughtSignatureSentinel = "skip_thought_signature_validator"
-
+// thoughtSignatureSentinel is now defined in anthropic_to_openai.go (production).
 func toolCallSignatures(t *testing.T, body []byte) []map[string]any {
 	t.Helper()
 	var oai OpenAIChatRequest
@@ -166,5 +161,81 @@ func TestGeminiToolReplaySentinelNeverReadsSessionStore(t *testing.T) {
 	}
 	if !strings.Contains(string(out), thoughtSignatureSentinel) {
 		t.Fatalf("convert completed but the sentinel did not land\n%s", out)
+	}
+}
+
+// TestGeminiToolReplayOpenAIChatPassthrough reproduces the 2026-11-17 fable
+// incident: OpenCode speaks OpenAI Chat inbound, so the chat→chat passthrough
+// branch never enters convertAnthropicRequestToOpenAI and the Gemini replay
+// sentinel is missing. The captured upstream reply was HTTP 400
+// "Function call is missing a thought_signature ... position 583".
+func TestGeminiToolReplayOpenAIChatPassthrough(t *testing.T) {
+	body := []byte(`{"model":"claude-fable-5","messages":[
+		{"role":"system","content":"help the user"},
+		{"role":"user","content":"read both files"},
+		{"role":"assistant","content":null,"tool_calls":[
+			{"id":"functions_read_1","type":"function","function":{"name":"read","arguments":"{\"path\":\"/etc/hostname\"}"}},
+			{"id":"functions_shell_2","type":"function","function":{"name":"shell","arguments":"{\"command\":\"hostname\"}"}}]},
+		{"role":"tool","tool_call_id":"functions_read_1","content":"pi.lan"},
+		{"role":"tool","tool_call_id":"functions_shell_2","content":"pi"}]}`)
+
+	opts := &ConvertOptions{
+		Direction: "request",
+		ModelMap: ModelMap{{
+			SourcePrefix: "claude-fable-5",
+			TargetModel:  "gemini-4-hydrogen",
+			Protocol:     "openai",
+		}},
+	}
+	out, err := Convert(body, opts)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if !strings.Contains(string(out), `"model":"gemini-4-hydrogen"`) {
+		t.Fatalf("target model not rewritten:\n%s", out)
+	}
+	want := `"extra_content":{"google":{"thought_signature":"` + thoughtSignatureSentinel + `"}}`
+	if got := strings.Count(string(out), want); got != 2 {
+		t.Fatalf("sentinel tool calls = %d, want 2 (both replayed calls)\n%s", got, out)
+	}
+	sigs := toolCallSignatures(t, out)
+	if len(sigs) != 2 {
+		t.Fatalf("assistant replay should carry 2 tool calls, got %d\n%s", len(sigs), out)
+	}
+}
+
+func TestGeminiToolReplayPassthroughLeavesNonGeminiAndUnknownFieldsAlone(t *testing.T) {
+	body := []byte(`{"model":"claude-fable-5","opencode_private":{"keep":true},"messages":[
+		{"role":"assistant","content":null,"tool_calls":[
+			{"id":"c1","type":"function","function":{"name":"shell","arguments":"{}"}}]}]}`)
+
+	// Non-Gemini target: byte-identical passthrough, no extra_content anywhere.
+	out, err := Convert(body, &ConvertOptions{
+		Direction: "request",
+		ModelMap:  ModelMap{{SourcePrefix: "claude-fable-5", TargetModel: "deepseek-chat", Protocol: "openai"}},
+	})
+	if err != nil {
+		t.Fatalf("convert non-gemini: %v", err)
+	}
+	if !strings.Contains(string(out), `"opencode_private":{"keep":true}`) {
+		t.Fatalf("non-gemini passthrough must stay byte-identical:\n%s", out)
+	}
+	if strings.Contains(string(out), "extra_content") {
+		t.Fatalf("sentinel leaked into non-gemini target:\n%s", out)
+	}
+
+	// Gemini target: unknown fields survive the map-based mutation.
+	out, err = Convert(body, &ConvertOptions{
+		Direction: "request",
+		ModelMap:  ModelMap{{SourcePrefix: "claude-fable-5", TargetModel: "gemini-4-hydrogen", Protocol: "openai"}},
+	})
+	if err != nil {
+		t.Fatalf("convert gemini: %v", err)
+	}
+	if !strings.Contains(string(out), `"opencode_private":{"keep":true}`) {
+		t.Fatalf("gemini sentinel injection dropped unknown request fields:\n%s", out)
+	}
+	if got := strings.Count(string(out), thoughtSignatureSentinel); got != 1 {
+		t.Fatalf("sentinel count = %d, want 1\n%s", got, out)
 	}
 }

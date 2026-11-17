@@ -553,7 +553,11 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 
 		// Passthrough if source matches downstream protocol.
 		if source == downstream || downstream == ProtocolUnknown {
-			return passthrough(raw, targetModel, opts, body)
+			out, err := passthrough(raw, targetModel, opts, body)
+			if err != nil {
+				return nil, err
+			}
+			return geminiToolReplayPassthrough(out, targetModel), nil
 		}
 
 		// Convert source => downstream protocol.
@@ -573,7 +577,11 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 			return nil, fmt.Errorf("no converter for %s=>%s", source, downstream)
 		}
 		slog.Debug("no converter for request pair, passing through", "from", source.String(), "to", downstream.String())
-		return passthrough(raw, targetModel, opts, body)
+		out, err := passthrough(raw, targetModel, opts, body)
+		if err != nil {
+			return nil, err
+		}
+		return geminiToolReplayPassthrough(out, targetModel), nil
 	}
 
 	// Response path: source is the downstream protocol (detected from body).
@@ -622,6 +630,56 @@ func Convert(body []byte, opts *ConvertOptions) ([]byte, error) {
 // passthrough rewrites the model field and injects max_completion_tokens.
 // Model replacement is done at byte level to preserve JSON field order.
 // Returns the original body unchanged when nothing is modified.
+// geminiToolReplayPassthrough applies the Gemini thought-signature sentinel to
+// OpenAI Chat requests that bypass conversion (chat→chat passthrough). The
+// Anthropic→OpenAI seam cannot cover these: OpenCode speaks OpenAI Chat
+// inbound, and the 2026-11-17 fable incident (HTTP 400 at tool call position
+// 583) proved the passthrough path needs the same guard. Unknown keys are
+// preserved by editing the decoded map, and bodies without assistant tool
+// calls are returned byte-identical.
+func geminiToolReplayPassthrough(body []byte, targetModel string) []byte {
+	if classifyModel(targetModel).signatureScheme != "openai_toolcall_gemini" {
+		return body
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return body
+	}
+	messages, ok := raw["messages"].([]any)
+	if !ok {
+		return body
+	}
+	changed := false
+	for _, item := range messages {
+		msg, ok := item.(map[string]any)
+		if !ok || msg["role"] != "assistant" {
+			continue
+		}
+		tools, ok := msg["tool_calls"].([]any)
+		if !ok {
+			continue
+		}
+		for _, entry := range tools {
+			call, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			call["extra_content"] = map[string]any{
+				"google": map[string]any{"thought_signature": thoughtSignatureSentinel},
+			}
+			changed = true
+		}
+	}
+	if !changed {
+		return body
+	}
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 func passthrough(raw map[string]any, targetModel string, opts *ConvertOptions, originalBody []byte) ([]byte, error) {
 	modelChanged := false
 	if targetModel != "" && raw["model"] != targetModel {
