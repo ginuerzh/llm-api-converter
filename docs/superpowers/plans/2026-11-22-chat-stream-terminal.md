@@ -360,7 +360,7 @@ git describe --tags    # v0.7.2
 
 Expected: tag resolves; `buildx.yml` runs green for the tag.
 
-**Implementation record:** as in Task 1, including the tag name and push result.
+**Implementation record:** 2026-11-22 · **complete** · `llm-api-converter` `3fa6159` + tag `v0.7.2` · files: `docs/superpowers/specs/2026-11-22-chat-stream-terminal-design.md` (Status → approved) · tests: `CGO_ENABLED=1 go test $(go list ./... | grep -v /tests/e2e) -race` → convert/engine/rewriter ok · verification: `git push origin main` (`7f82597..3fa6159`) and `git push origin v0.7.2` accepted; `go list -m -versions` shows `v0.7.2` and `go mod download` fetches it through goproxy.cn; `buildx.yml` runs `44978600212` (tag) and `44978591284` (main) started · review findings: none · deferred: none.
 
 ---
 
