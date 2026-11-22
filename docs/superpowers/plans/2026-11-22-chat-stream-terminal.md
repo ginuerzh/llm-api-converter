@@ -331,7 +331,7 @@ git add convert/convert.go convert/anthropic_openai_p1_test.go convert/sse_termi
 git commit -m "fix(convert): emit [DONE] and report truncation for passthrough streams"
 ```
 
-**Implementation record:** as in Task 1.
+**Implementation record:** 2026-11-22 · **complete** · `llm-api-converter` `4bf0608` · files: `convert/convert.go` (sentinel marks the passthrough handler terminal; end phase delegates to `EndStream`), `convert/sse_terminal_test.go` (new, 8 tests), `convert/anthropic_openai_p1_test.go` (`TestP1_PassthroughEndPhaseIgnoresError` → `TestP1_PassthroughEndPhaseReportsStreamError`), `convert/convert_test.go` (`TestHandleSSEEvent_AnthropicPassthroughStreaming` now sends `message_stop` so it keeps pinning the healthy passthrough) · tests: new tests RED (5 of 8 failing: end phase returned empty) → GREEN; `go vet ./...` clean; `CGO_ENABLED=1 go test $(go list ./... | grep -v /tests/e2e) -race` ok · review findings and fixes: a second pre-existing test pinned the removed silence and had to be updated (`convert_test.go:2413`) · deferred: none.
 
 ---
 
