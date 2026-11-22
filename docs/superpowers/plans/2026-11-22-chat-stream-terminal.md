@@ -474,7 +474,7 @@ Write the record (digests before/after, CI run id, curl evidence, stats snapshot
 
 Rollback, if needed: `kubectl -n llm set image deploy/llm-gw cuttle=ghcr.io/ginuerzh/cuttle@sha256:<Step 1 digest>`.
 
-**Implementation record:** as in Task 1, plus the deploy evidence above.
+**Implementation record:** 2026-11-22 · **complete** · repos: `llm-api-converter` `v0.7.2` (pushed), `cuttle` `173f2ea0` (pushed), deployed image `ghcr.io/ginuerzh/cuttle@sha256:fa2c047cc3e683e0b7c5123ebb62118cfc63e32af53a292237e6afd579cb8d9f` (pod `llm-gw-69cc5f4c55-z6z2k`, version `main-173f2ea`) · rollback point: `sha256:a4bb00d4cf932aa640c903c762ccd754cb287131e25eb90cb0e0842c9cbb20d4` (pod `llm-gw-7d9f84c57d-m49nx`) · CI: docker run `44979219390` green · wire evidence (same request before/after the rollout): `grep -c DONE` 0 → 1, tail now `data: [DONE]`; tool-call turn ends `finish_reason":"tool_calls"` + exactly one `[DONE]`, no truncation error; Anthropic `/v1/messages` probe still ends `message_stop` with zero `[DONE]` · stats (last hour, 372 rows): 0 `truncated`, 0 client errors, `finish_reason`/`saw_done` fully populated, no retries · review findings: `/data/cuttle.yaml` still carries `userAgent: cuttle/main-2f6fcb2` (persisted config, not the runtime version) — cosmetic, left untouched because this change ships no config edit · deferred: the silent-truncation branch has no production trigger; it is covered by the cuttle gateway test against the published module, and the cuttle stats reclassification/alert gap remains a follow-up.
 
 ---
 
