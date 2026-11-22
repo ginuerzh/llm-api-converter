@@ -1081,7 +1081,16 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 	case StreamPhaseEvent:
 		payload := extractSSEPayload(data)
 		if payload == nil {
-			return []byte{}, nil // [DONE] marker, swallow.
+			// Upstream [DONE]: never forwarded here, so that the end phase can
+			// terminate every chat stream with exactly one sentinel.
+			if store != nil {
+				if sess := store.Get(sid); sess != nil {
+					if ph, ok := sess.StreamHandler.(*PassthroughStreamHandler); ok {
+						ph.markTerminal()
+					}
+				}
+			}
+			return []byte{}, nil
 		}
 
 		var handler responsesStreamHandler
@@ -1159,6 +1168,12 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 			slog.Warn("HandleSSEEvent: unknown stream for end phase", "sid", sid)
 			return nil, nil
 		}
+		// Passthrough streams decide their own terminal: a chat stream needs the
+		// [DONE] sentinel, and a stream that ended without a terminal marker is
+		// reported as a truncation instead of closing as a successful turn.
+		if ph, ok := handler.(*PassthroughStreamHandler); ok {
+			return ph.EndStream(opts.ErrorMsg), nil
+		}
 		// GOST reports interrupted streams through stream_error metadata. An
 		// interrupted stream must surface as an error, not as a normal close:
 		// a synthesized message_stop would report truncated output (including
@@ -1172,10 +1187,6 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 				*ResponsesToAnthropicStreamConverter:
 				return handler.EmitError(opts.ErrorMsg), nil
 			}
-		}
-		// Passthrough: no synthesized closing events needed.
-		if _, ok := handler.(*PassthroughStreamHandler); ok {
-			return nil, nil
 		}
 		return handler.HandleStreamEnd(), nil
 

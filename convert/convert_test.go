@@ -2404,13 +2404,22 @@ func TestHandleSSEEvent_AnthropicPassthroughStreaming(t *testing.T) {
 		t.Fatalf("stream event: expected passthrough of thinking delta, got: %s", out2)
 	}
 
-	// Stream end: passthrough should return nil.
+	// Terminal event should pass through unchanged.
+	stopData := []byte(`event: message_stop` + "\n" + `data: {"type":"message_stop"}`)
+	if out, err = HandleSSEEvent("test-sid", string(StreamPhaseEvent), 2, stopData, opts); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "message_stop") {
+		t.Fatalf("stream event: expected passthrough of message_stop, got: %s", out)
+	}
+
+	// Stream end: a passthrough stream that reached its terminal emits nothing.
 	out3, err := HandleSSEEvent("test-sid", string(StreamPhaseEnd), 0, nil, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out3 != nil {
-		t.Fatalf("stream end: expected nil for passthrough, got: %s", out3)
+		t.Fatalf("stream end: expected nil for a terminated passthrough, got: %s", out3)
 	}
 
 	// Session should be cleaned up.

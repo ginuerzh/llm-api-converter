@@ -898,13 +898,16 @@ func TestP1_EndPhaseStreamErrorEmitsError(t *testing.T) {
 	}
 }
 
-func TestP1_PassthroughEndPhaseIgnoresError(t *testing.T) {
+func TestP1_PassthroughEndPhaseReportsStreamError(t *testing.T) {
 	store := NewSessionStore()
 	store.Set("s2", &Session{StreamHandler: NewPassthroughStreamHandler("claude", ProtocolAnthropic, false)})
 	opts := &ConvertOptions{SessionStore: store, ErrorMsg: "upstream reset"}
 	out, _ := HandleSSEEvent("s2", "end", 0, nil, opts)
-	if out != nil {
-		t.Fatalf("passthrough emitted %s", out)
+	if !strings.HasPrefix(string(out), "event: error") || !strings.Contains(string(out), "upstream reset") {
+		t.Fatalf("passthrough error = %s", out)
+	}
+	if strings.Contains(string(out), "message_stop") {
+		t.Fatalf("passthrough faked a normal close: %s", out)
 	}
 }
 
