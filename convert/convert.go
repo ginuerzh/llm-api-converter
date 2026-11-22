@@ -1107,21 +1107,51 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 		}
 
 		if handler == nil {
-			slog.Warn("HandleSSEEvent: unknown stream, creating from data", "sid", sid)
-			sc := newStreamConverterFromData(payload, opts)
-			if store != nil {
-				store.Set(sid, &Session{ID: sid, StreamHandler: sc})
+			// A session can disappear mid-stream: the store may evict it, the
+			// process may restart, or the peer may abort. Never change protocols
+			// on a guess — when the event already speaks the client's protocol
+			// (the common chat-in/chat-out case), forward it unchanged and let
+			// the end phase close the stream. Guessing a stateful converter here
+			// rewrites the rest of the answer into another protocol, and the
+			// client then sees a stream that never carries finish_reason.
+			target := detectByURI(opts.URI, DirectionRequest)
+			detected := ProtocolUnknown
+			if payload != nil {
+				var raw map[string]any
+				if err := json.Unmarshal(payload, &raw); err == nil {
+					detected = detectSource(raw)
+				}
 			}
-			handler = sc
-			startData := sc.HandleStreamStart()
-			chunkData, err := sc.HandleChunk(payload)
-			if err != nil {
-				return startData, err
+			if target != ProtocolUnknown && detected == target {
+				sourceModel := opts.RequestModel
+				if sourceModel == "" && opts.ModelMap != nil {
+					if m := extractModelFromData(payload); m != "" {
+						sourceModel = opts.ModelMap.SourcePrefix(m)
+					}
+				}
+				ph := NewPassthroughStreamHandler(sourceModel, target, opts.FilterRedactedThinking)
+				if store != nil {
+					store.Set(sid, &Session{ID: sid, From: target, To: detected, StreamHandler: ph})
+				}
+				handler = ph
+			} else {
+				slog.Warn("HandleSSEEvent: unknown stream, creating from data",
+					"sid", sid, "detected", detected, "target", target)
+				sc := newStreamConverterFromData(payload, opts)
+				if store != nil {
+					store.Set(sid, &Session{ID: sid, StreamHandler: sc})
+				}
+				handler = sc
+				startData := sc.HandleStreamStart()
+				chunkData, err := sc.HandleChunk(payload)
+				if err != nil {
+					return startData, err
+				}
+				if len(chunkData) > 0 {
+					return append(startData, append([]byte("\n\n"), chunkData...)...), nil
+				}
+				return startData, nil
 			}
-			if len(chunkData) > 0 {
-				return append(startData, append([]byte("\n\n"), chunkData...)...), nil
-			}
-			return startData, nil
 		}
 
 		// Capture thoughtSignature from Gemini functionCall parts for next request.

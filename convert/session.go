@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 )
 
 // SessionStore holds per-session state with max-size FIFO eviction.
@@ -39,7 +40,16 @@ type Session struct {
 	To            Protocol
 	IsResponses   bool
 	StreamHandler responsesStreamHandler
+	// Created is set by Set when the caller leaves it zero. A full store
+	// prefers dropping old sessions (streams whose end phase never ran, e.g.
+	// an aborted peer) over evicting one that is still being written.
+	Created time.Time
 }
+
+// staleAfter bounds how long a session may linger before eviction treats it as
+// leaked. Real streams end in well under this; anything older never reached its
+// end phase.
+const staleAfter = 5 * time.Minute
 
 // Get returns the session by ID, or nil.
 func (s *SessionStore) Get(sid string) *Session {
@@ -56,11 +66,36 @@ func (s *SessionStore) Set(sid string, sess *Session) {
 	defer s.mu.Unlock()
 	if _, exists := s.sessions[sid]; !exists {
 		if len(s.sessions) >= s.maxSize {
-			s.evictLocked()
+			s.sweepLocked()
+			if len(s.sessions) >= s.maxSize {
+				s.evictLocked()
+			}
 		}
 		s.order = append(s.order, sid)
 	}
+	if sess != nil && sess.Created.IsZero() {
+		sess.Created = time.Now()
+	}
 	s.sessions[sid] = sess
+}
+
+// sweepLocked drops sessions older than staleAfter so a full store does not
+// evict a live stream to make room for a new one.
+func (s *SessionStore) sweepLocked() {
+	cutoff := time.Now().Add(-staleAfter)
+	kept := s.order[:0]
+	for _, id := range s.order {
+		sess, ok := s.sessions[id]
+		if !ok {
+			continue
+		}
+		if !sess.Created.IsZero() && sess.Created.Before(cutoff) {
+			delete(s.sessions, id)
+			continue
+		}
+		kept = append(kept, id)
+	}
+	s.order = kept
 }
 
 // Delete removes a session. It prunes the order slice too — otherwise long-running
