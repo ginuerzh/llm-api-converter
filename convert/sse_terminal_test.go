@@ -100,3 +100,49 @@ func mustEvent(t *testing.T, sid, phase, data string, opts *ConvertOptions) []by
 	}
 	return out
 }
+
+// A non-chat, non-anthropic passthrough (Gemini today, Responses on the
+// fallback path) has no terminal-marker concept: its end phase must stay
+// silent, never emit an Anthropic-shaped error.
+func TestHandleSSEEvent_GeminiPassthroughEndStaysSilent(t *testing.T) {
+	store := NewSessionStore()
+	opts := &ConvertOptions{SessionStore: store, Direction: "response", URI: "/v1beta/models/gemini-2.0:streamGenerateContent", SID: "g1"}
+	start := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}]}"
+	mustEvent(t, "g1", "start", start, opts)
+	end, err := HandleSSEEvent("g1", "end", 0, nil, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(end) != 0 {
+		t.Fatalf("end = %q, want nothing for a Gemini passthrough", end)
+	}
+}
+
+// A stream whose only event is the upstream sentinel must not forward it and
+// then synthesize a second one.
+func TestHandleSSEEvent_ChatPassthroughSentinelOnlyFirstEvent(t *testing.T) {
+	store := NewSessionStore()
+	opts := chatOpts(store)
+	start := mustEvent(t, "s1", "start", "data: [DONE]", opts)
+	if len(start) != 0 {
+		t.Fatalf("start = %q, want the sentinel swallowed", start)
+	}
+	end, _ := HandleSSEEvent("s1", "end", 0, nil, opts)
+	if got := string(end); got != "data: [DONE]" {
+		t.Fatalf("end = %q, want exactly one \"data: [DONE]\"", got)
+	}
+}
+
+// The same sentinel must never reach an Anthropic client.
+func TestHandleSSEEvent_AnthropicPassthroughSentinelNeverReachesClient(t *testing.T) {
+	store := NewSessionStore()
+	opts := &ConvertOptions{SessionStore: store, Direction: "response", URI: "/v1/messages", SID: "a3"}
+	start := mustEvent(t, "a3", "start", "data: [DONE]", opts)
+	if strings.Contains(string(start), "[DONE]") {
+		t.Fatalf("start = %q, sentinel leaked to an anthropic client", start)
+	}
+	end, _ := HandleSSEEvent("a3", "end", 0, nil, opts)
+	if strings.Contains(string(end), "[DONE]") || len(end) != 0 {
+		t.Fatalf("end = %q, want nothing for a sentinel-terminated anthropic stream", end)
+	}
+}

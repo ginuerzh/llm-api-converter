@@ -882,6 +882,12 @@ func HandleSSEEvent(sid, phase string, eventIndex int, data []byte, opts *Conver
 				store.Set(sid, &Session{ID: sid, From: target, To: from, StreamHandler: handler})
 			}
 			if len(data) > 0 {
+				// A stream that opens with the upstream sentinel must neither
+				// forward it nor lose it: the end phase re-emits exactly one.
+				if extractSSEPayload(data) == nil {
+					handler.markTerminal()
+					return nil, nil
+				}
 				return handler.HandleChunk(data)
 			}
 			return nil, nil

@@ -250,6 +250,12 @@ const maxEndStreamMessage = 512
 // sentinel for OpenAI chat clients; a stream that ended without one is reported
 // as a truncation instead of closing as a successful turn.
 func (p *PassthroughStreamHandler) EndStream(streamErr string) []byte {
+	// Only the protocols modelled in observeTerminal have a terminal marker to
+	// report on. A Gemini (or Responses fallback) passthrough has none, and its
+	// clients cannot read either of our terminal shapes, so it stays silent.
+	if p.protocol != ProtocolOpenAIChat && p.protocol != ProtocolAnthropic {
+		return nil
+	}
 	if p.terminal {
 		if p.protocol == ProtocolOpenAIChat && !p.errored {
 			return []byte("data: [DONE]")
