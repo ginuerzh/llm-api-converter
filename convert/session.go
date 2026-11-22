@@ -3,6 +3,7 @@ package convert
 import (
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"sync"
 )
 
@@ -154,6 +155,8 @@ type PassthroughStreamHandler struct {
 	protocol        Protocol
 	filterRedacted  bool
 	redactedIndices map[int]bool // content block indices whose start was filtered
+	terminal        bool         // a terminal marker (finish_reason, message_stop, in-band error, [DONE]) was observed
+	errored         bool         // the terminal marker was an in-band error, so no [DONE] may follow
 }
 
 // NewPassthroughStreamHandler creates a passthrough handler for the target model.
@@ -169,6 +172,7 @@ func NewPassthroughStreamHandler(model string, protocol Protocol, filterRedacted
 func (p *PassthroughStreamHandler) HandleStreamStart() []byte { return nil }
 
 func (p *PassthroughStreamHandler) HandleChunk(data []byte) ([]byte, error) {
+	p.observeTerminal(data)
 	if p.protocol == ProtocolAnthropic {
 		return p.anthropicPassthrough(data), nil
 	}
@@ -178,12 +182,104 @@ func (p *PassthroughStreamHandler) HandleChunk(data []byte) ([]byte, error) {
 	return data, nil
 }
 
+// HandleStreamEnd keeps the responsesStreamHandler contract. Passthrough
+// stream ends are produced by EndStream, which also needs the transport error;
+// call sites that only have the interface contract get nothing, as before.
 func (p *PassthroughStreamHandler) HandleStreamEnd() []byte { return nil }
 
-// EmitError returns an Anthropic-formatted error SSE event. The payload is
+// markTerminal records that the upstream stream reached a terminal marker.
+func (p *PassthroughStreamHandler) markTerminal() { p.terminal = true }
+
+// observeTerminal records the terminal marker carried by one event: an OpenAI
+// finish_reason, an Anthropic message_stop, an in-band error event, or the
+// [DONE] sentinel, which extractSSEPayload strips to nil.
+func (p *PassthroughStreamHandler) observeTerminal(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	payload := extractSSEPayload(data)
+	if payload == nil {
+		p.markTerminal()
+		return
+	}
+	switch p.protocol {
+	case ProtocolOpenAIChat:
+		var probe struct {
+			Choices []struct {
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+			Error json.RawMessage `json:"error"`
+		}
+		if err := json.Unmarshal(payload, &probe); err != nil {
+			return
+		}
+		if len(probe.Error) > 0 && string(probe.Error) != "null" {
+			p.terminal = true
+			p.errored = true
+			return
+		}
+		for _, c := range probe.Choices {
+			if c.FinishReason != nil && strings.TrimSpace(*c.FinishReason) != "" {
+				p.markTerminal()
+				return
+			}
+		}
+	case ProtocolAnthropic:
+		var probe struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(payload, &probe); err != nil {
+			return
+		}
+		if probe.Type == "message_stop" {
+			p.markTerminal()
+			return
+		}
+		if probe.Type == "error" {
+			p.terminal = true
+			p.errored = true
+		}
+	}
+}
+
+// maxEndStreamMessage bounds the error text carried into a terminal event.
+const maxEndStreamMessage = 512
+
+// EndStream returns the trailing events of a passthrough stream. A stream that
+// reached a terminal marker needs nothing for Anthropic clients and the [DONE]
+// sentinel for OpenAI chat clients; a stream that ended without one is reported
+// as a truncation instead of closing as a successful turn.
+func (p *PassthroughStreamHandler) EndStream(streamErr string) []byte {
+	if p.terminal {
+		if p.protocol == ProtocolOpenAIChat && !p.errored {
+			return []byte("data: [DONE]")
+		}
+		return nil
+	}
+	msg := "upstream stream ended without a terminal event"
+	if streamErr != "" {
+		msg += ": " + streamErr
+	}
+	if len(msg) > maxEndStreamMessage {
+		msg = strings.ToValidUTF8(msg[:maxEndStreamMessage], "")
+	}
+	return p.EmitError(msg)
+}
+
+// EmitError returns a protocol-shaped error SSE event. The payload is
 // JSON-encoded so quotes, newlines, and backslashes in the message cannot
 // corrupt the event.
 func (p *PassthroughStreamHandler) EmitError(message string) []byte {
+	if p.protocol == ProtocolOpenAIChat {
+		b, _ := json.Marshal(map[string]any{
+			"error": map[string]any{
+				"message": message,
+				"type":    "stream_truncated",
+				"code":    "stream_truncated",
+			},
+		})
+		return []byte("data: " + string(b))
+	}
 	b, _ := json.Marshal(map[string]any{
 		"type":  "error",
 		"error": map[string]any{"type": "stream_error", "message": message},
