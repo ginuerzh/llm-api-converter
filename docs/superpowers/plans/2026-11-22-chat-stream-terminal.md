@@ -409,7 +409,7 @@ git add go.mod go.sum internal/gateway/stream_terminal_test.go
 git commit -m "fix(gateway): pin converter v0.7.2 and cover chat stream terminals"
 ```
 
-**Implementation record:** as in Task 1, with the cuttle commit SHA and the accumulated-diff note.
+**Implementation record:** 2026-11-22 · **complete** · `cuttle` `173f2ea0` (`go.mod`/`go.sum` → `llm-api-converter v0.7.2`, new `internal/gateway/stream_terminal_test.go`) · tests: with `GOWORK=off` (the local `go.work` otherwise resolves the converter from the working tree and hides the pin) both new tests FAIL against `v0.7.1` (no `[DONE]`, no truncation error) and PASS against `v0.7.2`; `go vet ./...` clean; `GOWORK=off go test ./... -count=1` all packages ok · accumulated diff against the deployed `2f6fcb24`: 252 commits, dominated by dropping the committed `web/node_modules` (24014 files, −2.3M lines) plus the max-tokens cap and subagent-observability features; no config or `/data` migration required by any of it · review findings: the first "baseline" run passed because `go.work` masked the pin — re-run with `GOWORK=off` before trusting any version-pin test in this workspace · deferred: none.
 
 ---
 
