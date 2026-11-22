@@ -478,6 +478,16 @@ Rollback, if needed: `kubectl -n llm set image deploy/llm-gw cuttle=ghcr.io/ginu
 
 ---
 
+## Post-review fix pass (2026-11-22)
+
+The whole-branch review found no Critical issues and two Important ones; both were reproduced with a failing test first, fixed in one pass, and shipped as `llm-api-converter` `v0.7.3` + `cuttle` `fd5749c3`.
+
+- **Gemini/Responses passthrough got a spurious terminal error.** `observeTerminal` models only chat and anthropic, but the passthrough branch creates a handler for any `from == target`, so every healthy Gemini stream ended with an Anthropic-shaped `event: error`. Fix: `EndStream` returns `nil` for protocols it does not model (`convert/session.go`). Test `TestHandleSSEEvent_GeminiPassthroughEndStaysSilent` RED→GREEN.
+- **A stream opened by the upstream sentinel emitted two `[DONE]`s (and leaked one to Anthropic clients).** The start phase forwarded the raw sentinel before the end phase synthesized another. Fix: the start-phase passthrough branch swallows and records the sentinel (`convert/convert.go`). Tests `TestHandleSSEEvent_ChatPassthroughSentinelOnlyFirstEvent` and `TestHandleSSEEvent_AnthropicPassthroughSentinelNeverReachesClient` RED→GREEN.
+- Suite after the pass: `go vet ./...` clean, `CGO_ENABLED=1 go test $(go list ./... | grep -v /tests/e2e) -race` → convert/engine/rewriter ok; cuttle `GOWORK=off go test ./... -count=1` all packages ok.
+- Deploy: image `ghcr.io/ginuerzh/cuttle@sha256:ab1a434efc4e233c6884cc0fd283f59ebac0b32b12ba493254b80ff9e577d70f` (pod `llm-gw-5ddc5b9474-d88ss`, version `main-fd5749c`, in-image converter `v0.7.3`). Wire: chat `grep -c DONE` = 1, no truncation error; Anthropic probe `message_stop`, zero `[DONE]`, zero `error` events. Stats over the 13-minute window after the v0.7.2 rollout: 120 requests, 0 truncated, 0 client errors, no retries.
+- Deferred minors (from the review): the sentinel-only shape is now covered but the two chat error envelopes (`stream_truncated` vs the converted path's `stream_error`) stay as the spec chose; upstream transport text is still forwarded (capped at 512 bytes) as the stateful converters already do; no cuttle-side Anthropic gateway test (production curl only); `chatStream` in the cuttle test uses `http.DefaultClient` without a timeout; ledger line 21 points at this record.
+
 ## Self-review notes
 
 - Spec coverage: A (truncation reporting) = Tasks 1–2; B (`[DONE]`) = Tasks 1–2; release = Task 3; cuttle = Task 4; deploy + rollback = Task 5. Deferred by spec and not in this plan: truncation retry/failover, cuttle stats reclassification, Gemini-target passthrough.
