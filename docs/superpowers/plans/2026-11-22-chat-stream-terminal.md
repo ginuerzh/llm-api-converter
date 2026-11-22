@@ -184,7 +184,7 @@ git add convert/session.go convert/session_terminal_test.go
 git commit -m "fix(convert): track passthrough terminal state and emit protocol-shaped ends"
 ```
 
-**Implementation record:** 2026-11-22 · **complete** · `llm-api-converter` `a9d3a7b` · files: `convert/session.go`, `convert/session_terminal_test.go` · tests: `go test ./convert -run TestPassthrough -count=1` RED (`EndStream`/`markTerminal` undefined) → GREEN 8/8; `go vet ./...` clean; `go test $(go list ./... | grep -v /tests/e2e) -count=1` ok (convert/engine/rewriter) · review findings and fixes: the in-band-error test caught `EndStream` emitting `[DONE]` after an error → added `errored bool`; `HandleStreamEnd` kept for the `responsesStreamHandler` contract, `EndStream` is the new end-phase entry point · deferred: `tests/e2e` `TestRewriterE2E_Streaming` fails identically at BASE (pre-existing environment failure, excluded from CI).
+**Implementation record:** 2026-11-22 · **complete** · `llm-api-converter` `08cf393` · files: `convert/session.go`, `convert/session_terminal_test.go` · tests: `go test ./convert -run TestPassthrough -count=1` RED (`EndStream`/`markTerminal` undefined) → GREEN 8/8; `go vet ./...` clean; `go test $(go list ./... | grep -v /tests/e2e) -count=1` ok (convert/engine/rewriter) · review findings and fixes: the in-band-error test caught `EndStream` emitting `[DONE]` after an error → added `errored bool`; `HandleStreamEnd` kept for the `responsesStreamHandler` contract, `EndStream` is the new end-phase entry point · deferred: `tests/e2e` `TestRewriterE2E_Streaming` fails identically at BASE (pre-existing environment failure, excluded from CI).
 
 ---
 
